@@ -1,4 +1,4 @@
-package org.example;
+package org.transito_seguro;
 
 /**
  * Hello world!

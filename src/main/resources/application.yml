@@ -1,0 +1,22 @@
+# Mapeo de provincias a datasources (ESENCIAL para el RepositoryFactory)
+provincia-mapping:
+  "Buenos Aires": pba
+  "Avellaneda": mda
+  "La Pampa": santa_rosa
+  "Chaco": chaco
+  "Entre Ríos": entre_rios
+  "Formosa": formosa
+
+
+# Configuración de queries (ya que tienes queries comunes)
+queries:
+  path: "classpath:queries/"
+  files:
+    - "consultar_personas_juridicas.sql"
+    - "reporte_infracciones_detallado.sql"
+    - "reporte_infracciones_general.sql"
+    - "reporte_radar_fijo_por_equipo.sql"
+    - "reporte_semaforo_por_equipo.sql"
+    - "reporte_vehiculos_por_municipio.sql"
+    - "reporte_sin_email_por_municipio.sql"
+    - "verificar_imagenes_radar.sql"
