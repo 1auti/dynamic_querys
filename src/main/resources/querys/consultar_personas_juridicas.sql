@@ -23,7 +23,12 @@ SELECT
     d.modelo as "MODELO",
     d.tipo_vehiculo as "TIPO",
     dt.partido as "PARTIDO"
-FROM dominios d, dominio_titulares dt
-WHERE d.dominio = dt.dominio
-    AND dt.sexo IN ('J')
-ORDER BY 1;
+FROM dominios d
+INNER JOIN dominio_titulares dt ON d.dominio = dt.dominio
+WHERE 1=1
+    AND dt.sexo IN ('J')  -- Solo personas jurídicas
+    -- FILTRO_FECHA --
+    -- FILTRO_PROVINCIA --
+    -- FILTRO_MUNICIPIO --
+    -- FILTRO_DOMINIO --
+-- FILTRO_PAGINACION --;

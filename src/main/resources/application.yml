@@ -1,14 +1,17 @@
+
+
+
 # Mapeo de provincias a datasources (ESENCIAL para el RepositoryFactory)
 provincia-mapping:
   "Buenos Aires": pba
   "Avellaneda": mda
   "La Pampa": santa_rosa
   "Chaco": chaco
-  "Entre Ríos": entre_rios
+  "Entre Rï¿½os": entre_rios
   "Formosa": formosa
 
 
-# Configuración de queries (ya que tienes queries comunes)
+# Configuraciï¿½n de queries (ya que tienes queries comunes)
 queries:
   path: "classpath:queries/"
   files:
