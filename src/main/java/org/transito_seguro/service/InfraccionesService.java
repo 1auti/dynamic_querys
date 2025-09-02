@@ -79,7 +79,7 @@ public class InfraccionesService {
      * Consulta específica para personas jurídicas
      */
     public Object consultarPersonasJuridicas(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfracciones(consulta, "consultar_personas_juridicas_dinamico.sql");
+        return consultarInfracciones(consulta, "consultar_personas_juridicas.sql");
     }
 
     /**

@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.config.ProvinciaMapping;
 import org.transito_seguro.repository.InfraccionesRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
@@ -18,6 +19,9 @@ public class RepositoryFactory {
 
     @Autowired
     private ProvinciaMapping provinciaMapping;
+
+    @Autowired
+    private ParametrosProcessor parametrosProcessor;
 
     public InfraccionesRepository getRepository(String provincia) {
         // Obtener el nombre del datasource desde el mapeo
@@ -37,7 +41,8 @@ public class RepositoryFactory {
         );
 
         // Crear y devolver el repository con el JdbcTemplate específico
-        return new InfraccionesRepositoryImpl(jdbcTemplate, provincia);
+        // AHORA PASAMOS EL ParametrosProcessor por constructor
+        return new InfraccionesRepositoryImpl(jdbcTemplate, provincia, parametrosProcessor);
     }
 
     /**

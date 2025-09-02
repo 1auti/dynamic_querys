@@ -1,7 +1,6 @@
 package org.transito_seguro.repository.impl;
 
 import lombok.Getter;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
@@ -14,19 +13,17 @@ import java.util.Map;
 public class InfraccionesRepositoryImpl implements InfraccionesRepository {
 
     private final NamedParameterJdbcTemplate jdbcTemplate;
-    /**
-     * -- GETTER --
-     *  Obtener información de la provincia asociada a este repository
-     */
     @Getter
     private final String provincia;
+    private final ParametrosProcessor parametrosProcessor;
 
-    @Autowired
-    private ParametrosProcessor parametrosProcessor;
-
-    public InfraccionesRepositoryImpl(NamedParameterJdbcTemplate jdbcTemplate, String provincia) {
+    // Constructor que recibe todas las dependencias por parámetro
+    public InfraccionesRepositoryImpl(NamedParameterJdbcTemplate jdbcTemplate,
+                                      String provincia,
+                                      ParametrosProcessor parametrosProcessor) {
         this.jdbcTemplate = jdbcTemplate;
         this.provincia = provincia;
+        this.parametrosProcessor = parametrosProcessor;
     }
 
     @Override
@@ -106,5 +103,4 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
     public List<Map<String, Object>> consultarReporteDetallado(ParametrosFiltrosDTO filtros) {
         return ejecutarQueryConFiltros(Consultas.INFRACCIONES_DETALLADO.getArchivoQuery(), filtros);
     }
-
 }

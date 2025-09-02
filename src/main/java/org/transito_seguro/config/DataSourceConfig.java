@@ -22,7 +22,7 @@ public class DataSourceConfig {
         return new HikariDataSource();
     }
 
-    @Bean(name = "santaRosaDataSource")
+    @Bean(name = "santa-rosaDataSource")
     @ConfigurationProperties(prefix = "spring.datasource.santa-rosa")
     public DataSource santaRosaDataSource() {
         return new HikariDataSource();
@@ -34,7 +34,7 @@ public class DataSourceConfig {
         return new HikariDataSource();
     }
 
-    @Bean(name = "entreRiosDataSource")
+    @Bean(name = "entre-riosDataSource")
     @ConfigurationProperties(prefix = "spring.datasource.entre-rios")
     public DataSource entreRiosDataSource() {
         return new HikariDataSource();

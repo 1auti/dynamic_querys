@@ -9,9 +9,8 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import javax.sql.DataSource;
 
 /**
-* Ejecutador de querys para las BDS
-*/
-
+ * Ejecutador de querys para las BDS
+ */
 @Configuration
 public class JdbcConfig {
 
@@ -25,8 +24,8 @@ public class JdbcConfig {
         return new NamedParameterJdbcTemplate(dataSource);
     }
 
-    @Bean(name = "santaRosaJdbcTemplate")
-    public NamedParameterJdbcTemplate santaRosaJdbcTemplate(@Qualifier("santaRosaDataSource") DataSource dataSource) {
+    @Bean(name = "santa-rosaJdbcTemplate")
+    public NamedParameterJdbcTemplate santaRosaJdbcTemplate(@Qualifier("santa-rosaDataSource") DataSource dataSource) {
         return new NamedParameterJdbcTemplate(dataSource);
     }
 
@@ -35,8 +34,8 @@ public class JdbcConfig {
         return new NamedParameterJdbcTemplate(dataSource);
     }
 
-    @Bean(name = "entreRiosJdbcTemplate")
-    public NamedParameterJdbcTemplate entreRiosJdbcTemplate(@Qualifier("entreRiosDataSource") DataSource dataSource) {
+    @Bean(name = "entre-riosJdbcTemplate")
+    public NamedParameterJdbcTemplate entreRiosJdbcTemplate(@Qualifier("entre-riosDataSource") DataSource dataSource) {
         return new NamedParameterJdbcTemplate(dataSource);
     }
 
