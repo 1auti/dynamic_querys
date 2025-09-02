@@ -1,6 +1,5 @@
 package org.transito_seguro.config;
 
-
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -24,7 +23,7 @@ public class DataSourceConfig {
     }
 
     @Bean(name = "santaRosaDataSource")
-    @ConfigurationProperties(prefix = "spring.datasource.santa_rosa")
+    @ConfigurationProperties(prefix = "spring.datasource.santa-rosa")
     public DataSource santaRosaDataSource() {
         return new HikariDataSource();
     }
@@ -36,7 +35,7 @@ public class DataSourceConfig {
     }
 
     @Bean(name = "entreRiosDataSource")
-    @ConfigurationProperties(prefix = "spring.datasource.entre_rios")
+    @ConfigurationProperties(prefix = "spring.datasource.entre-rios")
     public DataSource entreRiosDataSource() {
         return new HikariDataSource();
     }

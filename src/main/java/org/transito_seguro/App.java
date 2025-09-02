@@ -12,15 +12,9 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
  * Sistema de Consulta Dinámica de Infracciones de Tránsito
  */
 @SpringBootApplication
-@EnableConfigurationProperties
-@EnableTransactionManagement
-@EnableAsync
-@EnableAspectJAutoProxy
 public class App {
 
     public static void main(String[] args) {
-        System.out.println("🚀 Iniciando Sistema de Tránsito Seguro...");
         SpringApplication.run(App.class, args);
-        System.out.println("✅ Sistema iniciado correctamente!");
     }
 }

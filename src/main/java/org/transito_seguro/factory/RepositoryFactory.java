@@ -1,10 +1,10 @@
 package org.transito_seguro.factory;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.transito_seguro.config.ProvinciaMapping;
 import org.transito_seguro.repository.InfraccionesRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 
@@ -16,13 +16,12 @@ public class RepositoryFactory {
     @Autowired
     private ApplicationContext applicationContext;
 
-    // Mapeo desde application.yml
-    @Value("#{${provincia-mapping}}")
-    private Map<String, String> provinciaMapping;
+    @Autowired
+    private ProvinciaMapping provinciaMapping;
 
     public InfraccionesRepository getRepository(String provincia) {
         // Obtener el nombre del datasource desde el mapeo
-        String datasourceName = provinciaMapping.get(provincia);
+        String datasourceName = provinciaMapping.getDatasourceForProvincia(provincia);
 
         if (datasourceName == null) {
             throw new IllegalArgumentException("Provincia no soportada: " + provincia);
@@ -45,7 +44,7 @@ public class RepositoryFactory {
      * Obtener todos los repositories para todas las provincias configuradas
      */
     public Map<String, InfraccionesRepository> getAllRepositories() {
-        return provinciaMapping.keySet().stream()
+        return provinciaMapping.getMapping().keySet().stream()
                 .collect(java.util.stream.Collectors.toMap(
                         provincia -> provincia,
                         this::getRepository
@@ -56,13 +55,13 @@ public class RepositoryFactory {
      * Verificar si una provincia está soportada
      */
     public boolean isProvinciaSupported(String provincia) {
-        return provinciaMapping.containsKey(provincia);
+        return provinciaMapping.isProvinciaSupported(provincia);
     }
 
     /**
      * Obtener todas las provincias soportadas
      */
     public java.util.Set<String> getProvinciasSoportadas() {
-        return provinciaMapping.keySet();
+        return provinciaMapping.getMapping().keySet();
     }
 }

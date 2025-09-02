@@ -1,17 +1,50 @@
-
-
+# Configuración principal de la aplicación
 
 # Mapeo de provincias a datasources (ESENCIAL para el RepositoryFactory)
-provincia-mapping:
-  "Buenos Aires": pba
-  "Avellaneda": mda
-  "La Pampa": santa_rosa
-  "Chaco": chaco
-  "Entre R�os": entre_rios
-  "Formosa": formosa
+provincia:
+  mapping:
+    "Buenos Aires": pba
+    "Avellaneda": mda
+    "La Pampa": santa-rosa
+    "Chaco": chaco
+    "Entre Ríos": entre-rios
+    "Formosa": formosa
 
+# Configuración de las bases de datos
+spring:
+  datasource:
+    pba:
+      url: ${PBA_URL:jdbc:postgresql://localhost:5432/pba_db}
+      username: ${PBA_USERNAME:postgres}
+      password: ${PBA_PASSWORD:password}
+      driver-class-name: org.postgresql.Driver
+    mda:
+      url: ${MDA_URL:jdbc:postgresql://localhost:5432/mda_db}
+      username: ${MDA_USERNAME:postgres}
+      password: ${MDA_PASSWORD:password}
+      driver-class-name: org.postgresql.Driver
+    santa-rosa:
+      url: ${SANTA_ROSA_URL:jdbc:postgresql://localhost:5432/santa_rosa_db}
+      username: ${SANTA_ROSA_USERNAME:postgres}
+      password: ${SANTA_ROSA_PASSWORD:password}
+      driver-class-name: org.postgresql.Driver
+    chaco:
+      url: ${CHACO_URL:jdbc:postgresql://localhost:5432/chaco_db}
+      username: ${CHACO_USERNAME:postgres}
+      password: ${CHACO_PASSWORD:password}
+      driver-class-name: org.postgresql.Driver
+    entre-rios:
+      url: ${ENTRE_RIOS_URL:jdbc:postgresql://localhost:5432/entre_rios_db}
+      username: ${ENTRE_RIOS_USERNAME:postgres}
+      password: ${ENTRE_RIOS_PASSWORD:password}
+      driver-class-name: org.postgresql.Driver
+    formosa:
+      url: ${FORMOSA_URL:jdbc:postgresql://localhost:5432/formosa_db}
+      username: ${FORMOSA_USERNAME:postgres}
+      password: ${FORMOSA_PASSWORD:password}
+      driver-class-name: org.postgresql.Driver
 
-# Configuraci�n de queries (ya que tienes queries comunes)
+# Configuración de queries
 queries:
   path: "classpath:queries/"
   files:
@@ -23,3 +56,10 @@ queries:
     - "reporte_vehiculos_por_municipio.sql"
     - "reporte_sin_email_por_municipio.sql"
     - "verificar_imagenes_radar.sql"
+
+# Deshabilitar Swagger/Springfox temporalmente
+# Configuración de logging (opcional)
+logging:
+  level:
+    org.transito_seguro: DEBUG
+    org.springframework.jdbc: DEBUG

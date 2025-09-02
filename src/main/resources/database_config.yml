@@ -12,7 +12,7 @@ spring:
       username: ${mda_username}
       password: ${mda_password}
       driver-class-name: org.postgresql.Driver
-    santa_rosa:
+    santa-rosa:
       url: ${santa_rosa_url}
       username: ${santa_rosa_username}
       password: ${santa_rosa_password}
@@ -22,7 +22,7 @@ spring:
       username: ${chaco_username}
       password: ${chaco_password}
       driver-class-name: org.postgresql.Driver
-    entre_rios:
+    entre-rios:
       url: ${entre_rios_url}
       username: ${entre_rios_username}
       password: ${entre_rios_password}
