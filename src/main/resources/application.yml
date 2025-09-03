@@ -14,35 +14,104 @@ provincia:
 spring:
   datasource:
     pba:
-      url: ${PBA_URL:jdbc:postgresql://localhost:5432/pba_db}
+      jdbc-url: ${PBA_URL:jdbc:postgresql://localhost:5432/pba_db}
       username: ${PBA_USERNAME:postgres}
       password: ${PBA_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
+      hikari:
+        maximum-pool-size: 3
+        minimum-idle: 1
+        connection-timeout: 20000
+        idle-timeout: 300000
+        max-lifetime: 1200000
+        leak-detection-threshold: 60000
     mda:
-      url: ${MDA_URL:jdbc:postgresql://localhost:5432/mda_db}
+      jdbc-url: ${MDA_URL:jdbc:postgresql://localhost:5432/mda_db}
       username: ${MDA_USERNAME:postgres}
       password: ${MDA_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
+      hikari:
+        maximum-pool-size: 3
+        minimum-idle: 1
+        connection-timeout: 20000
+        idle-timeout: 300000
+        max-lifetime: 1200000
+        leak-detection-threshold: 60000
     santa-rosa:
-      url: ${SANTA_ROSA_URL:jdbc:postgresql://localhost:5432/santa_rosa_db}
+      jdbc-url: ${SANTA_ROSA_URL:jdbc:postgresql://localhost:5432/santa_rosa_db}
       username: ${SANTA_ROSA_USERNAME:postgres}
       password: ${SANTA_ROSA_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
+      hikari:
+        maximum-pool-size: 3
+        minimum-idle: 1
+        connection-timeout: 20000
+        idle-timeout: 300000
+        max-lifetime: 1200000
+        leak-detection-threshold: 60000
     chaco:
-      url: ${CHACO_URL:jdbc:postgresql://localhost:5432/chaco_db}
+      jdbc-url: ${CHACO_URL:jdbc:postgresql://localhost:5432/chaco_db}
       username: ${CHACO_USERNAME:postgres}
       password: ${CHACO_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
+      hikari:
+        maximum-pool-size: 3
+        minimum-idle: 1
+        connection-timeout: 20000
+        idle-timeout: 300000
+        max-lifetime: 1200000
+        leak-detection-threshold: 60000
     entre-rios:
-      url: ${ENTRE_RIOS_URL:jdbc:postgresql://localhost:5432/entre_rios_db}
+      jdbc-url: ${ENTRE_RIOS_URL:jdbc:postgresql://localhost:5432/entre_rios_db}
       username: ${ENTRE_RIOS_USERNAME:postgres}
       password: ${ENTRE_RIOS_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
+      hikari:
+        maximum-pool-size: 3
+        minimum-idle: 1
+        connection-timeout: 20000
+        idle-timeout: 300000
+        max-lifetime: 1200000
+        leak-detection-threshold: 60000
     formosa:
-      url: ${FORMOSA_URL:jdbc:postgresql://localhost:5432/formosa_db}
+      jdbc-url: ${FORMOSA_URL:jdbc:postgresql://localhost:5432/formosa_db}
       username: ${FORMOSA_USERNAME:postgres}
       password: ${FORMOSA_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
+      hikari:
+        maximum-pool-size: 3
+        minimum-idle: 1
+        connection-timeout: 20000
+        idle-timeout: 300000
+        max-lifetime: 1200000
+        leak-detection-threshold: 60000
+
+  # Configuración HTTP y Tomcat
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+  # Jackson JSON limits
+  spring:
+    jackson:
+      deserialization:
+        fail-on-unknown-properties: false
+
+
+# Configuración del servidor
+server:
+  port: ${SERVER_PORT:8080}
+  tomcat:
+    max-connections: 50
+    threads:
+      max: 20
+      min-spare: 5
+    connection-timeout: 30000
+    max-http-post-size: 52428800
+  error:
+    include-message: always
+    include-binding-errors: always
 
 # Configuración de queries
 queries:
@@ -57,9 +126,32 @@ queries:
     - "reporte_sin_email_por_municipio.sql"
     - "verificar_imagenes_radar.sql"
 
-# Deshabilitar Swagger/Springfox temporalmente
-# Configuración de logging (opcional)
+# Límites de la aplicación
+app:
+  limits:
+    max-records-per-query: 10000
+    max-concurrent-queries: 10
+    query-timeout-seconds: 300
+    max-memory-per-query: 100MB
+
+# Configuración de logging
 logging:
   level:
     org.transito_seguro: DEBUG
     org.springframework.jdbc: DEBUG
+    com.zaxxer.hikari: INFO
+    org.postgresql: WARN
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# Actuator para monitoreo
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,info
+  endpoint:
+    health:
+      show-details: when_authorized
+    metrics:
+      enabled: true

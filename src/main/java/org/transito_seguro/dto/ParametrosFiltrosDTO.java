@@ -139,14 +139,11 @@ public class ParametrosFiltrosDTO {
     /**
      * Número de página (comenzando en 0)
      */
-    @Builder.Default
-    private Integer pagina = 0;
 
-    /**
-     * Cantidad de registros por página
-     */
-    @Builder.Default
-    private Integer tamanoPagina = 100;
+    private Integer pagina;
+
+
+    private Integer tamanoPagina;
 
     /**
      * Límite máximo de registros a devolver
