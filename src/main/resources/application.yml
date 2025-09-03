@@ -126,13 +126,19 @@ queries:
     - "reporte_sin_email_por_municipio.sql"
     - "verificar_imagenes_radar.sql"
 
-# Límites de la aplicación
+# Configuración de batching
 app:
+  batch:
+    size: 1000                    # Tamaño de lote por defecto
+    max-retries: 3               # Reintentos por lote
+    timeout-seconds: 30          # Timeout por consulta
+    max-memory-per-batch: 50     # MB máximos por lote
+    enable-async: true           # Habilitar endpoints asíncronos
+
   limits:
-    max-records-per-query: 10000
-    max-concurrent-queries: 10
-    query-timeout-seconds: 300
-    max-memory-per-query: 100MB
+    max-records-sync: 1000       # Máximo de registros para procesamiento síncrono
+    max-records-total: 50000     # Máximo absoluto de registros
+    max-concurrent-queries: 5    # Máximo de consultas concurrentes
 
 # Configuración de logging
 logging:

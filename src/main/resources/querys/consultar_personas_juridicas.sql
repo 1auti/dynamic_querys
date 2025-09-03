@@ -1,57 +1,47 @@
--- consultar_personas_juridicas_dinamica.sql
+-- consultar_personas_juridicas.sql (VERSIÓN CORREGIDA CON PLACEHOLDERS ESPECÍFICOS)
 -- Obtener datos completos de dominios y titulares para personas jurídicas
--- VERSION DINAMICA compatible con ParametrosProcessor
 
-SELECT 
+SELECT
     d.dominio as "DOMINIO",
-    'CUIT' as "TIPO_DOCUMENTO", 
+    'CUIT' as "TIPO_DOCUMENTO",
     dt.numero_documento as "NRO_DOCUMENTO",
     dt.cuit as "NRO_CUIT",
     dt.propietario as "PROPIETARIO_APELLIDO",
     '' as "PROPIETARIO_NOMBRE",
     dt.fecha_titularidad as "FECHA_TITULARIDAD",
     dt.domicilio as "CALLE",
-    dt.numero as "NUMERO", 
+    dt.numero as "NUMERO",
     dt.piso as "PISO",
     dt.dpto as "DEPARTAMENTO",
     dt.cp as "CP",
     dt.localidad as "LOCALIDAD",
     dt.provincia as "PROVINCIA",
     dt.telefono as "TELEFONO",
-    dt.celular as "CELULAR", 
+    dt.celular as "CELULAR",
     dt.email as "EMAIL",
     d.marca as "MARCA",
     d.modelo as "MODELO",
     d.tipo_vehiculo as "TIPO",
     dt.partido as "PARTIDO",
     d.fecha_alta as "FECHA_ALTA_DOMINIO",
-    CASE 
-        WHEN dt.email IS NOT NULL AND dt.email != '' THEN 'SI' 
-        ELSE 'NO' 
+    CASE
+        WHEN dt.email IS NOT NULL AND dt.email != '' THEN 'SI'
+        ELSE 'NO'
     END as "TIENE_EMAIL",
-    CASE 
-        WHEN dt.sexo = 'J' THEN 'JURIDICA' 
-        ELSE 'FISICA' 
+    CASE
+        WHEN dt.sexo = 'J' THEN 'JURIDICA'
+        ELSE 'FISICA'
     END as "TIPO_PERSONA"
-FROM dominios d 
+FROM dominios d
 INNER JOIN dominio_titulares dt ON d.dominio = dt.dominio
 WHERE 1=1
     AND dt.sexo IN ('J')  -- Solo personas jurídicas (requerimiento base)
-    
-    -- FILTROS DINAMICOS DE FECHA --
-    -- FILTRO_FECHA --
-    
-    -- FILTROS DE UBICACION --  
-    -- FILTRO_PROVINCIA --
-    -- FILTRO_MUNICIPIO --
-    
-    -- FILTROS DE DOMINIOS Y VEHICULOS --
-    -- FILTRO_DOMINIO --
-    
-    -- FILTROS ADICIONALES ESPECIFICOS --
-    -- Los filtros de equipos e infracciones no aplican para esta query
-    -- pero mantenemos la estructura para consistencia
 
--- ORDENAMIENTO Y PAGINACION (CRITICO PARA BATCHING) --
-ORDER BY d.fecha_alta DESC, d.dominio  -- Orden consistente para paginación
+    -- *** PLACEHOLDERS ESPECÍFICOS (REEMPLAZAR LOS GENÉRICOS) *** --
+    -- FILTRO_FECHA_DOMINIOS --      -- Usará d.fecha_alta en lugar de elh.fecha_alta
+    -- FILTRO_PROVINCIA_TITULARES --  -- Usará dt.provincia en lugar de c.descripcion
+    -- FILTRO_MUNICIPIO_TITULARES --  -- Usará dt.localidad para municipios
+    -- FILTRO_DOMINIOS_ESPECIFICOS -- -- Usará d.dominio, dt.numero_documento, dt.email, etc.
+
+ORDER BY d.fecha_alta DESC, d.dominio ASC
 -- FILTRO_PAGINACION --
