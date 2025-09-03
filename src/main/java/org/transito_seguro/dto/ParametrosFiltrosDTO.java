@@ -14,7 +14,7 @@ import java.util.List;
 @AllArgsConstructor
 @NoArgsConstructor
 @Data
-@Builder
+@Builder(toBuilder = true)
 public class ParametrosFiltrosDTO {
 
     // =================== FILTROS DE FECHA ===================
