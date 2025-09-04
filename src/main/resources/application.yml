@@ -124,7 +124,7 @@ queries:
     - "reporte_semaforo_por_equipo.sql"
     - "reporte_vehiculos_por_municipio.sql"
     - "reporte_sin_email_por_municipio.sql"
-    - "verificar_imagenes_radar.sql"
+    - "verificar_imagenes_subidas_radar_concesion.sql"
 
 # Configuración de batching
 app:

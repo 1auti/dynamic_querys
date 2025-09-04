@@ -2,12 +2,13 @@
 
 SELECT
     to_char(now(),'DD/MM/YYYY') as fecha_reporte,
-    'PBA' as contexto,
+    x.provincia,
     x.municipio,
     count(x.numero_doc) as total_sin_email
 FROM (
     SELECT
         ii.numero_doc,
+        c.provincia as provincia,
         c.descripcion as municipio
     FROM infraccion i
     JOIN infraccion_infractor ii on ii.id = i.id_infraccion_infractor

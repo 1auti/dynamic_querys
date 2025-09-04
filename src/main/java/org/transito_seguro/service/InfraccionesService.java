@@ -128,7 +128,7 @@ public class InfraccionesService {
      * Consulta para verificar imágenes de radar
      */
     public Object verificarImagenesRadar(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfracciones(consulta, "verificar_imagenes_radar.sql");
+        return consultarInfracciones(consulta, "verificar_imagenes_subidas_radar_concesion.sql");
     }
 
     /**

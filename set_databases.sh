@@ -2,7 +2,7 @@
 # chmod +x set-databases.sh para darle permisos
 # source ./set-databases.sh
 
-export PBA_URL=jdbc:postgresql://192.168.51.220:5432/saijz
+export PBA_URL=jdbc:postgresql://192.168.51.220:5432/pba
 export PBA_USERNAME=usuario_pba
 export PBA_PASSWORD=UlbEXeTpiVKX#
 

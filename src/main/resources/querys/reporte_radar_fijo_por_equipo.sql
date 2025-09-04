@@ -11,7 +11,7 @@ SELECT
 FROM (
     SELECT
         to_char(elh.fecha_alta,'DD/MM/YYYY') as fecha,
-        'PBA' as contexto,
+        c.provincia as contexto
         c.descripcion as municipio,
         pc.serie_equipo,
         pc.lugar,
@@ -26,9 +26,15 @@ FROM (
     JOIN punto_control pc on pc.id = i.id_punto_control
     JOIN concesion c on c.id = elh.id_concesion
     JOIN tipo_infraccion ti on ti.id = elh.id_tipo_infra and ti.id in (1)
-    WHERE elh.fecha_alta >= '2023-08-12'
-        AND elh.fecha_alta < '2025-08-12'
-        AND elh.exporta_sacit = true
+    WHERE
+     -- Filtros de fecha dinámicos (usando elh.fecha_alta)
+        AND (:fechaEspecifica IS NULL OR DATE(elh.fecha_alta) = DATE(:fechaEspecifica))
+        AND (:fechaInicio IS NULL OR elh.fecha_alta >= :fechaInicio)
+        AND (:fechaFin IS NULL OR elh.fecha_alta <= :fechaFin)
+
+         -- Filtro de exportación a SACIT
+        AND (:exportadoSacit IS NULL OR elh.exporta_sacit = :exportadoSacit)
+
     GROUP BY 1,2,3,4,5,6,7,8,9
     ORDER BY 1
 ) x
