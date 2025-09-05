@@ -134,6 +134,8 @@ app:
     timeout-seconds: 30          # Timeout por consulta
     max-memory-per-batch: 50     # MB máximos por lote
     enable-async: true           # Habilitar endpoints asíncronos
+    chunk-size: 250
+    memory-critical-threshold: 0.05
 
   limits:
     max-records-sync: 1000       # Máximo de registros para procesamiento síncrono
