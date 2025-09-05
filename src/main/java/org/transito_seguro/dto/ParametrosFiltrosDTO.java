@@ -14,6 +14,7 @@ import java.util.Map;
 @NoArgsConstructor
 public class ParametrosFiltrosDTO {
 
+    private String tipoDocumento;
     private Integer limite,pagina;
     private Date fechaInicio, fechaFin,fechaEspecifica;
     private List<String> provincias, municipios,lugares,partido,

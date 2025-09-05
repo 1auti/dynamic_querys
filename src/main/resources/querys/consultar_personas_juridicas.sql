@@ -26,24 +26,26 @@ JOIN
     dominio_titulares dt ON d.dominio = dt.dominio
 WHERE
     dt.sexo IN ('J')
-    --Filtros de fecha
-    AND (:fechaEspecifica IS NULL OR DATE(d.fecha_alta) = DATE (:fechaEspecifica))
-    AND (:fechaInicio IS NULL OR DATE (d.fecha_alta) >= :fechaInicio)
-    AND (:fechaFin IS NULL OR DATE (d.fecha_alta) <= :fechaFin)
 
-    --Filtros de Email
-    AND(
-    :tieneEmail IS NULL OR
-    (:tieneEmail = true AND dt.email IS NOT NULL AND dt.email != '') OR
-    (:tieneEmail = false AND dt.email IS NULL AND dt.email = ''))
+    -- Filtros de fecha (CORREGIDOS)
+    AND (:fechaEspecifica::DATE IS NULL OR DATE(d.fecha_alta) = :fechaEspecifica::DATE)
+    AND (:fechaInicio::DATE IS NULL OR DATE(d.fecha_alta) >= :fechaInicio::DATE)
+    AND (:fechaFin::DATE IS NULL OR DATE(d.fecha_alta) <= :fechaFin::DATE)
 
-    --Filtro de Localidad
-    AND(:provincia IS NULL OR dt.provincia = ANY(CAST(:provincias AS TEXT[])))
-    AND(:partido IS NULL OR dt.partido = ANY(CAST(:partido AS TEXT[])))
+    -- Filtros de Email (CORREGIDO - lógica simplificada)
+    AND (
+        :tieneEmail::BOOLEAN IS NULL OR
+        (:tieneEmail::BOOLEAN = true AND dt.email IS NOT NULL AND dt.email != '') OR
+        (:tieneEmail::BOOLEAN = false AND (dt.email IS NULL OR dt.email = ''))
+    )
 
-    --Filtro Tipo de documento
-    AND (:tipoDocumento IS NULL OR dt.tipo_documento = :tipoDocumento)
+    -- Filtro de Localidad (CORREGIDOS)
+    AND (:provincias::TEXT[] IS NULL OR dt.provincia = ANY(:provincias::TEXT[]))
+    AND (:partido::TEXT[] IS NULL OR dt.partido = ANY(:partido::TEXT[]))
+
+    -- Filtro Tipo de documento (CORREGIDO)
+    AND (:tipoDocumento::VARCHAR IS NULL OR dt.tipo_documento = :tipoDocumento::VARCHAR)
 
 ORDER BY d.fecha_alta DESC, d.dominio ASC
-LIMIT COALESCE(:limite, 1000)
-OFFSET COALESCE(:offset, 0)
+LIMIT COALESCE(:limite::INTEGER, 1000)
+OFFSET COALESCE(:offset::INTEGER, 0)

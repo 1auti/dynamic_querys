@@ -34,6 +34,7 @@ public class BatchProcessor {
     /**
      * Procesa datos en lotes de manera eficiente
      */
+    // Método corregido en BatchProcessor.java
     public void procesarEnLotes(
             List<InfraccionesRepositoryImpl> repositories,
             ParametrosFiltrosDTO filtros,
@@ -60,33 +61,35 @@ public class BatchProcessor {
                     // Ejecutar consulta para este lote
                     List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
 
-                    if (lote.isEmpty()) {
+                    if (lote == null || lote.isEmpty()) {
                         hayMasDatos = false;
                         break;
                     }
+
+                    int tamanoLoteActual = lote.size();
 
                     // Agregar información de provincia a cada registro
                     lote.forEach(registro -> registro.put("provincia_origen", provincia));
 
                     log.debug("Procesando lote: provincia={}, offset={}, tamaño={}",
-                            provincia, offset, lote.size());
+                            provincia, offset, tamanoLoteActual);
 
-                    // NUEVO: Procesar el lote en chunks pequeños
+                    // Procesar el lote en chunks pequeños
                     procesarLoteEnChunks(lote, procesadorLote);
 
-                    totalProcesados += lote.size();
+                    totalProcesados += tamanoLoteActual;
                     offset += batchSize;
 
-                    // NUEVO: Liberar explícitamente la referencia del lote
-                    lote.clear();
-                    lote = null;
-
-                    // Verificar si obtuvimos menos registros de los esperados
-                    if (lote.size() < batchSize) {
+                    // CORREGIDO: Verificar tamaño ANTES de liberar memoria
+                    if (tamanoLoteActual < batchSize) {
                         hayMasDatos = false;
                     }
 
-                    // MEJORADO: Pausa inteligente sin GC forzado
+                    // Liberar explícitamente la referencia del lote DESPUÉS de usarlo
+                    lote.clear();
+                    lote = null;
+
+                    // Pausa inteligente sin GC forzado
                     if (offset % (batchSize * 5) == 0) {
                         pausaInteligente();
                     }

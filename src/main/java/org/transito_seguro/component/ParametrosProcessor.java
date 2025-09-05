@@ -6,6 +6,7 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.stereotype.Component;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 
+import java.sql.Types;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,7 +35,7 @@ public class ParametrosProcessor {
         MapSqlParameterSource parametros = new MapSqlParameterSource();
         Map<String, Object> metadata = new HashMap<>();
 
-        // Mapear TODOS los parámetros posibles
+        // Mapear TODOS los parámetros posibles con tipos específicos
         mapearParametroFechas(filtros, parametros);
         mapearParametrosUbicacion(filtros, parametros);
         mapearParametrosEquipos(filtros, parametros);
@@ -51,84 +52,128 @@ public class ParametrosProcessor {
     // =================== MAPEO DE FECHAS ===================
 
     private void mapearParametroFechas(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        // Fechas principales
-        params.addValue("fechaInicio", filtros.getFechaInicio());
-        params.addValue("fechaFin", filtros.getFechaFin());
-        params.addValue("fechaEspecifica", filtros.getFechaEspecifica());
-
+        // Fechas principales con tipos específicos
+        params.addValue("fechaInicio", filtros.getFechaInicio(), Types.DATE);
+        params.addValue("fechaFin", filtros.getFechaFin(), Types.DATE);
+        params.addValue("fechaEspecifica", filtros.getFechaEspecifica(), Types.DATE);
     }
 
     // =================== MAPEO DE UBICACIÓN ===================
 
     private void mapearParametrosUbicacion(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        // Ubicación geográfica
-        params.addValue("provincias", convertirLista(filtros.getProvincias(), String.class));
-        params.addValue("municipios", convertirLista(filtros.getMunicipios(), String.class));
-        params.addValue("concesiones", convertirLista(filtros.getConcesiones(), Integer.class));
-        params.addValue("lugares", convertirLista(filtros.getLugares(), String.class));
-        params.addValue("partido", convertirLista(filtros.getPartido(), String.class));
+        // Ubicación geográfica con tipos específicos
+        params.addValue("provincias", convertirListaAArray(filtros.getProvincias()), Types.ARRAY);
+        params.addValue("municipios", convertirListaAArray(filtros.getMunicipios()), Types.ARRAY);
+        params.addValue("lugares", convertirListaAArray(filtros.getLugares()), Types.ARRAY);
+        params.addValue("partido", convertirListaAArray(filtros.getPartido()), Types.ARRAY);
+
+        // Arrays de enteros
+        params.addValue("concesiones", convertirListaEnterosAArray(filtros.getConcesiones()), Types.ARRAY);
     }
 
     // =================== MAPEO DE EQUIPOS ===================
 
     private void mapearParametrosEquipos(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
         // Tipos de dispositivos
-        params.addValue("tiposDispositivos", convertirLista(filtros.getTiposDispositivos(), Integer.class));
+        params.addValue("tiposDispositivos", convertirListaEnterosAArray(filtros.getTiposDispositivos()), Types.ARRAY);
 
         // Patrones para búsqueda con LIKE
-        params.addValue("patronesEquipos", convertirLista(filtros.getPatronesEquipos(), String.class));
-        params.addValue("tipoEquipo", convertirLista(filtros.getPatronesEquipos(), String.class)); // Alias
+        params.addValue("patronesEquipos", convertirListaAArray(filtros.getPatronesEquipos()), Types.ARRAY);
+        params.addValue("tipoEquipo", convertirListaAArray(filtros.getPatronesEquipos()), Types.ARRAY); // Alias
 
         // Series exactas de equipos
-        params.addValue("seriesEquiposExactas", convertirLista(filtros.getSeriesEquiposExactas(), String.class));
+        params.addValue("seriesEquiposExactas", convertirListaAArray(filtros.getSeriesEquiposExactas()), Types.ARRAY);
 
         // Filtros booleanos para tipos específicos de equipos
-        params.addValue("filtrarPorTipoEquipo", filtros.getFiltrarPorTipoEquipo());
-        params.addValue("incluirSE", filtros.getIncluirSE());
-        params.addValue("incluirVLR", filtros.getIncluirVLR());
+        params.addValue("filtrarPorTipoEquipo", filtros.getFiltrarPorTipoEquipo(), Types.BOOLEAN);
+        params.addValue("incluirSE", filtros.getIncluirSE(), Types.BOOLEAN);
+        params.addValue("incluirVLR", filtros.getIncluirVLR(), Types.BOOLEAN);
     }
 
     // =================== MAPEO DE INFRACCIONES ===================
 
     private void mapearParametrosInfracciones(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
         // Tipos y estados
-        params.addValue("tiposInfracciones", convertirLista(filtros.getTiposInfracciones(), Integer.class));
-        params.addValue("estadosInfracciones", convertirLista(filtros.getEstadosInfracciones(), Integer.class));
+        params.addValue("tiposInfracciones", convertirListaEnterosAArray(filtros.getTiposInfracciones()), Types.ARRAY);
+        params.addValue("estadosInfracciones", convertirListaEnterosAArray(filtros.getEstadosInfracciones()), Types.ARRAY);
 
         // Exportación SACIT
-        params.addValue("exportadoSacit", filtros.getExportadoSacit());
+        params.addValue("exportadoSacit", filtros.getExportadoSacit(), Types.BOOLEAN);
     }
 
     // =================== MAPEO DE DOMINIOS Y VEHÍCULOS ===================
 
     private void mapearParametrosDominios(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        params.addValue("tiposVehiculos", convertirLista(filtros.getTipoVehiculo(), String.class));
-        params.addValue("tieneEmail", filtros.getTieneEmail());
+        params.addValue("tiposVehiculos", convertirListaAArray(filtros.getTipoVehiculo()), Types.ARRAY);
+        params.addValue("tieneEmail", filtros.getTieneEmail(), Types.BOOLEAN);
+
+        // Parámetro específico para la query de personas jurídicas
+        params.addValue("tipoDocumento", null, Types.VARCHAR);
     }
 
     // =================== MAPEO DE PARÁMETROS ADICIONALES ===================
 
     private void mapearParametrosAdicionales(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
         // Parámetros que pueden ser nulos pero son necesarios para algunas queries
-        params.addValue("provincia", null); // Se setea dinámicamente por el repositorio
+        params.addValue("provincia", null, Types.VARCHAR); // Se setea dinámicamente por el repositorio
+        params.addValue("fechaReporte", null, Types.DATE);  // Para reportes específicos
     }
 
     // =================== MAPEO DE PAGINACIÓN ===================
 
     private void mapearPaginacion(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        params.addValue("limite", filtros.getLimiteMaximo());
-        params.addValue("offset", filtros.calcularOffset());
+        params.addValue("limite", filtros.getLimiteMaximo(), Types.INTEGER);
+        params.addValue("offset", filtros.calcularOffset(), Types.INTEGER);
     }
 
     // =================== MÉTODOS UTILITARIOS ===================
 
     /**
-     * Convierte una lista a un arreglo para usar en PostgreSQL ANY()
+     * Convierte una lista de strings a un arreglo compatible con PostgreSQL
      */
-    @SuppressWarnings("unchecked")
-    private static <T> T[] convertirLista(List<T> lista, Class<T> clazz) {
-        return (lista != null && !lista.isEmpty())
-                ? lista.toArray((T[]) java.lang.reflect.Array.newInstance(clazz, lista.size()))
-                : null;
+    private String[] convertirListaAArray(List<String> lista) {
+        if (lista == null || lista.isEmpty()) {
+            return null;
+        }
+        return lista.toArray(new String[0]);
+    }
+
+    /**
+     * Convierte una lista de enteros a un arreglo compatible con PostgreSQL
+     */
+    private Integer[] convertirListaEnterosAArray(List<Integer> lista) {
+        if (lista == null || lista.isEmpty()) {
+            return null;
+        }
+        return lista.toArray(new Integer[0]);
+    }
+
+    /**
+     * Método utilitario para debugging de parámetros
+     */
+    public void logParametros(MapSqlParameterSource params) {
+        if (log.isDebugEnabled()) {
+            for (String paramName : params.getParameterNames()) {
+                Object value = params.getValue(paramName);
+                log.debug("Parámetro: {} = {} ({})",
+                        paramName,
+                        value,
+                        value != null ? value.getClass().getSimpleName() : "null"
+                );
+            }
+        }
+    }
+
+    /**
+     * Valida que todos los parámetros requeridos estén presentes
+     */
+    public boolean validarParametrosRequeridos(MapSqlParameterSource params, String... nombresRequeridos) {
+        for (String nombre : nombresRequeridos) {
+            if (!params.hasValue(nombre)) {
+                log.warn("Parámetro requerido faltante: {}", nombre);
+                return false;
+            }
+        }
+        return true;
     }
 }
