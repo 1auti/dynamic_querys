@@ -43,6 +43,9 @@ public class InfraccionesService {
     private BatchProcessor batchProcessor;
 
     @Autowired
+    private ConsultaValidator consultaValidator;
+
+    @Autowired
     private StreamingFormatoConverter streamingConverter;
 
     @Value("${app.limits.max-records-sync:1000}")
@@ -347,7 +350,11 @@ public class InfraccionesService {
                     .map(repo -> (InfraccionesRepositoryImpl) repo)
                     .collect(Collectors.toList());
         } else if (filtros.getBaseDatos() != null && !filtros.getBaseDatos().isEmpty()) {
-            return filtros.getBaseDatos().stream()
+
+            // NUEVO: Normalizar provincias antes de procesarlas
+            List<String> provinciasNormalizadas = validator.normalizarProvincias(filtros.getBaseDatos());
+
+            return provinciasNormalizadas.stream()
                     .filter(repositoryFactory::isProvinciaSupported)
                     .map(provincia -> (InfraccionesRepositoryImpl) repositoryFactory.getRepository(provincia))
                     .collect(Collectors.toList());
@@ -358,6 +365,7 @@ public class InfraccionesService {
                     .collect(Collectors.toList());
         }
     }
+
 
     /**
      * Método específico para procesar consultas grandes de forma asíncrona

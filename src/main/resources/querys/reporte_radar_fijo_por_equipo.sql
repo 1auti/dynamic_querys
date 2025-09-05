@@ -11,7 +11,7 @@ SELECT
 FROM (
     SELECT
         to_char(elh.fecha_alta,'DD/MM/YYYY') as fecha,
-        c.provincia as contexto
+        c.provincia as contexto,
         c.descripcion as municipio,
         pc.serie_equipo,
         pc.lugar,

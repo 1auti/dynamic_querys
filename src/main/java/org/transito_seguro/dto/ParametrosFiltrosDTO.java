@@ -16,9 +16,11 @@ public class ParametrosFiltrosDTO {
 
     private Integer limite,pagina;
     private Date fechaInicio, fechaFin,fechaEspecifica;
-    private List<String> provincias, municipios,baseDatos,patronesEquipos,tipoVehiculo;
+    private List<String> provincias, municipios,lugares,partido,
+            baseDatos,patronesEquipos,tipoVehiculo,filtrarPorTipoEquipo,seriesEquiposExactas;
     private List<Integer> concesiones, tiposInfracciones, estadosInfracciones,tiposDispositivos;
-    private Boolean exportadoSacit, tieneEmail,usarTodasLasBDS;
+    private Boolean exportadoSacit, tieneEmail,usarTodasLasBDS,
+    incluirVLR,incluirSE,incluirTS;
 
     // Para casos edge
     private Map<String, Object> filtrosAdicionales;

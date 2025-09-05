@@ -40,6 +40,7 @@ public class ParametrosProcessor {
         mapearParametrosEquipos(filtros, parametros);
         mapearParametrosInfracciones(filtros, parametros);
         mapearParametrosDominios(filtros, parametros);
+        mapearParametrosAdicionales(filtros, parametros);
         mapearPaginacion(filtros, parametros);
 
         log.debug("Query procesada. Parámetros mapeados: {}", parametros.getParameterNames().length);
@@ -54,34 +55,44 @@ public class ParametrosProcessor {
         params.addValue("fechaInicio", filtros.getFechaInicio());
         params.addValue("fechaFin", filtros.getFechaFin());
         params.addValue("fechaEspecifica", filtros.getFechaEspecifica());
+
     }
 
     // =================== MAPEO DE UBICACIÓN ===================
 
     private void mapearParametrosUbicacion(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
         // Ubicación geográfica
-        params.addValue("provincias", convertirLista(filtros.getProvincias(),String.class));
-        params.addValue("municipios", convertirLista(filtros.getMunicipios(),String.class));
+        params.addValue("provincias", convertirLista(filtros.getProvincias(), String.class));
+        params.addValue("municipios", convertirLista(filtros.getMunicipios(), String.class));
+        params.addValue("concesiones", convertirLista(filtros.getConcesiones(), Integer.class));
+        params.addValue("lugares", convertirLista(filtros.getLugares(), String.class));
+        params.addValue("partido", convertirLista(filtros.getPartido(), String.class));
     }
 
     // =================== MAPEO DE EQUIPOS ===================
 
     private void mapearParametrosEquipos(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-
         // Tipos de dispositivos
-        params.addValue("tiposDispositivos", convertirLista(filtros.getTiposDispositivos(),Integer.class));
+        params.addValue("tiposDispositivos", convertirLista(filtros.getTiposDispositivos(), Integer.class));
 
         // Patrones para búsqueda con LIKE
-        params.addValue("patronesEquipos", convertirLista(filtros.getPatronesEquipos(),String.class));
+        params.addValue("patronesEquipos", convertirLista(filtros.getPatronesEquipos(), String.class));
+        params.addValue("tipoEquipo", convertirLista(filtros.getPatronesEquipos(), String.class)); // Alias
 
+        // Series exactas de equipos
+        params.addValue("seriesEquiposExactas", convertirLista(filtros.getSeriesEquiposExactas(), String.class));
 
+        // Filtros booleanos para tipos específicos de equipos
+        params.addValue("filtrarPorTipoEquipo", filtros.getFiltrarPorTipoEquipo());
+        params.addValue("incluirSE", filtros.getIncluirSE());
+        params.addValue("incluirVLR", filtros.getIncluirVLR());
     }
 
     // =================== MAPEO DE INFRACCIONES ===================
 
     private void mapearParametrosInfracciones(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
         // Tipos y estados
-        params.addValue("tiposInfracciones", convertirLista(filtros.getTiposInfracciones(),Integer.class));
+        params.addValue("tiposInfracciones", convertirLista(filtros.getTiposInfracciones(), Integer.class));
         params.addValue("estadosInfracciones", convertirLista(filtros.getEstadosInfracciones(), Integer.class));
 
         // Exportación SACIT
@@ -91,14 +102,16 @@ public class ParametrosProcessor {
     // =================== MAPEO DE DOMINIOS Y VEHÍCULOS ===================
 
     private void mapearParametrosDominios(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-
-        params.addValue("tiposVehiculos", convertirLista(filtros.getTipoVehiculo(),String.class));
-
-        // Filtros de email
+        params.addValue("tiposVehiculos", convertirLista(filtros.getTipoVehiculo(), String.class));
         params.addValue("tieneEmail", filtros.getTieneEmail());
-
     }
 
+    // =================== MAPEO DE PARÁMETROS ADICIONALES ===================
+
+    private void mapearParametrosAdicionales(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
+        // Parámetros que pueden ser nulos pero son necesarios para algunas queries
+        params.addValue("provincia", null); // Se setea dinámicamente por el repositorio
+    }
 
     // =================== MAPEO DE PAGINACIÓN ===================
 
@@ -118,5 +131,4 @@ public class ParametrosProcessor {
                 ? lista.toArray((T[]) java.lang.reflect.Array.newInstance(clazz, lista.size()))
                 : null;
     }
-
 }
