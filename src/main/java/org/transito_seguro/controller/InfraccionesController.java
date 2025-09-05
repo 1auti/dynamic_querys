@@ -22,49 +22,53 @@ public class InfraccionesController {
     @Autowired
     private InfraccionesService infraccionesService;
 
+    // =============== ENDPOINTS GENÉRICOS ===============
+
     /**
      * Endpoint genérico para consultar infracciones con filtros dinámicos
      */
     @PostMapping("/consultar")
     public ResponseEntity<?> consultarInfracciones(@Valid @RequestBody ConsultaQueryDTO consulta) {
+        return ejecutarConsulta("personas-juridicas", consulta);
+    }
+
+    /**
+     * Endpoint genérico que maneja todas las consultas específicas
+     */
+    @PostMapping("/{tipoConsulta}")
+    public ResponseEntity<?> ejecutarConsultaEspecifica(
+            @PathVariable String tipoConsulta,
+            @Valid @RequestBody ConsultaQueryDTO consulta) {
+        return ejecutarConsulta(tipoConsulta, consulta);
+    }
+
+    /**
+     * Endpoint genérico para descarga de archivos
+     */
+    @PostMapping("/{tipoConsulta}/descargar")
+    public ResponseEntity<byte[]> descargarArchivo(
+            @PathVariable String tipoConsulta,
+            @Valid @RequestBody ConsultaQueryDTO consulta) {
         try {
-            log.info("Recibida consulta de infracciones: {}", consulta);
-            Object resultado = infraccionesService.consultarInfracciones(consulta);
-            return ResponseEntity.ok(resultado);
-        } catch (ValidationException e) {
-            log.error("Error de validación en consulta: {}", e.getMessage());
-            HashMap<String, Object> errorResponse = new HashMap<>();
-            errorResponse.put("error", "Validación fallida");
-            errorResponse.put("detalle", e.getMessage());
-            return ResponseEntity.badRequest().body(errorResponse);
+            log.info("Descargando archivo para tipo: {}", tipoConsulta);
+            return infraccionesService.descargarConsultaPorTipo(tipoConsulta, consulta);
+        } catch (IllegalArgumentException e) {
+            log.error("Tipo de consulta no válido: {}", e.getMessage());
+            return ResponseEntity.badRequest().build();
         } catch (Exception e) {
-            log.error("Error interno en consulta de infracciones", e);
-            HashMap<String, Object> errorResponse = new HashMap<>();
-            errorResponse.put("error", "Error interno del servidor");
-            errorResponse.put("detalle", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+            log.error("Error descargando archivo para tipo {}: {}", tipoConsulta, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
+
+    // =============== ENDPOINTS ESPECÍFICOS (MANTENER COMPATIBILIDAD) ===============
 
     /**
      * Endpoint específico para consultar personas jurídicas
      */
     @PostMapping("/personas-juridicas")
     public ResponseEntity<?> consultarPersonasJuridicas(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        try {
-            Object resultado = infraccionesService.consultarPersonasJuridicas(consulta);
-            return ResponseEntity.ok(resultado);
-        } catch (ValidationException e) {
-            HashMap<String, Object> errorResponse = new HashMap<>();
-            errorResponse.put("error", "Validación fallida");
-            errorResponse.put("detalle", e.getMessage());
-            return ResponseEntity.badRequest().body(errorResponse);
-        } catch (Exception e) {
-            log.error("Error en consulta personas jurídicas", e);
-            HashMap<String, Object> errorResponse = new HashMap<>();
-            errorResponse.put("error", "Error interno del servidor");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-        }
+        return ejecutarConsulta("personas-juridicas", consulta);
     }
 
     /**
@@ -72,15 +76,7 @@ public class InfraccionesController {
      */
     @PostMapping("/reporte-general")
     public ResponseEntity<?> reporteGeneral(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        try {
-            Object resultado = infraccionesService.consultarReporteGeneral(consulta);
-            return ResponseEntity.ok(resultado);
-        } catch (Exception e) {
-            log.error("Error en reporte general", e);
-            HashMap<String, Object> errorResponse = new HashMap<>();
-            errorResponse.put("error", "Error generando reporte");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-        }
+        return ejecutarConsulta("reporte-general", consulta);
     }
 
     /**
@@ -88,15 +84,7 @@ public class InfraccionesController {
      */
     @PostMapping("/reporte-por-equipos")
     public ResponseEntity<?> reportePorEquipos(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        try {
-            Object resultado = infraccionesService.consultarInfraccionesPorEquipos(consulta);
-            return ResponseEntity.ok(resultado);
-        } catch (Exception e) {
-            log.error("Error en reporte por equipos", e);
-            HashMap<String, Object> errorResponse = new HashMap<>();
-            errorResponse.put("error", "Error generando reporte por equipos");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-        }
+        return ejecutarConsulta("reporte-por-equipos", consulta);
     }
 
     /**
@@ -104,15 +92,7 @@ public class InfraccionesController {
      */
     @PostMapping("/reporte-radar-fijo")
     public ResponseEntity<?> reporteRadarFijo(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        try {
-            Object resultado = infraccionesService.consultarRadarFijoPorEquipo(consulta);
-            return ResponseEntity.ok(resultado);
-        } catch (Exception e) {
-            log.error("Error en reporte radar fijo", e);
-            HashMap<String, Object> errorResponse = new HashMap<>();
-            errorResponse.put("error", "Error generando reporte radar fijo");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-        }
+        return ejecutarConsulta("reporte-radar-fijo", consulta);
     }
 
     /**
@@ -120,15 +100,7 @@ public class InfraccionesController {
      */
     @PostMapping("/reporte-semaforo")
     public ResponseEntity<?> reporteSemaforo(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        try {
-            Object resultado = infraccionesService.consultarSemaforoPorEquipo(consulta);
-            return ResponseEntity.ok(resultado);
-        } catch (Exception e) {
-            log.error("Error en reporte semáforo", e);
-            HashMap<String, Object> errorResponse = new HashMap<>();
-            errorResponse.put("error", "Error generando reporte semáforo");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-        }
+        return ejecutarConsulta("reporte-semaforo", consulta);
     }
 
     /**
@@ -136,19 +108,66 @@ public class InfraccionesController {
      */
     @PostMapping("/vehiculos-por-municipio")
     public ResponseEntity<?> vehiculosPorMunicipio(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        try {
-            Object resultado = infraccionesService.consultarVehiculosPorMunicipio(consulta);
-            return ResponseEntity.ok(resultado);
-        } catch (Exception e) {
-            log.error("Error en consulta vehículos por municipio", e);
-            HashMap<String, Object> errorResponse = new HashMap<>();
-            errorResponse.put("error", "Error consultando vehículos");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-        }
+        return ejecutarConsulta("vehiculos-por-municipio", consulta);
+    }
+
+    /**
+     * Endpoint para consultar infracciones sin email por municipio
+     */
+    @PostMapping("/reporte-sin-email")
+    public ResponseEntity<?> reporteSinEmail(@Valid @RequestBody ConsultaQueryDTO consulta) {
+        return ejecutarConsulta("reporte-sin-email", consulta);
+    }
+
+    /**
+     * Endpoint para verificar imágenes de radar
+     */
+    @PostMapping("/verificar-imagenes-radar")
+    public ResponseEntity<?> verificarImagenesRadar(@Valid @RequestBody ConsultaQueryDTO consulta) {
+        return ejecutarConsulta("verificar-imagenes-radar", consulta);
+    }
+
+    /**
+     * Endpoint para reporte detallado de infracciones
+     */
+    @PostMapping("/reporte-detallado")
+    public ResponseEntity<?> reporteDetallado(@Valid @RequestBody ConsultaQueryDTO consulta) {
+        return ejecutarConsulta("reporte-detallado", consulta);
     }
 
 
 
+    // =============== MÉTODO PRIVADO CENTRALIZADO ===============
 
+    /**
+     * Método privado que centraliza el manejo de errores para todas las consultas
+     */
+    private ResponseEntity<?> ejecutarConsulta(String tipoConsulta, ConsultaQueryDTO consulta) {
+        try {
+            log.info("Ejecutando consulta tipo: {}", tipoConsulta);
+            Object resultado = infraccionesService.ejecutarConsultaPorTipo(tipoConsulta, consulta);
+            return ResponseEntity.ok(resultado);
+        } catch (ValidationException e) {
+            log.error("Error de validación en consulta {}: {}", tipoConsulta, e.getMessage());
+            return crearRespuestaError("Validación fallida", e.getMessage(), HttpStatus.BAD_REQUEST);
+        } catch (IllegalArgumentException e) {
+            log.error("Tipo de consulta no válido: {}", e.getMessage());
+            return crearRespuestaError("Tipo de consulta no soportado", e.getMessage(), HttpStatus.BAD_REQUEST);
+        } catch (Exception e) {
+            log.error("Error interno en consulta {}: {}", tipoConsulta, e.getMessage(), e);
+            return crearRespuestaError("Error interno del servidor", e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
 
+    /**
+     * Método utilitario para crear respuestas de error consistentes
+     */
+    private ResponseEntity<?> crearRespuestaError(String error, String detalle, HttpStatus status) {
+        Map<String, Object> errorResponse = new HashMap<>();
+        errorResponse.put("error", error);
+        errorResponse.put("detalle", detalle);
+        errorResponse.put("timestamp", new Date());
+        errorResponse.put("status", status.value());
+        return ResponseEntity.status(status).body(errorResponse);
+    }
 }

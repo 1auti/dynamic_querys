@@ -132,21 +132,28 @@ public class StreamingFormatoConverter {
 
     private void procesarLoteCSV(StreamingContext context, List<Map<String, Object>> lote) throws IOException {
         if (!context.csvHeadersEscritos && !lote.isEmpty()) {
-            // Escribir headers solo una vez
             Set<String> headers = lote.get(0).keySet();
             context.csvWriter.writeNext(headers.toArray(new String[0]));
             context.csvHeadersEscritos = true;
         }
 
-        // Escribir datos
-        for (Map<String, Object> registro : lote) {
-            String[] valores = registro.values().stream()
-                    .map(v -> v != null ? String.valueOf(v) : "")
-                    .toArray(String[]::new);
-            context.csvWriter.writeNext(valores);
-        }
+        // Procesar en sub-chunks para liberar memoria más frecuentemente
+        int subChunkSize = Math.min(50, lote.size()); // Sub-chunks de 50
 
-        context.csvWriter.flush();
+        for (int i = 0; i < lote.size(); i += subChunkSize) {
+            int endIndex = Math.min(i + subChunkSize, lote.size());
+
+            for (int j = i; j < endIndex; j++) {
+                Map<String, Object> registro = lote.get(j);
+                String[] valores = registro.values().stream()
+                        .map(v -> v != null ? String.valueOf(v) : "")
+                        .toArray(String[]::new);
+                context.csvWriter.writeNext(valores);
+            }
+
+            // Flush cada sub-chunk
+            context.csvWriter.flush();
+        }
     }
 
     private void finalizarCSVStreaming(StreamingContext context) throws IOException {
@@ -165,17 +172,26 @@ public class StreamingFormatoConverter {
     }
 
     private void procesarLoteJSON(StreamingContext context, List<Map<String, Object>> lote) throws IOException {
-        for (Map<String, Object> registro : lote) {
-            if (!context.jsonPrimerRegistro) {
-                context.jsonWriter.println(",");
+        int subChunkSize = Math.min(25, lote.size()); // Sub-chunks más pequeños para JSON
+
+        for (int i = 0; i < lote.size(); i += subChunkSize) {
+            int endIndex = Math.min(i + subChunkSize, lote.size());
+
+            for (int j = i; j < endIndex; j++) {
+                Map<String, Object> registro = lote.get(j);
+
+                if (!context.jsonPrimerRegistro) {
+                    context.jsonWriter.println(",");
+                }
+
+                String registroJson = objectMapper.writeValueAsString(registro);
+                context.jsonWriter.print("    " + registroJson);
+                context.jsonPrimerRegistro = false;
             }
 
-            String registroJson = objectMapper.writeValueAsString(registro);
-            context.jsonWriter.print("    " + registroJson);
-
-            context.jsonPrimerRegistro = false;
+            // Flush cada sub-chunk
+            context.jsonWriter.flush();
         }
-        context.jsonWriter.flush();
     }
 
     private void finalizarJSONStreaming(StreamingContext context) throws IOException {
@@ -216,23 +232,36 @@ public class StreamingFormatoConverter {
             context.currentRowIndex = 1;
         }
 
-        // Escribir datos
+        // Procesar en sub-chunks pequeños
         String[] headers = lote.get(0).keySet().toArray(new String[0]);
-        for (Map<String, Object> registro : lote) {
-            Row row = context.sheet.createRow(context.currentRowIndex++);
+        int subChunkSize = Math.min(100, lote.size()); // Sub-chunks de 100 para Excel
 
-            for (int i = 0; i < headers.length; i++) {
-                Cell cell = row.createCell(i);
-                Object valor = registro.get(headers[i]);
-                if (valor != null) {
-                    cell.setCellValue(String.valueOf(valor));
+        for (int i = 0; i < lote.size(); i += subChunkSize) {
+            int endIndex = Math.min(i + subChunkSize, lote.size());
+
+            for (int j = i; j < endIndex; j++) {
+                Map<String, Object> registro = lote.get(j);
+                Row row = context.sheet.createRow(context.currentRowIndex++);
+
+                for (int k = 0; k < headers.length; k++) {
+                    Cell cell = row.createCell(k);
+                    Object valor = registro.get(headers[k]);
+                    if (valor != null) {
+                        cell.setCellValue(String.valueOf(valor));
+                    }
                 }
+            }
+
+            // NUEVO: Limpiar referencias periódicamente para Excel
+            if ((i / subChunkSize) % 5 == 0) {
+                // Excel mantiene todo en memoria, solo podemos sugerir GC
+                System.gc();
             }
         }
 
-        // Auto-size columnas periódicamente (cada 1000 registros)
-        if (context.currentRowIndex % 1000 == 0) {
-            for (int i = 0; i < headers.length && i < 20; i++) { // Limitar a 20 columnas
+        // Auto-size cada 500 registros (menos frecuente para performance)
+        if (context.currentRowIndex % 500 == 0) {
+            for (int i = 0; i < headers.length && i < 15; i++) {
                 context.sheet.autoSizeColumn(i);
             }
         }

@@ -10,12 +10,17 @@ import org.springframework.stereotype.Service;
 import org.transito_seguro.component.*;
 import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
+import org.transito_seguro.enums.Consultas;
 import org.transito_seguro.factory.RepositoryFactory;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 
 import javax.annotation.PreDestroy;
 import javax.xml.bind.ValidationException;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.file.Files;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -43,9 +48,6 @@ public class InfraccionesService {
     private BatchProcessor batchProcessor;
 
     @Autowired
-    private ConsultaValidator consultaValidator;
-
-    @Autowired
     private StreamingFormatoConverter streamingConverter;
 
     @Value("${app.limits.max-records-sync:1000}")
@@ -62,6 +64,12 @@ public class InfraccionesService {
 
     private final Executor executor;
 
+    /**
+     * Mapeo centralizado de tipos de consulta a archivos SQL
+     */
+    private static final Map<String, String> QUERY_MAPPING = Consultas.getMapeoCompleto();
+
+
     // Constructor para inicializar el thread pool
     public InfraccionesService() {
         this.executor = Executors.newFixedThreadPool(threadPoolSize > 0 ? threadPoolSize : 10);
@@ -74,11 +82,37 @@ public class InfraccionesService {
         }
     }
 
+    // =============== MÉTODOS PÚBLICOS PRINCIPALES ===============
+
     /**
      * Método principal - decide entre procesamiento síncrono o por lotes
      */
     public Object consultarInfracciones(ConsultaQueryDTO consulta) throws ValidationException {
         return consultarInfracciones(consulta, "consultar_personas_juridicas.sql");
+    }
+
+    /**
+     * Método genérico que reemplaza todos los métodos específicos
+     */
+    public Object ejecutarConsultaPorTipo(String tipoConsulta, ConsultaQueryDTO consulta) throws ValidationException {
+        String nombreQuery = QUERY_MAPPING.get(tipoConsulta);
+        if (nombreQuery == null) {
+            throw new IllegalArgumentException("Tipo de consulta no soportado: " + tipoConsulta +
+                    ". Tipos válidos: " + QUERY_MAPPING.keySet());
+        }
+        return consultarInfracciones(consulta, nombreQuery);
+    }
+
+    /**
+     * Método genérico para descarga de archivos
+     */
+    public ResponseEntity<byte[]> descargarConsultaPorTipo(String tipoConsulta, ConsultaQueryDTO consulta) throws ValidationException {
+        String nombreQuery = QUERY_MAPPING.get(tipoConsulta);
+        if (nombreQuery == null) {
+            throw new IllegalArgumentException("Tipo de consulta no soportado: " + tipoConsulta +
+                    ". Tipos válidos: " + QUERY_MAPPING.keySet());
+        }
+        return consultarInfraccionesComoArchivo(consulta, nombreQuery);
     }
 
     /**
@@ -97,7 +131,6 @@ public class InfraccionesService {
             log.warn("No se encontraron repositorios válidos para la consulta");
             return formatoConverter.convertir(Collections.emptyList(),
                     consulta.getFormato() != null ? consulta.getFormato() : "json");
-
         }
 
         // 3. Estimar tamaño de resultado
@@ -111,110 +144,6 @@ public class InfraccionesService {
         } else {
             log.info("Usando procesamiento por lotes (estimación: {} registros)", estimacionRegistros);
             return procesarEnLotes(repositories, consulta, nombreQuery);
-        }
-    }
-
-    /**
-     * Procesamiento síncrono tradicional (para consultas pequeñas)
-     */
-    private Object procesarSincrono(List<InfraccionesRepositoryImpl> repositories,
-                                    ConsultaQueryDTO consulta, String nombreQuery) throws ValidationException {
-
-        List<Map<String, Object>> resultadosCombinados = repositories.parallelStream()
-                .flatMap(repo -> {
-                    try {
-                        String provincia = repo.getProvincia();
-                        List<Map<String, Object>> resultado = repo.ejecutarQueryConFiltros(
-                                nombreQuery, consulta.getParametrosFiltros()
-                        );
-
-                        // Agregar provincia a cada registro
-                        resultado.forEach(registro -> registro.put("provincia_origen", provincia));
-                        return resultado.stream();
-
-                    } catch (Exception e) {
-                        log.error("Error en provincia {}: {}", repo.getProvincia(), e.getMessage());
-                        return java.util.stream.Stream.empty();
-                    }
-                })
-                .collect(Collectors.toList());
-
-        String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
-        return formatoConverter.convertir(resultadosCombinados, formato);
-    }
-
-    /**
-     * Procesamiento por lotes con streaming (para consultas grandes)
-     */
-    private Object procesarEnLotes(List<InfraccionesRepositoryImpl> repositories,
-                                   ConsultaQueryDTO consulta, String nombreQuery) throws ValidationException {
-
-        String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
-        StreamingFormatoConverter.StreamingContext context = null;
-
-        try {
-            // Crear stream de salida en memoria con límite configurable
-            StreamingFormatoConverter.LimitedByteArrayOutputStream outputStream =
-                    new StreamingFormatoConverter.LimitedByteArrayOutputStream(maxMemoryMB * 1024 * 1024);
-
-            // Inicializar streaming
-            context = streamingConverter.inicializarStreaming(formato, outputStream);
-
-            if (context == null) {
-                throw new RuntimeException("No se pudo inicializar el contexto de streaming");
-            }
-
-            final StreamingFormatoConverter.StreamingContext finalContext = context;
-
-            // Procesar en lotes con chunks
-            batchProcessor.procesarEnLotes(
-                    repositories,
-                    consulta.getParametrosFiltros(),
-                    nombreQuery,
-                    lote -> {
-                        try {
-                            if (lote != null && !lote.isEmpty()) {
-                                streamingConverter.procesarLoteStreaming(finalContext, lote);
-
-                                // Limpiar memoria periódicamente
-                                if (finalContext.getTotalRegistros() % 5000 == 0) {
-                                    batchProcessor.limpiarMemoria();
-                                }
-                            }
-                        } catch (Exception e) {
-                            log.error("Error procesando lote en streaming: {}", e.getMessage(), e);
-                            throw new RuntimeException("Error en procesamiento por lotes", e);
-                        }
-                    }
-            );
-
-            // Finalizar streaming
-            streamingConverter.finalizarStreaming(context);
-
-            // Retornar según formato
-            switch (formato.toLowerCase()) {
-                case "json":
-                case "csv":
-                    return outputStream.toString("UTF-8");
-                case "excel":
-                    return outputStream.toByteArray();
-                default:
-                    throw new IllegalArgumentException("Formato no soportado: " + formato);
-            }
-
-        } catch (Exception e) {
-            log.error("Error en procesamiento por lotes: {}", e.getMessage(), e);
-
-            // Intentar cerrar el contexto si existe
-            if (context != null) {
-                try {
-                    streamingConverter.finalizarStreaming(context);
-                } catch (Exception cleanupException) {
-                    log.warn("Error cerrando contexto de streaming: {}", cleanupException.getMessage());
-                }
-            }
-
-            throw new RuntimeException("Error procesando consulta por lotes", e);
         }
     }
 
@@ -289,7 +218,6 @@ public class InfraccionesService {
         } catch (Exception e) {
             log.error("Error generando archivo: {}", e.getMessage(), e);
 
-            // Limpiar contexto si existe
             if (context != null) {
                 try {
                     streamingConverter.finalizarStreaming(context);
@@ -302,13 +230,105 @@ public class InfraccionesService {
         }
     }
 
+    // =============== MÉTODOS PRIVADOS DE PROCESAMIENTO ===============
+
     /**
-     * Estima el tamaño del resultado antes de ejecutar la consulta completa
-     * CORREGIDO: Usa el nombreQuery recibido como parámetro
+     * Procesamiento síncrono tradicional (para consultas pequeñas)
      */
+    private Object procesarSincrono(List<InfraccionesRepositoryImpl> repositories,
+                                    ConsultaQueryDTO consulta, String nombreQuery) throws ValidationException {
+
+        List<Map<String, Object>> resultadosCombinados = repositories.parallelStream()
+                .flatMap(repo -> {
+                    try {
+                        String provincia = repo.getProvincia();
+                        List<Map<String, Object>> resultado = repo.ejecutarQueryConFiltros(
+                                nombreQuery, consulta.getParametrosFiltros()
+                        );
+
+                        // Agregar provincia a cada registro
+                        resultado.forEach(registro -> registro.put("provincia_origen", provincia));
+                        return resultado.stream();
+
+                    } catch (Exception e) {
+                        log.error("Error en provincia {}: {}", repo.getProvincia(), e.getMessage());
+                        return java.util.stream.Stream.empty();
+                    }
+                })
+                .collect(Collectors.toList());
+
+        String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
+        return formatoConverter.convertir(resultadosCombinados, formato);
+    }
+
+    /**
+     * Procesamiento por lotes con streaming (para consultas grandes)
+     */
+    private Object procesarEnLotes(List<InfraccionesRepositoryImpl> repositories,
+                                   ConsultaQueryDTO consulta, String nombreQuery) throws ValidationException {
+
+        String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
+        StreamingFormatoConverter.StreamingContext context = null;
+
+        try {
+            File tempFile = File.createTempFile("infracciones_", "." + formato);
+            FileOutputStream fileOutputStream = new FileOutputStream(tempFile);
+            BufferedOutputStream outputStream = new BufferedOutputStream(fileOutputStream, 8192);
+
+            context = streamingConverter.inicializarStreaming(formato, outputStream);
+
+            if (context == null) {
+                throw new RuntimeException("No se pudo inicializar el contexto de streaming");
+            }
+
+            final StreamingFormatoConverter.StreamingContext finalContext = context;
+
+            batchProcessor.procesarEnLotes(
+                    repositories,
+                    consulta.getParametrosFiltros(),
+                    nombreQuery,
+                    lote -> {
+                        try {
+                            if (lote != null && !lote.isEmpty()) {
+                                streamingConverter.procesarLoteStreaming(finalContext, lote);
+
+                                if (finalContext.getTotalRegistros() % 5000 == 0) {
+                                    batchProcessor.limpiarMemoria();
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.error("Error procesando lote en streaming: {}", e.getMessage(), e);
+                            throw new RuntimeException("Error en procesamiento por lotes", e);
+                        }
+                    }
+            );
+
+            streamingConverter.finalizarStreaming(context);
+
+            outputStream.close();
+            byte[] fileData = Files.readAllBytes(tempFile.toPath());
+            tempFile.delete(); // Limpiar archivo temporal
+            return new String(fileData, "UTF-8");
+
+        } catch (Exception e) {
+            log.error("Error en procesamiento por lotes: {}", e.getMessage(), e);
+
+            if (context != null) {
+                try {
+                    streamingConverter.finalizarStreaming(context);
+                } catch (Exception cleanupException) {
+                    log.warn("Error cerrando contexto de streaming: {}", cleanupException.getMessage());
+                }
+            }
+
+            throw new RuntimeException("Error procesando consulta por lotes", e);
+        }
+    }
+
+    // =============== MÉTODOS UTILITARIOS ===============
+
     private int estimarTamanoResultado(List<InfraccionesRepositoryImpl> repositories,
                                        ParametrosFiltrosDTO filtros, String nombreQuery) {
-        // Crear filtros de prueba con límite pequeño
         ParametrosFiltrosDTO filtrosPrueba = filtros.toBuilder()
                 .limite(10)
                 .pagina(0)
@@ -318,20 +338,17 @@ public class InfraccionesService {
 
         for (InfraccionesRepositoryImpl repo : repositories) {
             try {
-                // CORREGIDO: Usar nombreQuery en lugar de hardcodear
                 List<Map<String, Object>> muestra = repo.ejecutarQueryConFiltros(nombreQuery, filtrosPrueba);
 
-                // Si obtuvimos 10 registros, probablemente hay muchos más
                 if (muestra.size() >= 10) {
-                    totalEstimado += 1000; // Estimación conservadora
+                    totalEstimado += 1000;
                 } else if (muestra.size() > 0) {
-                    totalEstimado += muestra.size() * 10; // Multiplicar por factor de escala
+                    totalEstimado += muestra.size() * 10;
                 }
-                // Si muestra.size() == 0, no agregamos nada
 
             } catch (Exception e) {
                 log.warn("No se pudo estimar para provincia {}: {}", repo.getProvincia(), e.getMessage());
-                totalEstimado += 500; // Estimación por defecto
+                totalEstimado += 500;
             }
         }
 
@@ -350,8 +367,6 @@ public class InfraccionesService {
                     .map(repo -> (InfraccionesRepositoryImpl) repo)
                     .collect(Collectors.toList());
         } else if (filtros.getBaseDatos() != null && !filtros.getBaseDatos().isEmpty()) {
-
-            // NUEVO: Normalizar provincias antes de procesarlas
             List<String> provinciasNormalizadas = validator.normalizarProvincias(filtros.getBaseDatos());
 
             return provinciasNormalizadas.stream()
@@ -359,7 +374,6 @@ public class InfraccionesService {
                     .map(provincia -> (InfraccionesRepositoryImpl) repositoryFactory.getRepository(provincia))
                     .collect(Collectors.toList());
         } else {
-            // Usar todas las BDS por defecto si no se especifica nada
             return repositoryFactory.getAllRepositories().values().stream()
                     .map(repo -> (InfraccionesRepositoryImpl) repo)
                     .collect(Collectors.toList());
@@ -367,152 +381,4 @@ public class InfraccionesService {
     }
 
 
-    /**
-     * Método específico para procesar consultas grandes de forma asíncrona
-     */
-    public CompletableFuture<String> consultarInfraccionesAsincrono(ConsultaQueryDTO consulta, String nombreQuery) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                Object resultado = consultarInfracciones(consulta, nombreQuery);
-                return resultado instanceof String ? (String) resultado : resultado.toString();
-            } catch (Exception e) {
-                log.error("Error en consulta asíncrona: {}", e.getMessage(), e);
-                throw new RuntimeException("Error en consulta asíncrona", e);
-            }
-        }, executor);
-    }
-
-    /**
-     * Obtiene estadísticas de memoria y procesamiento
-     */
-    public Map<String, Object> obtenerEstadisticasProcesamiento() {
-        Map<String, Object> estadisticas = new HashMap<>();
-
-        // Estadísticas de memoria (usando método mejorado si existe)
-        try {
-            estadisticas.putAll(batchProcessor.obtenerEstadisticasMemoriaExtendidas());
-        } catch (Exception e) {
-            // Fallback al método original
-            estadisticas.putAll(batchProcessor.obtenerEstadisticasMemoria());
-        }
-
-        // Configuración de límites
-        estadisticas.put("max_records_sincrono", maxRecordsSincrono);
-        estadisticas.put("max_records_total", maxRecordsTotal);
-        estadisticas.put("max_memory_mb", maxMemoryMB);
-        estadisticas.put("thread_pool_size", threadPoolSize);
-
-        // Estado de repositorios
-        estadisticas.put("repositorios_disponibles", repositoryFactory.getProvinciasSoportadas().size());
-        estadisticas.put("provincias_soportadas", repositoryFactory.getProvinciasSoportadas());
-
-        return estadisticas;
-    }
-
-    // =============== MÉTODOS ESPECÍFICOS DE CONSULTA (CON BATCH SUPPORT) ===============
-
-    public Object consultarPersonasJuridicas(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfracciones(consulta, "consultar_personas_juridicas.sql");
-    }
-
-    public Object consultarReporteGeneral(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfracciones(consulta, "reporte_infracciones_general.sql");
-    }
-
-    public Object consultarInfraccionesPorEquipos(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfracciones(consulta, "reporte_infracciones_por_equipos.sql");
-    }
-
-    public Object consultarVehiculosPorMunicipio(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfracciones(consulta, "reporte_vehiculos_por_municipio.sql");
-    }
-
-    public Object consultarRadarFijoPorEquipo(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfracciones(consulta, "reporte_radar_fijo_por_equipo.sql");
-    }
-
-    public Object consultarSemaforoPorEquipo(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfracciones(consulta, "reporte_semaforo_por_equipo.sql");
-    }
-
-    // =============== VERSIONES PARA DESCARGA DE ARCHIVOS ===============
-
-    public ResponseEntity<byte[]> descargarPersonasJuridicas(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfraccionesComoArchivo(consulta, "consultar_personas_juridicas.sql");
-    }
-
-    public ResponseEntity<byte[]> descargarReporteGeneral(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfraccionesComoArchivo(consulta, "reporte_infracciones_general.sql");
-    }
-
-    public ResponseEntity<byte[]> descargarInfraccionesPorEquipos(ConsultaQueryDTO consulta) throws ValidationException {
-        return consultarInfraccionesComoArchivo(consulta, "reporte_infracciones_por_equipos.sql");
-    }
-
-    // =============== MÉTODOS DE UTILIDAD ===============
-
-    public Map<String, Object> obtenerEstadisticasConsulta(ParametrosFiltrosDTO filtros) {
-        List<InfraccionesRepositoryImpl> repositories = determinarRepositories(filtros);
-
-        List<String> provinciasSeleccionadas = repositories.stream()
-                .map(InfraccionesRepositoryImpl::getProvincia)
-                .collect(Collectors.toList());
-
-        // CORREGIDO: Usar query por defecto para estimación
-        int estimacionRegistros = estimarTamanoResultado(repositories, filtros, "consultar_personas_juridicas.sql");
-        String estrategiaProcesamiento = estimacionRegistros <= maxRecordsSincrono ? "SINCRONO" : "LOTES";
-
-        Map<String, Object> estadisticas = new HashMap<>();
-        estadisticas.put("repositoriosDisponibles", repositoryFactory.getProvinciasSoportadas().size());
-        estadisticas.put("repositoriosSeleccionados", repositories.size());
-        estadisticas.put("provinciasSeleccionadas", provinciasSeleccionadas);
-        estadisticas.put("estimacionRegistros", estimacionRegistros);
-        estadisticas.put("estrategiaProcesamiento", estrategiaProcesamiento);
-
-        // Usar estadísticas de memoria
-        try {
-            estadisticas.putAll(batchProcessor.obtenerEstadisticasMemoriaExtendidas());
-        } catch (Exception e) {
-            estadisticas.putAll(batchProcessor.obtenerEstadisticasMemoria());
-        }
-
-        return estadisticas;
-    }
-
-    public Map<String, Boolean> validarConectividadRepositorios() {
-        return repositoryFactory.getAllRepositories().entrySet().stream()
-                .collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        entry -> {
-                            try {
-                                ParametrosFiltrosDTO filtrosTest = ParametrosFiltrosDTO.builder()
-                                        .limite(1)
-                                        .build();
-
-                                List<Map<String, Object>> resultado = ((InfraccionesRepositoryImpl) entry.getValue())
-                                        .ejecutarQueryConFiltros("SELECT 1 as test", filtrosTest);
-
-                                return resultado != null;
-                            } catch (Exception e) {
-                                log.warn("Repositorio {} no disponible: {}", entry.getKey(), e.getMessage());
-                                return false;
-                            }
-                        }
-                ));
-    }
-
-    /**
-     * Método utilitario para construir consultas con filtros específicos
-     */
-    public ConsultaQueryDTO.ConsultaQueryDTOBuilder crearConsultaBase() {
-        return ConsultaQueryDTO.builder()
-                .formato("json")
-                .parametrosFiltros(
-                        ParametrosFiltrosDTO.builder()
-                                .usarTodasLasBDS(true)
-                                .pagina(0)
-                                .limite(50)
-                                .build()
-                );
-    }
 }

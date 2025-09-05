@@ -1,3 +1,5 @@
+-- consultar_personas_juridicas.sql (VERSIÓN FINAL CORREGIDA)
+
 SELECT
     d.dominio AS "DOMINIO",
     'CUIT' AS "TIPO_DOCUMENTO",
@@ -5,7 +7,10 @@ SELECT
     dt.cuit AS "NRO_CUIT",
     dt.propietario AS "PROPIETARIO_APELLIDO",
     '' AS "PROPIETARIO_NOMBRE",
-    dt.fecha_titularidad AS "FECHA_TITULARIDAD",
+
+    -- FORMATEAR FECHA_TITULARIDAD
+    TO_CHAR(dt.fecha_titularidad, 'DD/MM/YYYY') AS "FECHA_TITULARIDAD",
+
     dt.domicilio AS "CALLE",
     dt.numero AS "NUMERO",
     dt.piso AS "PISO",
@@ -18,12 +23,23 @@ SELECT
     dt.email AS "EMAIL",
     d.marca AS "MARCA",
     d.modelo AS "MODELO",
-    d.tipo_vehiculo AS "TIPO",
-    dt.partido AS "PARTIDO"
+
+    -- OBTENER DESCRIPCIÓN DEL VEHÍCULO DE LA TABLA tipo_vehiculo
+    COALESCE(tv.descripcion, 'No especificado') AS "VEHICULO",
+
+    dt.partido AS "PARTIDO",
+
+    -- AGREGAR FECHA_ALTA FORMATEADA PARA REFERENCIA
+    TO_CHAR(d.fecha_alta, 'DD/MM/YYYY') AS "FECHA_ALTA"
+
 FROM
     dominios d
 JOIN
     dominio_titulares dt ON d.dominio = dt.dominio
+-- JOIN CON LA TABLA TIPO_VEHICULO
+LEFT JOIN
+    tipo_vehiculo tv ON d.tipo_vehiculo = tv.id
+
 WHERE
     dt.sexo IN ('J')
 
@@ -45,6 +61,9 @@ WHERE
 
     -- Filtro Tipo de documento (CORREGIDO)
     AND (:tipoDocumento::VARCHAR IS NULL OR dt.tipo_documento = :tipoDocumento::VARCHAR)
+
+    -- FILTRO ADICIONAL: Filtrar por tipo de vehículo si se especifica
+    AND (:tiposVehiculos::TEXT[] IS NULL OR tv.descripcion = ANY(:tiposVehiculos::TEXT[]))
 
 ORDER BY d.fecha_alta DESC, d.dominio ASC
 LIMIT COALESCE(:limite::INTEGER, 1000)

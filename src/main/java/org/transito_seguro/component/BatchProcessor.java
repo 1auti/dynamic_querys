@@ -35,6 +35,9 @@ public class BatchProcessor {
      * Procesa datos en lotes de manera eficiente
      */
     // Método corregido en BatchProcessor.java
+    /**
+     * Procesa datos en lotes de manera eficiente con gestión de memoria mejorada
+     */
     public void procesarEnLotes(
             List<InfraccionesRepositoryImpl> repositories,
             ParametrosFiltrosDTO filtros,
@@ -45,16 +48,27 @@ public class BatchProcessor {
 
         int batchSize = calcularTamanoLoteOptimo(filtros);
         int totalProcesados = 0;
+        int totalRepositorios = repositories.size();
+        int repositorioActual = 0;
 
         for (InfraccionesRepositoryImpl repo : repositories) {
+            repositorioActual++;
             String provincia = repo.getProvincia();
-            log.debug("Procesando provincia: {}", provincia);
+            log.info("Procesando provincia {}/{}: {}", repositorioActual, totalRepositorios, provincia);
 
             int offset = 0;
             boolean hayMasDatos = true;
+            int procesadosEnProvincia = 0;
 
             while (hayMasDatos && !esMemoriaCritica()) {
                 try {
+                    // Verificar memoria ANTES de procesar
+                    if (esMemoriaAlta()) {
+                        log.warn("Memoria alta detectada antes de procesar lote. Provincia: {}, Offset: {}",
+                                provincia, offset);
+                        pausaInteligente();
+                    }
+
                     // Crear filtros específicos para este lote
                     ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(filtros, batchSize, offset);
 
@@ -62,54 +76,244 @@ public class BatchProcessor {
                     List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
 
                     if (lote == null || lote.isEmpty()) {
+                        log.debug("No hay más datos en provincia: {}, offset: {}", provincia, offset);
                         hayMasDatos = false;
                         break;
                     }
 
                     int tamanoLoteActual = lote.size();
 
-                    // Agregar información de provincia a cada registro
-                    lote.forEach(registro -> registro.put("provincia_origen", provincia));
+                    // Agregar información de provincia a cada registro EN CHUNKS para evitar overhead
+                    procesarProvinciaEnChunks(lote, provincia);
 
-                    log.debug("Procesando lote: provincia={}, offset={}, tamaño={}",
-                            provincia, offset, tamanoLoteActual);
+                    log.debug("Procesando lote: provincia={}, offset={}, tamaño={}, memoria={}%",
+                            provincia, offset, tamanoLoteActual, obtenerPorcentajeMemoriaUsada());
 
-                    // Procesar el lote en chunks pequeños
-                    procesarLoteEnChunks(lote, procesadorLote);
+                    // Procesar el lote en chunks pequeños con liberación frecuente
+                    procesarLoteEnChunksConLiberacion(lote, procesadorLote);
 
+                    // Actualizar contadores
+                    procesadosEnProvincia += tamanoLoteActual;
                     totalProcesados += tamanoLoteActual;
                     offset += batchSize;
 
-                    // CORREGIDO: Verificar tamaño ANTES de liberar memoria
+                    // Verificar si hay más datos
                     if (tamanoLoteActual < batchSize) {
+                        log.debug("Lote incompleto ({} < {}), terminando provincia: {}",
+                                tamanoLoteActual, batchSize, provincia);
                         hayMasDatos = false;
                     }
 
-                    // Liberar explícitamente la referencia del lote DESPUÉS de usarlo
-                    lote.clear();
-                    lote = null;
+                    // Liberación EXPLÍCITA e INMEDIATA del lote
+                    liberarLoteCompletamente(lote);
 
-                    // Pausa inteligente sin GC forzado
-                    if (offset % (batchSize * 5) == 0) {
-                        pausaInteligente();
+                    // Gestión de memoria periódica
+                    gestionarMemoriaPeriodica(offset, batchSize, provincia);
+
+                    // Log de progreso cada 10 lotes
+                    if ((offset / batchSize) % 10 == 0) {
+                        log.info("Progreso provincia {}: {} registros procesados, memoria: {}%",
+                                provincia, procesadosEnProvincia, obtenerPorcentajeMemoriaUsada());
                     }
+
+                } catch (OutOfMemoryError oom) {
+                    log.error("OUT OF MEMORY en provincia {}, offset {}: {}", provincia, offset, oom.getMessage());
+                    // Intentar recuperación
+                    limpiarMemoriaAgresiva();
+                    break; // Salir del while para esta provincia
 
                 } catch (Exception e) {
                     log.error("Error procesando lote en provincia {}, offset {}: {}",
                             provincia, offset, e.getMessage(), e);
-                    break;
+
+                    // Intentar continuar con siguiente lote si el error no es crítico
+                    if (e.getMessage().contains("memoria") || e.getMessage().contains("memory")) {
+                        limpiarMemoria();
+                        offset += batchSize; // Saltar este lote problemático
+                    } else {
+                        break; // Salir del while para errores no relacionados con memoria
+                    }
                 }
             }
 
+            // Verificación post-provincia
             if (esMemoriaCritica()) {
-                log.warn("Procesamiento pausado por memoria crítica en provincia: {}", provincia);
+                log.warn("Memoria crítica tras completar provincia: {}. Esperando liberación...", provincia);
                 esperarLiberacionMemoria();
             }
 
-            log.info("Completada provincia {}: registros procesados en esta iteración", provincia);
+            log.info("Completada provincia {}: {} registros procesados, memoria final: {}%",
+                    provincia, procesadosEnProvincia, obtenerPorcentajeMemoriaUsada());
+
+            // Limpieza entre provincias
+            if (repositorioActual < totalRepositorios) {
+                pausaEntreProvincia();
+            }
         }
 
-        log.info("Procesamiento en lotes completado. Total procesados: {}", totalProcesados);
+        log.info("Procesamiento en lotes completado. Total procesados: {}, memoria final: {}%",
+                totalProcesados, obtenerPorcentajeMemoriaUsada());
+    }
+
+    /**
+     * Procesa el lote en chunks con liberación inmediata de memoria
+     */
+    private void procesarLoteEnChunksConLiberacion(List<Map<String, Object>> lote,
+                                                   Consumer<List<Map<String, Object>>> procesadorLote) {
+
+        int currentChunkSize = Math.min(chunkSize, lote.size());
+        int chunksProcessed = 0;
+
+        for (int i = 0; i < lote.size(); i += currentChunkSize) {
+            int endIndex = Math.min(i + currentChunkSize, lote.size());
+
+            // Crear sublista (vista, no copia completa)
+            List<Map<String, Object>> chunk = lote.subList(i, endIndex);
+
+            try {
+                // Procesar el chunk
+                procesadorLote.accept(chunk);
+                chunksProcessed++;
+
+                log.trace("Chunk {}/{} procesado, tamaño: {}",
+                        chunksProcessed, (lote.size() + currentChunkSize - 1) / currentChunkSize, chunk.size());
+
+            } catch (Exception e) {
+                log.error("Error procesando chunk {}: {}", chunksProcessed, e.getMessage());
+                throw e; // Re-lanzar para manejo en nivel superior
+            }
+
+            // Liberación EXPLÍCITA del chunk
+            chunk.clear(); // Aunque sea una vista, limpiar referencias
+            chunk = null;
+
+            // Gestión de memoria cada 5 chunks
+            if (chunksProcessed % 5 == 0) {
+                if (esMemoriaAlta()) {
+                    pausaMicro();
+                }
+
+                // Limpieza más agresiva cada 10 chunks
+                if (chunksProcessed % 10 == 0) {
+                    limpiarMemoria();
+
+                    log.trace("Limpieza post-chunk {}, memoria: {}%",
+                            chunksProcessed, obtenerPorcentajeMemoriaUsada());
+                }
+            }
+        }
+    }
+
+    /**
+     * Agrega provincia a registros en chunks para evitar overhead
+     */
+    private void procesarProvinciaEnChunks(List<Map<String, Object>> lote, String provincia) {
+        int chunkSize = Math.min(100, lote.size()); // Chunks pequeños para esto
+
+        for (int i = 0; i < lote.size(); i += chunkSize) {
+            int endIndex = Math.min(i + chunkSize, lote.size());
+
+            for (int j = i; j < endIndex; j++) {
+                lote.get(j).put("provincia_origen", provincia);
+            }
+
+            // Micro-pausa cada chunk para permitir GC
+            if (i > 0 && (i / chunkSize) % 20 == 0) {
+                Thread.yield();
+            }
+        }
+    }
+
+    /**
+     * Liberación completa y agresiva del lote
+     */
+    private void liberarLoteCompletamente(List<Map<String, Object>> lote) {
+        try {
+            // Limpiar cada mapa individual
+            for (Map<String, Object> registro : lote) {
+                if (registro != null) {
+                    registro.clear();
+                }
+            }
+
+            // Limpiar la lista
+            lote.clear();
+
+            // Anular referencia
+            lote = null;
+
+        } catch (Exception e) {
+            log.warn("Error liberando lote: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Gestión de memoria periódica durante procesamiento
+     */
+    private void gestionarMemoriaPeriodica(int offset, int batchSize, String provincia) {
+        // Cada 5 lotes
+        if (offset % (batchSize * 5) == 0) {
+            pausaInteligente();
+
+            // Log de memoria cada 5 lotes
+            log.debug("Memoria tras {} registros en {}: {}%",
+                    offset, provincia, obtenerPorcentajeMemoriaUsada());
+        }
+
+        // Limpieza más agresiva cada 20 lotes
+        if (offset % (batchSize * 20) == 0) {
+            limpiarMemoria();
+            log.debug("Limpieza agresiva en provincia {}, offset: {}", provincia, offset);
+        }
+    }
+
+    /**
+     * Pausa entre provincias para estabilizar memoria
+     */
+    private void pausaEntreProvincia() {
+        try {
+            log.debug("Pausa entre provincias, memoria antes: {}%", obtenerPorcentajeMemoriaUsada());
+
+            // Limpieza pre-pausa
+            limpiarMemoria();
+
+            // Pausa para permitir estabilización
+            Thread.sleep(100);
+
+            log.debug("Memoria después de pausa: {}%", obtenerPorcentajeMemoriaUsada());
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Limpieza agresiva de memoria para situaciones críticas
+     */
+    private void limpiarMemoriaAgresiva() {
+        log.warn("Ejecutando limpieza agresiva de memoria...");
+
+        // Múltiples pasadas de GC
+        for (int i = 0; i < 3; i++) {
+            System.gc();
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
+        log.warn("Limpieza agresiva completada. Memoria actual: {}%", obtenerPorcentajeMemoriaUsada());
+    }
+
+    /**
+     * Obtiene porcentaje de memoria usada para logs
+     */
+    private double obtenerPorcentajeMemoriaUsada() {
+        Runtime runtime = Runtime.getRuntime();
+        long memoriaUsada = runtime.totalMemory() - runtime.freeMemory();
+        return (double) memoriaUsada / runtime.totalMemory() * 100;
     }
 
     /**
@@ -128,6 +332,7 @@ public class BatchProcessor {
 
             // Procesar el chunk
             procesadorLote.accept(chunk);
+
 
             // Liberar referencia explícitamente
             chunk = null;
@@ -200,11 +405,21 @@ public class BatchProcessor {
     }
 
 
-    /**
-     * Calcula el tamaño óptimo de lote basado en filtros y memoria disponible
-     */
+
+  /**
+          * Calcula el tamaño óptimo de lote usando el nuevo método
+ */
     private int calcularTamanoLoteOptimo(ParametrosFiltrosDTO filtros) {
-        int batchSize = defaultBatchSize;
+        // Usar el límite efectivo del DTO actualizado
+        int batchSizeBase = filtros.getLimiteEfectivo();
+
+        // Si es muy pequeño, usar el defaultBatchSize
+        if (batchSizeBase < 1000) {
+            batchSizeBase = defaultBatchSize;
+        }
+
+        log.info("Límite base calculado: {} (info: {})",
+                batchSizeBase, filtros.getInfoPaginacion());
 
         // Considerar memoria disponible
         Runtime runtime = Runtime.getRuntime();
@@ -212,34 +427,55 @@ public class BatchProcessor {
         long memoriaTotal = runtime.totalMemory();
         double porcentajeLibre = (double) memoriaLibre / memoriaTotal;
 
-        // Ajuste más agresivo basado en memoria
-        if (porcentajeLibre < 0.20) { // Menos del 20% libre
-            batchSize = Math.max(100, batchSize / 8);
-            log.warn("Memoria muy baja detectada ({}%), reduciendo lote a {}",
-                    String.format("%.1f%%", porcentajeLibre * 100), batchSize);
-        } else if (porcentajeLibre < 0.30) { // Menos del 30% libre
-            batchSize = Math.max(200, batchSize / 4);
-            log.warn("Memoria baja detectada ({}%), reduciendo lote a {}",
-                    String.format("%.1f%%", porcentajeLibre * 100), batchSize);
-        } else if (porcentajeLibre < 0.50) { // Menos del 50% libre
-            batchSize = Math.max(400, batchSize / 2);
-            log.info("Memoria media detectada ({}%), reduciendo lote a {}",
-                    String.format("%.1f%%", porcentajeLibre * 100), batchSize);
+        int batchSizeOptimo = batchSizeBase;
+
+        // Ajustar según memoria disponible
+        if (porcentajeLibre < 0.20) {
+            batchSizeOptimo = Math.max(1000, batchSizeBase / 4);
+            log.warn("Memoria muy baja ({}%), reduciendo lote a {}",
+                    String.format("%.1f%%", porcentajeLibre * 100), batchSizeOptimo);
+        } else if (porcentajeLibre < 0.30) {
+            batchSizeOptimo = Math.max(2000, batchSizeBase / 2);
+            log.info("Memoria baja ({}%), reduciendo lote a {}",
+                    String.format("%.1f%%", porcentajeLibre * 100), batchSizeOptimo);
+        } else if (porcentajeLibre > 0.70) {
+            // Memoria abundante, mantener o aumentar
+            batchSizeOptimo = Math.min(batchSizeBase, 10000); // Máximo 10k
+            log.info("Memoria abundante ({}%), usando lote de {}",
+                    String.format("%.1f%%", porcentajeLibre * 100), batchSizeOptimo);
         }
 
-        return Math.min(batchSize, filtros.getLimiteMaximo() != null ?
-                filtros.getLimiteMaximo() : Integer.MAX_VALUE);
+        log.info("Tamaño de lote FINAL: {} (base: {}, memoria: {}%)",
+                batchSizeOptimo, batchSizeBase, String.format("%.1f", porcentajeLibre * 100));
+
+        return batchSizeOptimo;
     }
 
+
     /**
-     * Crea filtros específicos para un lote
+     * Crea filtros para lote usando el DTO actualizado
      */
     private ParametrosFiltrosDTO crearFiltrosParaLote(ParametrosFiltrosDTO filtrosOriginales,
                                                       int batchSize, int offset) {
-        return filtrosOriginales.toBuilder()
-                .pagina(offset / batchSize)
-                .limite(batchSize)
+
+        log.debug("Creando filtros - batchSize: {}, offset: {}, original: {}",
+                batchSize, offset, filtrosOriginales.getInfoPaginacion());
+
+        ParametrosFiltrosDTO filtrosLote = filtrosOriginales.toBuilder()
+                .limite(batchSize)           // Establecer límite explícito
+                .offset(offset)              // Establecer offset explícito
+                .pagina(null)                // Limpiar página para evitar conflictos
+                .tamanoPagina(null)          // Limpiar tamaño página
                 .build();
+
+        // Validar que se creó correctamente
+        if (!filtrosLote.validarPaginacion()) {
+            log.warn("Filtros de lote inválidos: {}", filtrosLote.getInfoPaginacion());
+        }
+
+        log.debug("Filtros de lote creados: {}", filtrosLote.getInfoPaginacion());
+
+        return filtrosLote;
     }
 
     /**
