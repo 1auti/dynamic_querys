@@ -26,7 +26,7 @@ Sistema de consultas avanzado para datos de infracciones de tránsito multi-prov
 
 ### Prerrequisitos
 
-- Java 11 o superior
+- Java 8 
 - Maven 3.6+
 - PostgreSQL 12+
 - Spring Boot 2.7+
@@ -375,25 +375,4 @@ Cada provincia debe tener las siguientes tablas principales:
 ### Queries SQL
 Las consultas SQL están ubicadas en `src/main/resources/querys/` y son cargadas dinámicamente.
 
-## 🤝 Contribución
 
-1. Fork el proyecto
-2. Crear rama feature (`git checkout -b feature/nueva-funcionalidad`)
-3. Commit cambios (`git commit -am 'Agregar nueva funcionalidad'`)
-4. Push a la rama (`git push origin feature/nueva-funcionalidad`)
-5. Crear Pull Request
-
-## 📄 Licencia
-
-Este proyecto está bajo la licencia [MIT](LICENSE).
-
-## 📞 Soporte
-
-Para soporte técnico o consultas:
-- Email: soporte@transitoseguro.com
-- Issues: GitHub Issues del proyecto
-
----
-
-**Versión**: 1.0.0  
-**Última actualización**: Enero 2024
