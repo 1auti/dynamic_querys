@@ -126,20 +126,23 @@ queries:
     - "reporte_sin_email_por_municipio.sql"
     - "verificar_imagenes_subidas_radar_concesion.sql"
 
-# Configuración de batching
+# Configuración de la aplicación
 app:
-  batch:
-    size: 10000                   # ⬆️ Lotes más grandes
-    chunk-size: 2000              # ⬆️ Chunks más grandes
-    max-memory-per-batch: 200     # ⬆️ Más memoria por lote
-    memory-critical-threshold: 0.80  # ⬇️ Más conservador
-    timeout-seconds: 120          # ⬆️ Más tiempo para queries grandes
-
   limits:
-    max-records-sync: 2000       # Máximo de registros para procesamiento síncrono
-    max-records-total: 100000     # Máximo absoluto de registros
-    max-concurrent-queries: 10    # Máximo de consultas concurrentes
+    max-records-sync: 10000         # Para que consultas de hasta 5000 usen procesamiento síncrono
+    max-records-total: 100000       # Máximo absoluto de registros
+    max-records-display: 5000       # Máximo para endpoints de consulta (Postman-friendly)
+    max-concurrent-queries: 10      # Máximo de consultas concurrentes
+  batch:
+    size: 10000                     # Lotes más grandes
+    chunk-size: 2000                # Chunks más grandes
+    max-memory-per-batch: 200       # Más memoria por lote
+    memory-critical-threshold: 0.80 # Más conservador
+    timeout-seconds: 120            # Más tiempo para queries grandes
 
+  # Configuración para threads asíncronos
+  async:
+    thread-pool-size: 10
 # Configuración de logging
 logging:
   level:
