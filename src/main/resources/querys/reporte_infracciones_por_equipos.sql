@@ -1,4 +1,4 @@
--- reporte_infracciones_por_equipos.sql (VERSIÓN DINÁMICA)
+
 -- Reporte de infracciones por equipos
 
 SELECT
@@ -17,38 +17,36 @@ FROM infraccion i
     INNER JOIN concesion c ON c.id = i.id_concesion
     INNER JOIN tipo_infraccion ti ON ti.id = i.id_tipo_infra
 WHERE 1=1
+    -- Filtros de fecha dinámicos (CORREGIDOS)
+    AND (:fechaEspecifica::DATE IS NULL OR DATE(elh.fecha_alta) = :fechaEspecifica::DATE)
+    AND (:fechaInicio::DATE IS NULL OR DATE(elh.fecha_alta) >= :fechaInicio::DATE)
+    AND (:fechaFin::DATE IS NULL OR DATE(elh.fecha_alta) <= :fechaFin::DATE)
 
-    -- Filtros de fecha dinámicos (usando elh.fecha_alta)
-    AND (:fechaEspecifica IS NULL OR DATE(elh.fecha_alta) = DATE(:fechaEspecifica))
-    AND (:fechaInicio IS NULL OR elh.fecha_alta >= :fechaInicio)
-    AND (:fechaFin IS NULL OR elh.fecha_alta <= :fechaFin)
+    -- Filtros de equipos (CORREGIDOS)
+    AND (:tipoEquipo::TEXT[] IS NULL OR EXISTS (
+        SELECT 1
+        FROM punto_control pc_inner
+        WHERE pc_inner.id = i.id_punto_control
+        AND (
+            SELECT bool_or(pc_inner.serie_equipo ILIKE '%' || patron || '%')
+            FROM unnest(:tipoEquipo::TEXT[]) AS patron
+        )
+    ))
+    AND (:tiposDispositivos::INTEGER[] IS NULL OR pc.id_tipo_dispositivo = ANY(:tiposDispositivos::INTEGER[]))
+    AND (:lugares::TEXT[] IS NULL OR pc.lugar = ANY(:lugares::TEXT[]))
 
-    -- Filtros de equipos
-   AND (:tipoEquipo IS NULL OR EXISTS (
-       SELECT 1
-       FROM punto_control pc_inner
-       WHERE pc_inner.id = i.id_punto_control
-       AND (
-           SELECT bool_or(pc_inner.serie_equipo ILIKE '%' || patron || '%')
-           FROM unnest(CAST(:tipoEquipo AS TEXT[])) AS patron
-       )
-   ))
-    AND (:tiposDispositivos IS NULL OR pc.id_tipo_dispositivo = ANY(CAST(:tiposDispositivos AS INTEGER[])))
-    AND (:lugares IS NULL OR pc.lugar = ANY(CAST(:lugares AS TEXT[])))
+    -- Filtros de ubicación (CORREGIDOS)
+    AND (:municipios::TEXT[] IS NULL OR c.descripcion = ANY(:municipios::TEXT[]))
+    AND (:concesiones::INTEGER[] IS NULL OR c.id = ANY(:concesiones::INTEGER[]))
 
-    -- Filtros de ubicación
-    AND (:municipios IS NULL OR c.descripcion = ANY(CAST(:municipios AS TEXT[])))
-    AND (:concesiones IS NULL OR c.id = ANY(CAST(:concesiones AS INTEGER[])))
+    -- Filtros de infracciones (CORREGIDOS)
+    AND (:tiposInfracciones::INTEGER[] IS NULL OR ti.id = ANY(:tiposInfracciones::INTEGER[]))
+    AND (:estadosInfracciones::INTEGER[] IS NULL OR i.id_estado = ANY(:estadosInfracciones::INTEGER[]))
 
-    -- Filtros de infracciones
-    AND (:tiposInfracciones IS NULL OR ti.id = ANY(CAST(:tiposInfracciones AS INTEGER[])))
-    AND (:estadosInfracciones IS NULL OR i.id_estado = ANY(CAST(:estadosInfracciones AS INTEGER[])))
-
-    -- Filtro de exportación a SACIT
-    AND (:exportadoSacit IS NULL OR elh.exporta_sacit = :exportadoSacit)
-
+    -- Filtro de exportación a SACIT (CORREGIDO)
+    AND (:exportadoSacit::BOOLEAN IS NULL OR elh.exporta_sacit = :exportadoSacit::BOOLEAN)
 
 GROUP BY c.descripcion, pc.serie_equipo, ti.descripcion, TO_CHAR(elh.fecha_alta, 'YYYY-MM'), elh.exporta_sacit
 ORDER BY c.descripcion, pc.serie_equipo, TO_CHAR(elh.fecha_alta, 'YYYY-MM')
-LIMIT COALESCE(:limite, 1000)
-OFFSET COALESCE(:offset, 0)
+LIMIT COALESCE(:limite::INTEGER, 1000)
+OFFSET COALESCE(:offset::INTEGER, 0);

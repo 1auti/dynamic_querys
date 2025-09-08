@@ -1,5 +1,3 @@
--
--- Reporte general de infracciones por fecha, municipio y tipo DE BUENOS AIRES
 
 SELECT
     x.fecha,
@@ -21,23 +19,21 @@ FROM (
     JOIN tipo_infraccion ti ON ti.id = elh.id_tipo_infra
     WHERE 1=1
 
-        -- Filtros de fecha dinámicos (usando elh.fecha_alta)
-        AND (:fechaEspecifica IS NULL OR DATE(elh.fecha_alta) = DATE(:fechaEspecifica))
-        AND (:fechaInicio IS NULL OR elh.fecha_alta >= :fechaInicio)
-        AND (:fechaFin IS NULL OR elh.fecha_alta <= :fechaFin)
+        AND (:fechaEspecifica::DATE IS NULL OR DATE(elh.fecha_alta) = :fechaEspecifica::DATE)
+        AND (:fechaInicio::DATE IS NULL OR DATE(elh.fecha_alta) >= :fechaInicio::DATE)
+        AND (:fechaFin::DATE IS NULL OR DATE(elh.fecha_alta) <= :fechaFin::DATE)
 
-        -- Filtros de concesión/municipio
-        AND (:concesiones IS NULL OR elh.id_concesion = ANY(CAST(:concesiones AS INTEGER[])))
-        AND (:municipios IS NULL OR c.descripcion = ANY(CAST(:municipios AS TEXT[])))
 
-        -- Filtros de tipo de infracción
-        AND (:tiposInfracciones IS NULL OR ti.id = ANY(CAST(:tiposInfracciones AS INTEGER[])))
+        AND (:concesiones::INTEGER[] IS NULL OR elh.id_concesion = ANY(:concesiones::INTEGER[]))
+        AND (:municipios::TEXT[] IS NULL OR c.descripcion = ANY(:municipios::TEXT[]))
 
-        -- Filtro de exportación a SACIT
-        AND (:exportadoSacit IS NULL OR elh.exporta_sacit = :exportadoSacit)
 
+        AND (:tiposInfracciones::INTEGER[] IS NULL OR ti.id = ANY(:tiposInfracciones::INTEGER[]))
+
+
+        AND (:exportadoSacit::BOOLEAN IS NULL OR elh.exporta_sacit = :exportadoSacit::BOOLEAN)
 ) x
 GROUP BY 1, 2, 3, 4, 5
 ORDER BY TO_DATE(x.fecha, 'DD/MM/YYYY'), x.municipio
-LIMIT COALESCE(:limite, 1000)
-OFFSET COALESCE(:offset, 0)
+LIMIT COALESCE(:limite::INTEGER, 1000)
+OFFSET COALESCE(:offset::INTEGER, 0);

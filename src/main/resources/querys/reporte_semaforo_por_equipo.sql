@@ -1,4 +1,4 @@
--- reporte_semaforo_por_equipo.sql (VERSIÓN DINÁMICA)
+
 -- Reporte de infracciones de luz roja y senda peatonal por equipo
 
 SELECT
@@ -30,39 +30,38 @@ FROM (
     JOIN concesion c ON c.id = elh.id_concesion
     JOIN tipo_infraccion ti ON ti.id = elh.id_tipo_infra AND ti.id IN (3, 4)
     WHERE 1=1
+        -- Filtros de fecha dinámicos (CORREGIDOS)
+        AND (:fechaEspecifica::DATE IS NULL OR DATE(elh.fecha_alta) = :fechaEspecifica::DATE)
+        AND (:fechaInicio::DATE IS NULL OR DATE(elh.fecha_alta) >= :fechaInicio::DATE)
+        AND (:fechaFin::DATE IS NULL OR DATE(elh.fecha_alta) <= :fechaFin::DATE)
 
-        -- Filtros de fecha dinámicos (usando elh.fecha_alta)
-        AND (:fechaEspecifica IS NULL OR DATE(elh.fecha_alta) = DATE(:fechaEspecifica))
-        AND (:fechaInicio IS NULL OR elh.fecha_alta >= :fechaInicio)
-        AND (:fechaFin IS NULL OR elh.fecha_alta <= :fechaFin)
-
-        -- Filtros de serie de equipo con LIKE para SE% o VLR%
+        -- Filtros de serie de equipo con LIKE (CORREGIDOS)
         AND (
-            :filtrarPorTipoEquipo IS NULL OR
-            :filtrarPorTipoEquipo = false OR
+            :filtrarPorTipoEquipo::BOOLEAN IS NULL OR
+            :filtrarPorTipoEquipo::BOOLEAN = false OR
             (
-                (:incluirSE IS NULL OR :incluirSE = false OR pc.serie_equipo ILIKE 'SE%') OR
-                (:incluirVLR IS NULL OR :incluirVLR = false OR pc.serie_equipo ILIKE 'VLR%')
+                (:incluirSE::BOOLEAN IS NULL OR :incluirSE::BOOLEAN = false OR pc.serie_equipo ILIKE 'SE%') OR
+                (:incluirVLR::BOOLEAN IS NULL OR :incluirVLR::BOOLEAN = false OR pc.serie_equipo ILIKE 'VLR%')
             )
         )
 
-        -- Filtro adicional para series específicas (si las necesitas exactas)
-        AND (:seriesEquiposExactas IS NULL OR pc.serie_equipo = ANY(CAST(:seriesEquiposExactas AS TEXT[])))
+        -- Filtro adicional para series específicas (CORREGIDO)
+        AND (:seriesEquiposExactas::TEXT[] IS NULL OR pc.serie_equipo = ANY(:seriesEquiposExactas::TEXT[]))
 
         -- Asegurar que serie_equipo no sea null
         AND pc.serie_equipo IS NOT NULL
 
-        -- Filtro de exportación a SACIT
-        AND (:exportadoSacit IS NULL OR elh.exporta_sacit = :exportadoSacit)
+        -- Filtro de exportación a SACIT (CORREGIDO)
+        AND (:exportadoSacit::BOOLEAN IS NULL OR elh.exporta_sacit = :exportadoSacit::BOOLEAN)
 
-        -- Filtros adicionales de ubicación
-        AND (:municipios IS NULL OR c.descripcion = ANY(CAST(:municipios AS TEXT[])))
-        AND (:concesiones IS NULL OR c.id = ANY(CAST(:concesiones AS INTEGER[])))
+        -- Filtros adicionales de ubicación (CORREGIDOS)
+        AND (:municipios::TEXT[] IS NULL OR c.descripcion = ANY(:municipios::TEXT[]))
+        AND (:concesiones::INTEGER[] IS NULL OR c.id = ANY(:concesiones::INTEGER[]))
 
     GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
     ORDER BY 1
 ) x
 GROUP BY 1, 2, 3, 4, 5
 ORDER BY TO_DATE(x.fecha, 'DD/MM/YYYY'), x.municipio, x.serie_equipo
-LIMIT COALESCE(:limite, 1000)
-OFFSET COALESCE(:offset, 0)
+LIMIT COALESCE(:limite::INTEGER, 1000)
+OFFSET COALESCE(:offset::INTEGER, 0);

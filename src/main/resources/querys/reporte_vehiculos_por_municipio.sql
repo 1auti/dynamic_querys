@@ -11,7 +11,7 @@ SELECT
     (x.vehiculos + x.motos + x.formato_no_valido) AS total
 FROM (
     SELECT
-        COALESCE(TO_CHAR(:fechaReporte, 'DD/MM/YYYY'), TO_CHAR(NOW(), 'DD/MM/YYYY')) AS fecha_reporte,
+        COALESCE(TO_CHAR(:fechaReporte::DATE, 'DD/MM/YYYY'), TO_CHAR(NOW(), 'DD/MM/YYYY')) AS fecha_reporte,
         c.provincia AS contexto,
         c.descripcion AS municipio,
 
@@ -27,18 +27,17 @@ FROM (
     FROM infraccion i
     JOIN concesion c ON c.id = i.id_concesion
     WHERE 1=1
+        -- Filtros de estado dinámicos (CORREGIDOS)
+        AND (:estadosInfracciones::INTEGER[] IS NULL OR i.id_estado = ANY(:estadosInfracciones::INTEGER[]))
 
-        -- Filtros de estado dinámicos
-        AND (:estadosInfracciones IS NULL OR i.id_estado = ANY(CAST(:estadosInfracciones AS INTEGER[])))
-
-        -- Filtros de fecha dinámicos (usando i.fecha_infraccion)
-        AND (:fechaEspecifica IS NULL OR DATE(i.fecha_infraccion) = DATE(:fechaEspecifica))
-        AND (:fechaInicio IS NULL OR i.fecha_infraccion >= :fechaInicio)
-        AND (:fechaFin IS NULL OR i.fecha_infraccion <= :fechaFin)
+        -- Filtros de fecha dinámicos (CORREGIDOS)
+        AND (:fechaEspecifica::DATE IS NULL OR DATE(i.fecha_infraccion) = :fechaEspecifica::DATE)
+        AND (:fechaInicio::DATE IS NULL OR DATE(i.fecha_infraccion) >= :fechaInicio::DATE)
+        AND (:fechaFin::DATE IS NULL OR DATE(i.fecha_infraccion) <= :fechaFin::DATE)
 
     GROUP BY c.provincia, c.descripcion
     ORDER BY c.provincia, c.descripcion
 ) x
 ORDER BY x.contexto, x.municipio
-LIMIT COALESCE(:limite, 1000)
-OFFSET COALESCE(:offset, 0)
+LIMIT COALESCE(:limite::INTEGER, 1000)
+OFFSET COALESCE(:offset::INTEGER, 0);

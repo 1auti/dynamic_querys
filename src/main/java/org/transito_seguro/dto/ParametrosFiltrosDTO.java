@@ -23,10 +23,10 @@ public class ParametrosFiltrosDTO {
     private Boolean exportadoSacit, tieneEmail, usarTodasLasBDS,
             incluirVLR, incluirSE, incluirTS, soloPersonasJuridicas;
 
-    // NUEVOS CAMPOS PARA COINCIDIR CON TU JSON
-    private Integer tamanoPagina;      // Nuevo campo
-    private Integer limiteMaximo;      // Nuevo campo
-    private Integer offset;            // Campo para offset explícito
+
+    private Integer tamanoPagina;
+    private Integer limiteMaximo;
+    private Integer offset;
 
     // Para casos edge
     private Map<String, Object> filtrosAdicionales;

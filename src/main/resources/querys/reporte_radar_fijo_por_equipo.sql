@@ -26,16 +26,18 @@ FROM (
     JOIN punto_control pc on pc.id = i.id_punto_control
     JOIN concesion c on c.id = elh.id_concesion
     JOIN tipo_infraccion ti on ti.id = elh.id_tipo_infra and ti.id in (1)
-    WHERE
-     -- Filtros de fecha dinámicos (usando elh.fecha_alta)
-        AND (:fechaEspecifica IS NULL OR DATE(elh.fecha_alta) = DATE(:fechaEspecifica))
-        AND (:fechaInicio IS NULL OR elh.fecha_alta >= :fechaInicio)
-        AND (:fechaFin IS NULL OR elh.fecha_alta <= :fechaFin)
+    WHERE 1=1
+        -- Filtros de fecha dinámicos (CORREGIDOS)
+        AND (:fechaEspecifica::DATE IS NULL OR DATE(elh.fecha_alta) = :fechaEspecifica::DATE)
+        AND (:fechaInicio::DATE IS NULL OR DATE(elh.fecha_alta) >= :fechaInicio::DATE)
+        AND (:fechaFin::DATE IS NULL OR DATE(elh.fecha_alta) <= :fechaFin::DATE)
 
-         -- Filtro de exportación a SACIT
-        AND (:exportadoSacit IS NULL OR elh.exporta_sacit = :exportadoSacit)
+        -- Filtro de exportación a SACIT (CORREGIDO)
+        AND (:exportadoSacit::BOOLEAN IS NULL OR elh.exporta_sacit = :exportadoSacit::BOOLEAN)
 
     GROUP BY 1,2,3,4,5,6,7,8,9
     ORDER BY 1
 ) x
-GROUP BY 1,2,3,4,5;
+GROUP BY 1,2,3,4,5
+LIMIT COALESCE(:limite::INTEGER, 1000)
+OFFSET COALESCE(:offset::INTEGER, 0);

@@ -91,33 +91,33 @@ public class InfraccionesController {
     /**
      * Endpoint para reporte general de infracciones CON LÍMITE
      */
-    @PostMapping("/reporte-general")
+    @PostMapping("/infracciones-general")
     public ResponseEntity<?> reporteGeneral(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("reporte-general", consulta);
+        return ejecutarConsultaConLimite("infracciones-general", consulta); // ✅ CORREGIDO
     }
 
     /**
      * Endpoint para reporte de infracciones por equipos CON LÍMITE
      */
-    @PostMapping("/reporte-por-equipos")
+    @PostMapping("/infracciones-por-equipos")
     public ResponseEntity<?> reportePorEquipos(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("reporte-por-equipos", consulta);
+        return ejecutarConsultaConLimite("infracciones-por-equipos", consulta); // ✅ CORREGIDO
     }
 
     /**
      * Endpoint para reporte de radar fijo CON LÍMITE
      */
-    @PostMapping("/reporte-radar-fijo")
+    @PostMapping("/radar-fijo-por-equipo")
     public ResponseEntity<?> reporteRadarFijo(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("reporte-radar-fijo", consulta);
+        return ejecutarConsultaConLimite("radar-fijo-por-equipo", consulta); // ✅ CORREGIDO
     }
 
     /**
      * Endpoint para reporte de semáforo CON LÍMITE
      */
-    @PostMapping("/reporte-semaforo")
+    @PostMapping("/semaforo-por-equipo")
     public ResponseEntity<?> reporteSemaforo(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("reporte-semaforo", consulta);
+        return ejecutarConsultaConLimite("semaforo-por-equipo", consulta); // ✅ CORREGIDO
     }
 
     /**
@@ -131,9 +131,9 @@ public class InfraccionesController {
     /**
      * Endpoint para consultar infracciones sin email por municipio CON LÍMITE
      */
-    @PostMapping("/reporte-sin-email")
+    @PostMapping("/sin-email-por-municipio")
     public ResponseEntity<?> reporteSinEmail(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("reporte-sin-email", consulta);
+        return ejecutarConsultaConLimite("sin-email-por-municipio", consulta); // ✅ CORREGIDO
     }
 
     /**
@@ -147,9 +147,9 @@ public class InfraccionesController {
     /**
      * Endpoint para reporte detallado de infracciones CON LÍMITE
      */
-    @PostMapping("/reporte-detallado")
+    @PostMapping("/infracciones-detallado")
     public ResponseEntity<?> reporteDetallado(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("reporte-detallado", consulta);
+        return ejecutarConsultaConLimite("infracciones-detallado", consulta); // ✅ CORREGIDO
     }
 
     // =============== MÉTODOS PRIVADOS ===============

@@ -22,34 +22,33 @@ FROM (
     JOIN concesion c ON c.id = elh.id_concesion
     JOIN tipo_infraccion ti ON ti.id = elh.id_tipo_infra
     WHERE 1=1
+        -- Filtros de fecha dinámicos (CORREGIDOS)
+        AND (:fechaEspecifica::DATE IS NULL OR DATE(elh.fecha_alta) = :fechaEspecifica::DATE)
+        AND (:fechaInicio::DATE IS NULL OR DATE(elh.fecha_alta) >= :fechaInicio::DATE)
+        AND (:fechaFin::DATE IS NULL OR DATE(elh.fecha_alta) <= :fechaFin::DATE)
 
-        -- Filtros de fecha dinámicos (usando elh.fecha_alta)
-        AND (:fechaEspecifica IS NULL OR DATE(elh.fecha_alta) = DATE(:fechaEspecifica))
-        AND (:fechaInicio IS NULL OR elh.fecha_alta >= :fechaInicio)
-        AND (:fechaFin IS NULL OR elh.fecha_alta <= :fechaFin)
+        -- Filtro de concesiones dinámico (CORREGIDO)
+        AND (:concesiones::INTEGER[] IS NULL OR elh.id_concesion = ANY(:concesiones::INTEGER[]))
 
-        -- Filtro de concesiones dinámico
-        AND (:concesiones IS NULL OR elh.id_concesion = ANY(CAST(:concesiones AS INTEGER[])))
+        -- Filtros adicionales de infracciones (CORREGIDOS)
+        AND (:tiposInfracciones::INTEGER[] IS NULL OR ti.id = ANY(:tiposInfracciones::INTEGER[]))
+        AND (:exportadoSacit::BOOLEAN IS NULL OR elh.exporta_sacit = :exportadoSacit::BOOLEAN)
 
-        -- Filtros adicionales de infracciones
-        AND (:tiposInfracciones IS NULL OR ti.id = ANY(CAST(:tiposInfracciones AS INTEGER[])))
-        AND (:exportadoSacit IS NULL OR elh.exporta_sacit = :exportadoSacit)
+        -- Filtros de municipio/provincia (CORREGIDOS)
+        AND (:municipios::TEXT[] IS NULL OR c.descripcion = ANY(:municipios::TEXT[]))
 
-        -- Filtros de municipio/provincia
-        AND (:municipios IS NULL OR c.descripcion = ANY(CAST(:municipios AS TEXT[])))
-
-        -- Filtros de equipos con LIKE dinámico
-        AND (:patronesEquipos IS NULL OR EXISTS (
+        -- Filtros de equipos con LIKE dinámico (CORREGIDOS)
+        AND (:patronesEquipos::TEXT[] IS NULL OR EXISTS (
             SELECT 1
             FROM punto_control pc_inner
             WHERE pc_inner.id = i.id_punto_control
             AND (
                 SELECT bool_or(pc_inner.serie_equipo ILIKE '%' || patron || '%')
-                FROM unnest(CAST(:patronesEquipos AS TEXT[])) AS patron
+                FROM unnest(:patronesEquipos::TEXT[]) AS patron
             )
         ))
 ) x
 GROUP BY 1, 2, 3, 4, 5
 ORDER BY TO_DATE(x.fecha, 'DD/MM/YYYY'), x.municipio
-LIMIT COALESCE(:limite, 1000)
-OFFSET COALESCE(:offset, 0)
+LIMIT COALESCE(:limite::INTEGER, 1000)
+OFFSET COALESCE(:offset::INTEGER, 0);
