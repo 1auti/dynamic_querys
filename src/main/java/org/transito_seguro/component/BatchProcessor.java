@@ -203,7 +203,7 @@ public class BatchProcessor {
             }
         }
     }
-git
+
     /**
      * Agrega provincia a registros en chunks para evitar overhead
      */

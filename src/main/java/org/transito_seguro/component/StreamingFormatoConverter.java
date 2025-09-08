@@ -28,6 +28,7 @@ public class StreamingFormatoConverter {
         private final OutputStream outputStream;
         private final AtomicInteger totalRegistros = new AtomicInteger(0);
         private final AtomicLong bytesEscritos = new AtomicLong(0);
+        private CoutingOutputStream coutingOutputStream;
 
         // Para CSV
         private CSVWriter csvWriter;
@@ -45,6 +46,7 @@ public class StreamingFormatoConverter {
         public StreamingContext(String formato, OutputStream outputStream) {
             this.formato = formato.toLowerCase();
             this.outputStream = outputStream;
+            this.coutingOutputStream = coutingOutputStream;
         }
 
         // Getters
@@ -55,20 +57,65 @@ public class StreamingFormatoConverter {
     }
 
     /**
+     * OutputStream wrapper que cuenta bytes escritos
+     * */
+    private static class CoutingOutputStream extends OutputStream{
+        private final OutputStream wrapped;
+        private final AtomicLong bytesWritten;
+
+        private CoutingOutputStream(OutputStream wrapped, AtomicLong bytesWritten) {
+            this.wrapped = wrapped;
+            this.bytesWritten = bytesWritten;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            wrapped.write(b);
+            bytesWritten.incrementAndGet();
+        }
+
+        @Override
+        public void write(byte[] b) throws IOException {
+            wrapped.write(b);
+            bytesWritten.addAndGet(b.length);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            wrapped.write(b, off, len);
+            bytesWritten.addAndGet(len);
+        }
+
+        @Override
+        public void flush() throws IOException {
+            wrapped.flush();
+        }
+
+        @Override
+        public void close() throws IOException {
+            wrapped.close();
+        }
+    }
+
+    /**
      * Inicializa el contexto de streaming según el formato
      */
     public StreamingContext inicializarStreaming(String formato, OutputStream outputStream) throws IOException {
+        if(outputStream == null) throw new IllegalArgumentException("El outputStream esta vacio -> NULL");
         StreamingContext context = new StreamingContext(formato, outputStream);
+
+        CoutingOutputStream coutingOutputStream = new CoutingOutputStream(outputStream,context.bytesEscritos);
+        context.coutingOutputStream = coutingOutputStream;
 
         switch (formato.toLowerCase()) {
             case "csv":
-                inicializarCSVStreaming(context);
+                inicializarCSVStreaming(context,coutingOutputStream);
                 break;
             case "json":
-                inicializarJSONStreaming(context);
+                inicializarJSONStreaming(context,coutingOutputStream);
                 break;
             case "excel":
-                inicializarExcelStreaming(context);
+                inicializarExcelStreaming(context,coutingOutputStream);
                 break;
             default:
                 throw new IllegalArgumentException("Formato no soportado para streaming: " + formato);
@@ -83,25 +130,42 @@ public class StreamingFormatoConverter {
      */
     public void procesarLoteStreaming(StreamingContext context, List<Map<String, Object>> lote) throws IOException {
         if (lote == null || lote.isEmpty()) {
+            log.warn("Lote vacío recibido para formato: {}", context.getFormato());
             return;
         }
 
-        switch (context.getFormato()) {
-            case "csv":
-                procesarLoteCSV(context, lote);
-                break;
-            case "json":
-                procesarLoteJSON(context, lote);
-                break;
-            case "excel":
-                procesarLoteExcel(context, lote);
-                break;
-        }
+        log.debug("Iniciando procesamiento de lote: {} registros, formato: {}",
+                lote.size(), context.getFormato());
 
-        context.totalRegistros.addAndGet(lote.size());
-        log.debug("Lote procesado: {} registros, total acumulado: {}",
-                lote.size(), context.getTotalRegistros());
+        try {
+            switch (context.getFormato()) {
+                case "csv":
+                    procesarLoteCSV(context, lote);
+                    break;
+                case "json":
+                    procesarLoteJSON(context, lote);
+                    break;
+                case "excel":
+                    procesarLoteExcel(context, lote);
+                    break;
+                default:
+                    throw new IllegalStateException("Formato no reconocido: " + context.getFormato());
+            }
+
+            context.totalRegistros.addAndGet(lote.size());
+
+            // Forzar flush del OutputStream principal
+            context.getOutputStream().flush();
+
+            log.debug("Lote procesado exitosamente: {} registros, total acumulado: {}",
+                    lote.size(), context.getTotalRegistros());
+
+        } catch (IOException e) {
+            log.error("Error procesando lote de {} registros", lote.size(), e);
+            throw e;
+        }
     }
+
 
     /**
      * Finaliza el streaming y cierra recursos
@@ -125,8 +189,8 @@ public class StreamingFormatoConverter {
 
     // =========================== CSV STREAMING ===========================
 
-    private void inicializarCSVStreaming(StreamingContext context) throws IOException {
-        OutputStreamWriter writer = new OutputStreamWriter(context.getOutputStream(), "UTF-8");
+    private void inicializarCSVStreaming(StreamingContext context, CoutingOutputStream countingStream) throws IOException {
+        OutputStreamWriter writer = new OutputStreamWriter(countingStream, "UTF-8");
         context.csvWriter = new CSVWriter(writer);
     }
 
@@ -164,14 +228,17 @@ public class StreamingFormatoConverter {
 
     // =========================== JSON STREAMING ===========================
 
-    private void inicializarJSONStreaming(StreamingContext context) throws IOException {
-        context.jsonWriter = new PrintWriter(new OutputStreamWriter(context.getOutputStream(), "UTF-8"));
+    private void inicializarJSONStreaming(StreamingContext context, CoutingOutputStream countingStream) throws IOException {
+        context.jsonWriter = new PrintWriter(new OutputStreamWriter(countingStream, "UTF-8"));
         context.jsonWriter.println("{");
         context.jsonWriter.println("  \"total\": 0,");
         context.jsonWriter.println("  \"datos\": [");
+        context.jsonWriter.flush();
     }
 
     private void procesarLoteJSON(StreamingContext context, List<Map<String, Object>> lote) throws IOException {
+        log.debug("Procesando lote JSON - {} registros, bytes antes: {}",
+                lote.size(), context.getBytesEscritos());
         int subChunkSize = Math.min(25, lote.size()); // Sub-chunks más pequeños para JSON
 
         for (int i = 0; i < lote.size(); i += subChunkSize) {
@@ -188,6 +255,8 @@ public class StreamingFormatoConverter {
                 context.jsonWriter.print("    " + registroJson);
                 context.jsonPrimerRegistro = false;
             }
+
+            log.debug("Lote JSON completado - bytes después: {}", context.getBytesEscritos());
 
             // Flush cada sub-chunk
             context.jsonWriter.flush();
@@ -206,10 +275,12 @@ public class StreamingFormatoConverter {
 
     // =========================== EXCEL STREAMING ===========================
 
-    private void inicializarExcelStreaming(StreamingContext context) {
+    private void inicializarExcelStreaming(StreamingContext context, CoutingOutputStream countingStream) {
         context.workbook = new XSSFWorkbook();
         context.sheet = context.workbook.createSheet("Infracciones");
+        context.coutingOutputStream = countingStream;
     }
+
 
     private void procesarLoteExcel(StreamingContext context, List<Map<String, Object>> lote) {
         if (lote.isEmpty()) return;
@@ -280,8 +351,13 @@ public class StreamingFormatoConverter {
                 }
             }
 
-            context.workbook.write(context.getOutputStream());
+            // Escribir al OutputStream counting
+            context.workbook.write(context.coutingOutputStream);
+            context.coutingOutputStream.flush(); // Flush explícito
             context.workbook.close();
+
+            log.debug("Excel finalizado - Total registros: {}, Bytes escritos: {}",
+                    context.getTotalRegistros(), context.getBytesEscritos());
         }
     }
 
