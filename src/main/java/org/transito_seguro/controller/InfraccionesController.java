@@ -272,7 +272,7 @@ public class InfraccionesController {
         return ResponseEntity.status(status).body(errorResponse);
     }
 
-    // =============== ENDPOINT DE INFORMACIÓN ===============
+    // =============== ENDPOINT DE INFORMACIÓN ===============git
 
     /**
      * Endpoint para obtener información sobre límites

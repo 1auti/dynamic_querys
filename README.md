@@ -1,378 +1,294 @@
 # Sistema de Consulta Dinámica de Infracciones de Tránsito
 
-Sistema de consultas avanzado para datos de infracciones de tránsito multi-provincia con soporte para múltiples formatos de exportación y procesamiento eficiente de grandes volúmenes de datos.
+## Descripción del Proyecto
 
-## 📋 Características Principales
+Este sistema es una **aplicación de reportes y consultas** diseñada para realizar consultas dinámicas sobre bases de datos de infracciones de tránsito de múltiples provincias argentinas. El sistema permite generar reportes especializados con capacidad de manejar **grandes volúmenes de datos** (hasta 800,000+ registros) mediante procesamiento por lotes y optimización de memoria.
 
-- **Multi-provincia**: Soporte para múltiples bases de datos provinciales
-- **Consultas dinámicas**: Sistema flexible de filtros parametrizados
+### Características Principales
+
+- **Multi-provincia**: Consulta simultánea a múltiples bases de datos independientes (Buenos Aires, Avellaneda, La Pampa, Chaco, Entre Ríos, Formosa)
+- **Consultas dinámicas**: Sistema de filtros avanzados con parámetros configurables
+- **Procesamiento escalable**: Automáticamente decide entre procesamiento síncrono o por lotes según el volumen de datos
 - **Múltiples formatos**: Exportación en JSON, CSV y Excel
-- **Procesamiento eficiente**: Manejo optimizado de grandes volúmenes de datos
-- **API REST**: Endpoints bien estructurados para consulta y descarga
-- **Streaming**: Procesamiento por lotes para archivos grandes
+- **Optimización de memoria**: Gestión inteligente de memoria para consultas masivas
+- **Streaming de datos**: Procesamiento por chunks para evitar desbordamiento de memoria
 
-## 🗄️ Provincias Soportadas
 
-| Provincia | Código | Base de Datos |
-|-----------|--------|---------------|
-| Buenos Aires | `pba` | `pba_db` |
-| Avellaneda | `mda` | `mda_db` |
-| La Pampa | `santa-rosa` | `santa_rosa_db` |
-| Chaco | `chaco` | `chaco_db` |
-| Entre Ríos | `entre-rios` | `entre_rios_db` |
-| Formosa | `formosa` | `formosa_db` |
+## Estructura del Proyecto
 
-## 🚀 Instalación y Configuración
-
-### Prerrequisitos
-
-- Java 8 
-- Maven 3.6+
-- PostgreSQL 12+
-- Spring Boot 2.7+
-
-### Variables de Entorno
-
-```bash
-# Base de datos Buenos Aires
-PBA_URL=jdbc:postgresql://localhost:5432/pba_db
-PBA_USERNAME=postgres
-PBA_PASSWORD=password
-
-# Base de datos Avellaneda
-MDA_URL=jdbc:postgresql://localhost:5432/mda_db
-MDA_USERNAME=postgres
-MDA_PASSWORD=password
-
-# Base de datos La Pampa
-SANTA_ROSA_URL=jdbc:postgresql://localhost:5432/santa_rosa_db
-SANTA_ROSA_USERNAME=postgres
-SANTA_ROSA_PASSWORD=password
-
-# Base de datos Chaco
-CHACO_URL=jdbc:postgresql://localhost:5432/chaco_db
-CHACO_USERNAME=postgres
-CHACO_PASSWORD=password
-
-# Base de datos Entre Ríos
-ENTRE_RIOS_URL=jdbc:postgresql://localhost:5432/entre_rios_db
-ENTRE_RIOS_USERNAME=postgres
-ENTRE_RIOS_PASSWORD=password
-
-# Base de datos Formosa
-FORMOSA_URL=jdbc:postgresql://localhost:5432/formosa_db
-FORMOSA_USERNAME=postgres
-FORMOSA_PASSWORD=password
-
-# Puerto del servidor (opcional)
-SERVER_PORT=8080
+```
+src/
+├── main/
+│   ├── java/org/transito_seguro/
+│   │   ├── App.java                           # Clase principal Spring Boot
+│   │   │
+│   │   ├── component/                         # Componentes de procesamiento
+│   │   │   ├── BatchProcessor.java            # Procesamiento por lotes con gestión de memoria
+│   │   │   ├── ConsultaValidator.java         # Validación de parámetros y provincias
+│   │   │   ├── FormatoConverter.java          # Conversión a JSON/CSV/Excel (síncrono)
+│   │   │   ├── StreamingFormatoConverter.java # Conversión streaming para grandes volúmenes
+│   │   │   └── ParametrosProcessor.java       # Procesamiento dinámico de parámetros SQL
+│   │   │
+│   │   ├── config/                           # Configuración del sistema
+│   │   │   ├── DataSourceConfig.java         # Configuración de conexiones a BD
+│   │   │   ├── JdbcConfig.java               # Templates JDBC por provincia
+│   │   │   └── ProvinciaMapping.java         # Mapeo provincia → datasource
+│   │   │
+│   │   ├── controller/                       # Controladores REST
+│   │   │   ├── InfraccionesController.java   # Endpoints de consulta (CON límite)
+│   │   │   └── DescargarInfraccionesController.java # Endpoints de descarga (SIN límite)
+│   │   │
+│   │   ├── dto/                              # Objetos de transferencia
+│   │   │   ├── ConsultaQueryDTO.java         # DTO principal de consulta
+│   │   │   └── ParametrosFiltrosDTO.java     # DTO de filtros dinámicos
+│   │   │
+│   │   ├── enums/                            # Enumeraciones
+│   │   │   └── Consultas.java                # Mapeo de tipos de consulta → archivos SQL
+│   │   │
+│   │   ├── exception/                        # Manejo de excepciones
+│   │   │   └── ValidationException.java      # Excepciones de validación
+│   │   │
+│   │   ├── factory/                          # Factoría de repositorios
+│   │   │   └── RepositoryFactory.java        # Crear repositorios por provincia
+│   │   │
+│   │   ├── repository/                       # Capa de acceso a datos
+│   │   │   ├── InfraccionesRepository.java   # Interfaz del repositorio
+│   │   │   └── impl/
+│   │   │       └── InfraccionesRepositoryImpl.java # Implementación por provincia
+│   │   │
+│   │   ├── service/                          # Lógica de negocio
+│   │   │   └── InfraccionesService.java      # Servicio principal de consultas
+│   │   │
+│   │   └── utils/                            # Utilidades
+│   │       └── SqlUtils.java                 # Carga y cache de queries SQL
+│   │
+│   └── resources/
+│       ├── application.yml                   # Configuración principal
+│       └── querys/                           # Archivos SQL de consultas
+│           ├── consultar_personas_juridicas.sql
+│           ├── reporte_infracciones_general.sql
+│           ├── reporte_infracciones_detallado.sql
+│           ├── reporte_infracciones_por_equipos.sql
+│           ├── reporte_radar_fijo_por_equipo.sql
+│           ├── reporte_semaforo_por_equipo.sql
+│           ├── reporte_vehiculos_por_municipio.sql
+│           ├── reporte_sin_email_por_municipio.sql
+│           └── verificar_imagenes_subidas_radar_concesion.sql
 ```
 
-### Ejecución
+## Diagrama de Flujo del Sistema
+
+```mermaid
+graph TD
+    A[Usuario hace petición REST] --> B[Validar parámetros y consulta]
+    B --> C{¿Provincias especificadas?}
+    
+    C -->|Sí| D[Determinar repositorios específicos]
+    C -->|No| E[Usar todas las provincias disponibles]
+    
+    D --> F[Estimar tamaño de resultado]
+    E --> F
+    
+    F --> G{¿Más de 10,000 registros estimados?}
+    
+    G -->|No| H[Procesamiento SÍNCRONO]
+    G -->|Sí| I[Procesamiento por LOTES]
+    
+    H --> H1[Consulta paralela a todas las BDs]
+    H1 --> H2[Combinar resultados en memoria]
+    H2 --> J[Convertir al formato solicitado]
+    
+    I --> I1[Inicializar streaming converter]
+    I1 --> I2[Procesar provincia por provincia]
+    I2 --> I3[Ejecutar lotes con LIMIT/OFFSET]
+    I3 --> I4[Procesar chunks y liberar memoria]
+    I4 --> I5{¿Más provincias?}
+    I5 -->|Sí| I2
+    I5 -->|No| I6[Finalizar streaming]
+    I6 --> J
+    
+    J --> K{¿Formato solicitado?}
+    K -->|JSON| L[Generar JSON]
+    K -->|CSV| M[Generar CSV]
+    K -->|Excel| N[Generar Excel]
+    
+    L --> O[Retornar respuesta]
+    M --> O
+    N --> O
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style G fill:#fff3e0
+    style H fill:#e8f5e8
+    style I fill:#ffebee
+    style O fill:#f1f8e9
+```
+
+## Tipos de Consultas Disponibles
+
+El sistema soporta los siguientes tipos de consultas especializadas:
+
+| Tipo de Consulta | Endpoint | Descripción | Archivo SQL |
+|------------------|----------|-------------|-------------|
+| `personas-juridicas` | `/api/infracciones/personas-juridicas` | Consulta de personas jurídicas con CUIT | `consultar_personas_juridicas.sql` |
+| `infracciones-general` | `/api/infracciones/infracciones-general` | Reporte general de infracciones | `reporte_infracciones_general.sql` |
+| `infracciones-detallado` | `/api/infracciones/infracciones-detallado` | Reporte detallado con información completa | `reporte_infracciones_detallado.sql` |
+| `infracciones-por-equipos` | `/api/infracciones/infracciones-por-equipos` | Infracciones agrupadas por equipo | `reporte_infracciones_por_equipos.sql` |
+| `radar-fijo-por-equipo` | `/api/infracciones/radar-fijo-por-equipo` | Específico para radares fijos | `reporte_radar_fijo_por_equipo.sql` |
+| `semaforo-por-equipo` | `/api/infracciones/semaforo-por-equipo` | Específico para semáforos (luz roja/senda) | `reporte_semaforo_por_equipo.sql` |
+| `vehiculos-por-municipio` | `/api/infracciones/vehiculos-por-municipio` | Análisis de vehículos por municipio | `reporte_vehiculos_por_municipio.sql` |
+| `sin-email-por-municipio` | `/api/infracciones/sin-email-por-municipio` | Infracciones sin datos de email | `reporte_sin_email_por_municipio.sql` |
+| `verificar-imagenes-radar` | `/api/infracciones/verificar-imagenes-radar` | Verificación de imágenes por radar | `verificar_imagenes_subidas_radar_concesion.sql` |
+
+## Arquitectura de Base de Datos
+
+### Provincias Soportadas
+- **Buenos Aires** (`pba`)
+- **Avellaneda** (`mda`)
+- **La Pampa** (`santa-rosa`)
+- **Chaco** (`chaco`)
+- **Entre Ríos** (`entre-rios`)
+- **Formosa** (`formosa`)
+
+### Esquema de Datos
+Todas las bases de datos comparten el mismo esquema con las siguientes tablas principales:
+- `infraccion` - Registro principal de infracciones
+- `dominios` - Información de vehículos y dominios
+- `dominio_titulares` - Datos de propietarios
+- `punto_control` - Información de equipos (radares, semáforos)
+- `concesion` - Datos de municipios/concesiones
+- `tipo_infraccion` - Tipos de infracciones
+- `exportaciones_lote_header/detail` - Control de exportaciones
+
+## Configuración y Despliegue
+
+### Prerequisitos
+- Java 8
+- Maven 3.6+
+- PostgreSQL (una instancia por provincia)
+- Variables de entorno configuradas para cada base de datos
+
+### Despliegue
+
+1. **Configurar variables de entorno**:
 
 ```bash
-# Clonar el repositorio
-git clone <repository-url>
-cd transito-seguro
+chmod +x set_databases.sh
+```
 
-# Compilar
-mvn clean compile
 
-# Ejecutar
+```bash
+source ./set_databases.sh
+```
+
+2. **Ejecutar la aplicación**:
+```bash
 mvn spring-boot:run
 ```
 
-## 📝 Tipos de Consultas Disponibles
-
-| Tipo | Endpoint | Descripción |
-|------|----------|-------------|
-| `personas-juridicas` | `/api/infracciones/personas-juridicas` | Consulta de personas jurídicas |
-| `infracciones-general` | `/api/infracciones/infracciones-general` | Reporte general de infracciones |
-| `infracciones-detallado` | `/api/infracciones/infracciones-detallado` | Reporte detallado de infracciones |
-| `infracciones-por-equipos` | `/api/infracciones/infracciones-por-equipos` | Infracciones por equipos |
-| `radar-fijo-por-equipo` | `/api/infracciones/radar-fijo-por-equipo` | Radar fijo por equipo |
-| `semaforo-por-equipo` | `/api/infracciones/semaforo-por-equipo` | Semáforos por equipo |
-| `vehiculos-por-municipio` | `/api/infracciones/vehiculos-por-municipio` | Vehículos por municipio |
-| `sin-email-por-municipio` | `/api/infracciones/sin-email-por-municipio` | Infracciones sin email |
-| `verificar-imagenes-radar` | `/api/infracciones/verificar-imagenes-radar` | Verificación de imágenes |
-
-## 🔗 Endpoints Principales
-
-### Consultas (Con límite automático de 5,000 registros)
-
+### Variables de Entorno Requeridas
 ```bash
-# Consulta genérica
-POST /api/infracciones/{tipoConsulta}
+# Buenos Aires
+export PBA_URL=jdbc:postgresql://localhost:5432/pba_db
+export PBA_USERNAME=postgres
+export PBA_PASSWORD=password
 
-# Consultas específicas
+# Avellaneda  
+export MDA_URL=jdbc:postgresql://localhost:5432/mda_db
+export MDA_USERNAME=postgres
+export MDA_PASSWORD=password
+
+# ... (repetir para todas las provincias)
+```
+
+## Configuración de Límites
+
+### Endpoints de Consulta (CON límite)
+- **Límite máximo**: 5,000 registros
+- **Propósito**: Consultas rápidas para interfaces web/Postman
+- **Endpoint**: `/api/infracciones/{tipoConsulta}`
+
+### Endpoints de Descarga (SIN límite)
+- **Límite**: Sin límite (puede generar archivos de 800,000+ registros)
+- **Propósito**: Generación de archivos completos
+- **Endpoint**: `/api/descargar/{tipoConsulta}` o `/api/infracciones/{tipoConsulta}/descargar`
+
+### Configuración de Performance
+```yaml
+app:
+  limits:
+    max-records-sync: 10000      # Umbral para procesamiento síncrono
+    max-records-display: 5000    # Límite para endpoints de consulta
+    max-records-total: 100000    # Límite máximo absoluto
+  batch:
+    size: 10000                  # Tamaño de lote
+    chunk-size: 2000            # Tamaño de chunk para procesamiento
+    memory-critical-threshold: 0.80 # Umbral crítico de memoria
+```
+
+## Optimización de Memoria
+
+El sistema incluye sofisticadas optimizaciones para manejar grandes volúmenes:
+
+- **Procesamiento por lotes**: División automática en lotes manejables
+- **Streaming de datos**: Procesamiento por chunks con liberación inmediata de memoria
+- **Gestión dinámica de memoria**: Monitoreo continuo y limpieza automática
+- **Pausas inteligentes**: Permite que el Garbage Collector actúe naturalmente
+- **Límites adaptativos**: Ajuste automático del tamaño de lote según memoria disponible
+
+## API REST
+
+### Ejemplos de Uso
+
+#### Consulta Simple (JSON)
+```bash
 POST /api/infracciones/personas-juridicas
-POST /api/infracciones/infracciones-general
-POST /api/infracciones/infracciones-detallado
-# ... etc
-```
+Content-Type: application/json
 
-### Descargas (Sin límite)
-
-```bash
-# Descarga genérica
-POST /api/infracciones/{tipoConsulta}/descargar
-POST /api/infracciones/descargar/{tipoConsulta}
-
-# Descarga específica
-POST /api/descargar/personas-juridicas
-POST /api/descargar/reporte-general
-# ... etc
-```
-
-### Información del Sistema
-
-```bash
-# Información de límites
-GET /api/infracciones/limits-info
-```
-
-## 📄 Estructura de Request
-
-### Ejemplo Básico
-
-```json
 {
   "formato": "json",
   "parametrosFiltros": {
     "fechaInicio": "2024-01-01",
-    "fechaFin": "2024-12-31",
-    "baseDatos": ["BuenosAires", "Entre Ríos"],
+    "fechaFin": "2024-01-31",
+    "provincias": ["Buenos Aires", "Entre Ríos"],
     "limite": 1000
   }
 }
 ```
 
-### Ejemplo Completo
+#### Descarga Masiva (Excel)
+```bash
+POST /api/descargar/infracciones-general
+Content-Type: application/json
 
-```json
 {
   "formato": "excel",
   "parametrosFiltros": {
-    "tipoDocumento": "CUIT",
-    "fechaEspecifica": "2024-06-15",
-    "provincias": ["BuenosAires"],
-    "municipios": ["La Plata", "Mar del Plata"],
-    "baseDatos": ["pba"],
-    "usarTodasLasBDS": false,
-    "tieneEmail": true,
-    "exportadoSacit": false,
-    "limite": 5000,
-    "offset": 0,
-    "concesiones": [1, 2, 3],
-    "tiposInfracciones": [1, 2],
-    "estadosInfracciones": [20, 21],
-    "patronesEquipos": ["SE", "VLR"],
-    "tipoVehiculo": ["AUTO", "MOTO"]
+    "fechaInicio": "2024-01-01",
+    "fechaFin": "2024-12-31",
+    "usarTodasLasBDS": true
   }
 }
 ```
 
-## 🔧 Parámetros de Filtrado
+### Filtros Disponibles
 
-### Fechas
-- `fechaInicio`: Fecha de inicio (YYYY-MM-DD)
-- `fechaFin`: Fecha de fin (YYYY-MM-DD)
-- `fechaEspecifica`: Fecha específica (YYYY-MM-DD)
+- **Fechas**: `fechaInicio`, `fechaFin`, `fechaEspecifica`
+- **Ubicación**: `provincias`, `municipios`, `lugares`, `partido`
+- **Equipos**: `tiposDispositivos`, `patronesEquipos`, `seriesEquiposExactas`
+- **Infracciones**: `tiposInfracciones`, `estadosInfracciones`
+- **Otros**: `exportadoSacit`, `tieneEmail`, `tipoVehiculo`
 
-### Ubicación
-- `provincias`: Array de provincias
-- `municipios`: Array de municipios
-- `baseDatos`: Array de códigos de base de datos
-- `usarTodasLasBDS`: Usar todas las bases (boolean)
+## Monitoreo y Logs
 
-### Infracciones
-- `tiposInfracciones`: Array de IDs de tipos
-- `estadosInfracciones`: Array de IDs de estados
-- `exportadoSacit`: Exportado a SACIT (boolean)
+- **Nivel de log**: DEBUG para desarrollo, INFO para producción
+- **Métricas de memoria**: Seguimiento en tiempo real del uso de memoria
+- **Estadísticas de lotes**: Información detallada del procesamiento
+- **Actuator endpoints**: `/actuator/health`, `/actuator/metrics`
 
-### Equipos
-- `patronesEquipos`: Patrones de búsqueda
-- `tiposDispositivos`: Array de IDs de dispositivos
-- `concesiones`: Array de IDs de concesiones
+## Notas de Desarrollo
 
-### Otros
-- `tieneEmail`: Filtrar por email (boolean)
-- `tipoVehiculo`: Array de tipos de vehículo
-- `limite`: Límite de registros
-- `offset`: Desplazamiento para paginación
-
-## 📊 Formatos de Salida
-
-### JSON (Predeterminado)
-```json
-{
-  "datos": {
-    "total": 1500,
-    "datos": [...]
-  },
-  "metadata": {
-    "limite_aplicado": 5000,
-    "limite_fue_reducido": false
-  }
-}
-```
-
-### CSV
-Archivo CSV con headers y datos separados por comas.
-
-### Excel
-Archivo XLSX con formato, headers en negrita y columnas auto-ajustadas.
-
-## ⚡ Límites y Performance
-
-### Consultas (Endpoints /api/infracciones/*)
-- **Límite automático**: 5,000 registros
-- **Procesamiento**: Síncrono optimizado
-- **Uso**: Ideal para visualización en aplicaciones
-
-### Descargas (Endpoints /descargar)
-- **Sin límite**: Procesa todos los registros disponibles
-- **Procesamiento**: Por lotes con streaming
-- **Uso**: Ideal para exportación y análisis
-
-### Configuración de Memoria
-```yaml
-app:
-  batch:
-    size: 10000
-    chunk-size: 2000
-    max-memory-per-batch: 200
-    memory-critical-threshold: 0.80
-```
-
-## 🛠️ Ejemplos de Uso
-
-### 1. Consultar Personas Jurídicas de Buenos Aires
-
-```bash
-curl -X POST "http://localhost:8080/api/infracciones/personas-juridicas" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "formato": "json",
-    "parametrosFiltros": {
-      "baseDatos": ["BuenosAires"],
-      "tieneEmail": true,
-      "limite": 1000
-    }
-  }'
-```
-
-### 2. Descargar Reporte Completo en Excel
-
-```bash
-curl -X POST "http://localhost:8080/api/descargar/reporte-general" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "formato": "excel",
-    "parametrosFiltros": {
-      "fechaInicio": "2024-01-01",
-      "fechaFin": "2024-12-31",
-      "usarTodasLasBDS": true
-    }
-  }' \
-  --output reporte_infracciones.xlsx
-```
-
-### 3. Consultar por Rango de Fechas
-
-```bash
-curl -X POST "http://localhost:8080/api/infracciones/infracciones-detallado" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "formato": "json",
-    "parametrosFiltros": {
-      "fechaInicio": "2024-06-01",
-      "fechaFin": "2024-06-30",
-      "exportadoSacit": false,
-      "baseDatos": ["pba", "mda"]
-    }
-  }'
-```
-
-## 🐛 Manejo de Errores
-
-### Códigos de Error Comunes
-
-| Código | Descripción | Solución |
-|--------|-------------|----------|
-| 400 | Parámetros inválidos | Verificar estructura del JSON |
-| 404 | Tipo de consulta no encontrado | Usar tipos válidos listados arriba |
-| 500 | Error interno | Verificar conexión a BD y logs |
-
-### Ejemplo de Respuesta de Error
-
-```json
-{
-  "error": "Validación fallida",
-  "detalle": "La fecha de inicio debe ser anterior a la fecha fin",
-  "timestamp": "2024-01-15T10:30:00.000Z",
-  "status": 400
-}
-```
-
-## 📈 Monitoreo
-
-### Health Check
-```bash
-GET /actuator/health
-```
-
-### Métricas
-```bash
-GET /actuator/metrics
-```
-
-### Información de Límites
-```bash
-GET /api/infracciones/limits-info
-```
-
-## 🏗️ Arquitectura
-
-### Componentes Principales
-
-- **Controllers**: Manejo de endpoints REST
-- **Services**: Lógica de negocio y orquestación
-- **Repositories**: Acceso a datos multi-provincia
-- **Components**: Procesamiento, validación y conversión
-- **Factory**: Creación dinámica de repositorios
-
-### Patrones Implementados
-
-- **Factory Pattern**: Para repositorios multi-provincia
-- **Strategy Pattern**: Para diferentes formatos de salida
-- **Streaming Pattern**: Para procesamiento eficiente
-- **Builder Pattern**: Para DTOs complejos
-
-## 🔒 Seguridad
-
-### Configuración CORS
-```yaml
-@CrossOrigin(origins = "*", maxAge = 3600)
-```
-
-### Validación de Entrada
-- Validación automática con `@Valid`
-- Sanitización de parámetros SQL
-- Límites de memoria y tiempo
-
-## 📚 Documentación Adicional
-
-### Estructura de Base de Datos
-Cada provincia debe tener las siguientes tablas principales:
-- `dominios`
-- `dominio_titulares`
-- `infraccion`
-- `concesion`
-- `punto_control`
-- `tipo_infraccion`
-
-### Queries SQL
-Las consultas SQL están ubicadas en `src/main/resources/querys/` y son cargadas dinámicamente.
-
-
+- **Thread-safe**: Diseño completamente thread-safe para consultas concurrentes
+- **Cache de queries**: Las consultas SQL se cachean automáticamente
+- **Validación dinámica**: Validación de parámetros según el tipo de consulta
+- **Tolerancia a fallos**: Continúa procesando aunque falle una provincia
