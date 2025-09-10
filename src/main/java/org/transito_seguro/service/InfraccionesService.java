@@ -15,6 +15,7 @@ import org.transito_seguro.factory.RepositoryFactory;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 import org.transito_seguro.wrapper.CursorResponseWrapper;
 
+
 import javax.annotation.PreDestroy;
 import javax.xml.bind.ValidationException;
 import java.io.ByteArrayOutputStream;

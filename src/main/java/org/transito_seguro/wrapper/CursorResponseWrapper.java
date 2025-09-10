@@ -1,6 +1,5 @@
 package org.transito_seguro.wrapper;
 
-
 import lombok.Builder;
 import lombok.Data;
 import java.util.List;
