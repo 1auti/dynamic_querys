@@ -121,50 +121,50 @@ public class DescargarInfraccionesController {
     /**
      * Endpoint de descarga con límites configurables para pruebas
      */
-    @PostMapping("/test/{tipoConsulta}")
-    public ResponseEntity<byte[]> descargarConLimite(
-            @PathVariable String tipoConsulta,
-            @Valid @RequestBody ConsultaQueryDTO consulta,
-            @RequestParam(defaultValue = "5000") int limite,
-            @RequestParam(defaultValue = "json") String formato) {
-
-        log.info("Descarga de prueba - Tipo: {}, Límite: {}, Formato: {}",
-                tipoConsulta, limite, formato);
-
-        // Aplicar límite y formato
-        if (consulta.getParametrosFiltros() == null) {
-            consulta.setParametrosFiltros(new ParametrosFiltrosDTO());
-        }
-
-        consulta.getParametrosFiltros().setLimite(limite);
-        consulta.setFormato(formato);
-
-        return ejecutarDescarga(tipoConsulta, consulta);
-    }
+//    @PostMapping("/test/{tipoConsulta}")
+//    public ResponseEntity<byte[]> descargarConLimite(
+//            @PathVariable String tipoConsulta,
+//            @Valid @RequestBody ConsultaQueryDTO consulta,
+//            @RequestParam(defaultValue = "5000") int limite,
+//            @RequestParam(defaultValue = "json") String formato) {
+//
+//        log.info("Descarga de prueba - Tipo: {}, Límite: {}, Formato: {}",
+//                tipoConsulta, limite, formato);
+//
+//        // Aplicar límite y formato
+//        if (consulta.getParametrosFiltros() == null) {
+//            consulta.setParametrosFiltros(new ParametrosFiltrosDTO());
+//        }
+//
+//        consulta.getParametrosFiltros().setLimite(limite);
+//        consulta.setFormato(formato);
+//
+//        return ejecutarDescarga(tipoConsulta, consulta);
+//    }
 
     /**
      * Endpoint para descarga rápida de muestra (solo una provincia)
      */
-    @PostMapping("/muestra/{tipoConsulta}")
-    public ResponseEntity<byte[]> descargarMuestra(
-            @PathVariable String tipoConsulta,
-            @Valid @RequestBody ConsultaQueryDTO consulta,
-            @RequestParam(defaultValue = "1000") int limite) {
-
-        log.info("Descarga de muestra - Tipo: {}, Límite: {}", tipoConsulta, limite);
-
-        // Configurar para muestra rápida
-        if (consulta.getParametrosFiltros() == null) {
-            consulta.setParametrosFiltros(new ParametrosFiltrosDTO());
-        }
-
-        // Forzar una sola provincia para rapidez
-        consulta.getParametrosFiltros().setUsarTodasLasBDS(false);
-        consulta.getParametrosFiltros().setBaseDatos(Arrays.asList("Entre Ríos"));
-        consulta.getParametrosFiltros().setLimite(limite);
-
-        return ejecutarDescarga(tipoConsulta, consulta);
-    }
+//    @PostMapping("/muestra/{tipoConsulta}")
+//    public ResponseEntity<byte[]> descargarMuestra(
+//            @PathVariable String tipoConsulta,
+//            @Valid @RequestBody ConsultaQueryDTO consulta,
+//            @RequestParam(defaultValue = "1000") int limite) {
+//
+//        log.info("Descarga de muestra - Tipo: {}, Límite: {}", tipoConsulta, limite);
+//
+//        // Configurar para muestra rápida
+//        if (consulta.getParametrosFiltros() == null) {
+//            consulta.setParametrosFiltros(new ParametrosFiltrosDTO());
+//        }
+//
+//        // Forzar una sola provincia para rapidez
+//        consulta.getParametrosFiltros().setUsarTodasLasBDS(false);
+//        consulta.getParametrosFiltros().setBaseDatos(Arrays.asList("Entre Ríos"));
+//        consulta.getParametrosFiltros().setLimite(limite);
+//
+//        return ejecutarDescarga(tipoConsulta, consulta);
+//    }
 
 
     // Metodo privada centralizado

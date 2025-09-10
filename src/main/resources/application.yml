@@ -131,7 +131,6 @@ app:
   limits:
     max-records-sync: 10000         # Para que consultas de hasta 5000 usen procesamiento síncrono
     max-records-total: 100000       # Máximo absoluto de registros
-    max-records-display: 10000       # Máximo para endpoints de consulta (Postman-friendly)
     max-concurrent-queries: 10      # Máximo de consultas concurrentes
   batch:
     size: 10000                     # Lotes más grandes
@@ -139,6 +138,10 @@ app:
     max-memory-per-batch: 200       # Más memoria por lote
     memory-critical-threshold: 0.80 # Más conservador
     timeout-seconds: 120            # Más tiempo para queries grandes
+  cursor:
+    default-page-size: 50      # Reemplaza max-records-display
+    max-page-size: 1000        # Límite máximo de página
+    default-type: "fecha_id"   # Tipo cursor por defecto
 
   # Configuración para threads asíncronos
   async:

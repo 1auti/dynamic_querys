@@ -1,4 +1,4 @@
--- consultar_personas_juridicas.sql (VERSIÓN FINAL CORREGIDA)
+-- consultar_personas_juridicas.sql
 
 SELECT
     d.dominio AS "DOMINIO",
@@ -29,7 +29,11 @@ SELECT
 
     dt.partido AS "PARTIDO",
 
-    -- AGREGAR FECHA_ALTA FORMATEADA PARA REFERENCIA
+    -- CAMPOS NECESARIOS PARA CURSOR (agregados)
+    d.id AS "id",
+    d.fecha_alta AS "fecha_alta",
+
+    -- FORMATEAR FECHA_ALTA PARA VISUALIZACIÓN
     TO_CHAR(d.fecha_alta, 'DD/MM/YYYY') AS "FECHA_ALTA"
 
 FROM
@@ -43,28 +47,29 @@ LEFT JOIN
 WHERE
     dt.sexo IN ('J')
 
-    -- Filtros de fecha (CORREGIDOS)
+    -- Filtros de fecha
     AND (:fechaEspecifica::DATE IS NULL OR DATE(d.fecha_alta) = :fechaEspecifica::DATE)
     AND (:fechaInicio::DATE IS NULL OR DATE(d.fecha_alta) >= :fechaInicio::DATE)
     AND (:fechaFin::DATE IS NULL OR DATE(d.fecha_alta) <= :fechaFin::DATE)
 
-    -- Filtros de Email (CORREGIDO - lógica simplificada)
+    -- Filtros de Email
     AND (
         :tieneEmail::BOOLEAN IS NULL OR
         (:tieneEmail::BOOLEAN = true AND dt.email IS NOT NULL AND dt.email != '') OR
         (:tieneEmail::BOOLEAN = false AND (dt.email IS NULL OR dt.email = ''))
     )
 
-    -- Filtro de Localidad (CORREGIDOS)
+    -- Filtro de Localidad
     AND (:provincias::TEXT[] IS NULL OR dt.provincia = ANY(:provincias::TEXT[]))
     AND (:partido::TEXT[] IS NULL OR dt.partido = ANY(:partido::TEXT[]))
 
-    -- Filtro Tipo de documento (CORREGIDO)
+    -- Filtro Tipo de documento
     AND (:tipoDocumento::VARCHAR IS NULL OR dt.tipo_documento = :tipoDocumento::VARCHAR)
 
-    -- FILTRO ADICIONAL: Filtrar por tipo de vehículo si se especifica
+    -- Filtrar por tipo de vehículo
     AND (:tiposVehiculos::TEXT[] IS NULL OR tv.descripcion = ANY(:tiposVehiculos::TEXT[]))
 
-ORDER BY d.fecha_alta DESC, d.dominio ASC
-LIMIT COALESCE(:limite::INTEGER, 1000)
-OFFSET COALESCE(:offset::INTEGER, 0)
+
+ORDER BY
+    d.fecha_alta DESC,
+    d.id DESC
