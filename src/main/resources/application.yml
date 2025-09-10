@@ -131,7 +131,7 @@ app:
   limits:
     max-records-sync: 10000         # Para que consultas de hasta 5000 usen procesamiento síncrono
     max-records-total: 100000       # Máximo absoluto de registros
-    max-records-display: 5000       # Máximo para endpoints de consulta (Postman-friendly)
+    max-records-display: 10000       # Máximo para endpoints de consulta (Postman-friendly)
     max-concurrent-queries: 10      # Máximo de consultas concurrentes
   batch:
     size: 10000                     # Lotes más grandes

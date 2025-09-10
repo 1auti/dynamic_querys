@@ -13,7 +13,7 @@ Este sistema es una **aplicación de reportes y consultas** diseñada para reali
 - **Optimización de memoria**: Gestión inteligente de memoria para consultas masivas
 - **Streaming de datos**: Procesamiento por chunks para evitar desbordamiento de memoria
 
-
+ 
 ## Estructura del Proyecto
 
 ```
