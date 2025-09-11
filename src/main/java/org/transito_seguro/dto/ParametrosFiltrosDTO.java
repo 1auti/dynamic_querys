@@ -21,7 +21,7 @@ public class ParametrosFiltrosDTO {
             baseDatos, patronesEquipos, tipoVehiculo, filtrarPorTipoEquipo, seriesEquiposExactas;
     private List<Integer> concesiones, tiposInfracciones, estadosInfracciones, tiposDispositivos;
     private Boolean exportadoSacit, tieneEmail, usarTodasLasBDS,
-            incluirVLR, incluirSE, incluirTS, soloPersonasJuridicas;
+            incluirVLR, incluirSE, incluirTS, soloPersonasJuridicas,consolidado;
 
 
     private Integer tamanoPagina;
@@ -53,6 +53,10 @@ public class ParametrosFiltrosDTO {
      */
     public Integer getLimiteMaximo() {
         return getLimiteEfectivo();
+    }
+
+    public boolean esConsolidado() {
+        return consolidado  != null && consolidado;
     }
 
     /**

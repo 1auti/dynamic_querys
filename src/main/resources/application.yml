@@ -125,6 +125,8 @@ queries:
     - "reporte_vehiculos_por_municipio.sql"
     - "reporte_sin_email_por_municipio.sql"
     - "verificar_imagenes_subidas_radar_concesion.sql"
+    - "reporte_cantidad_infracciones_estado.sql"
+    - "reporte_infracciones_generadas_bruto.sql"
 
 # Configuración de la aplicación
 app:

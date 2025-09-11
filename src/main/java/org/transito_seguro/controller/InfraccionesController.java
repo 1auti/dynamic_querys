@@ -23,14 +23,14 @@ public class InfraccionesController {
     @Autowired
     private InfraccionesService infraccionesService;
 
-    // LÍMITE MÁXIMO PARA ENDPOINTS DE CONSULTA (no descarga)
     @Value("${app.limits.max-records-display:5000}")
     private int maxRecordsDisplay;
 
-    // =============== ENDPOINTS GENÉRICOS CON LÍMITE ===============
+    // =============== ENDPOINTS GENÉRICOS (MANEJAN CONSOLIDACIÓN AUTOMÁTICAMENTE) ===============
 
     /**
-     * Endpoint genérico para consultar infracciones con límite automático
+     * Endpoint genérico para consultar infracciones
+     * MANEJA AUTOMÁTICAMENTE consolidación si consolidado=true en los filtros
      */
     @PostMapping("/consultar")
     public ResponseEntity<?> consultarInfracciones(@Valid @RequestBody ConsultaQueryDTO consulta) {
@@ -38,7 +38,8 @@ public class InfraccionesController {
     }
 
     /**
-     * Endpoint genérico que maneja todas las consultas específicas CON LÍMITE
+     * Endpoint genérico que maneja todas las consultas específicas
+     * MANEJA AUTOMÁTICAMENTE consolidación si consolidado=true en los filtros
      */
     @PostMapping("/{tipoConsulta}")
     public ResponseEntity<?> ejecutarConsultaEspecifica(
@@ -47,17 +48,18 @@ public class InfraccionesController {
         return ejecutarConsultaConLimite(tipoConsulta, consulta);
     }
 
-    // =============== ENDPOINTS DE DESCARGA SIN LÍMITE ===============
-
     /**
-     * Endpoint genérico para descarga de archivos SIN LÍMITE
+     * Endpoint genérico para descarga de archivos
+     * MANEJA AUTOMÁTICAMENTE consolidación si consolidado=true en los filtros
      */
     @PostMapping("/{tipoConsulta}/descargar")
     public ResponseEntity<byte[]> descargarArchivo(
             @PathVariable String tipoConsulta,
             @Valid @RequestBody ConsultaQueryDTO consulta) {
         try {
-            log.info("Descargando archivo para tipo: {} - SIN LÍMITE", tipoConsulta);
+            log.info("Descargando archivo para tipo: {} - Consolidado: {}",
+                    tipoConsulta,
+                    consulta.getParametrosFiltros() != null && consulta.getParametrosFiltros().esConsolidado());
             return infraccionesService.descargarConsultaPorTipo(tipoConsulta, consulta);
         } catch (IllegalArgumentException e) {
             log.error("Tipo de consulta no válido: {}", e.getMessage());
@@ -69,7 +71,7 @@ public class InfraccionesController {
     }
 
     /**
-     * Endpoint de descarga genérico alternativo
+     * Endpoint de descarga alternativo
      */
     @PostMapping("/descargar/{tipoConsulta}")
     public ResponseEntity<byte[]> descargarArchivoAlternativo(
@@ -78,97 +80,80 @@ public class InfraccionesController {
         return descargarArchivo(tipoConsulta, consulta);
     }
 
-    // =============== ENDPOINTS ESPECÍFICOS CON LÍMITE (MANTENER COMPATIBILIDAD) ===============
+    // =============== ENDPOINTS ESPECÍFICOS (MANTENER COMPATIBILIDAD) ===============
 
-    /**
-     * Endpoint específico para consultar personas jurídicas CON LÍMITE
-     */
     @PostMapping("/personas-juridicas")
     public ResponseEntity<?> consultarPersonasJuridicas(@Valid @RequestBody ConsultaQueryDTO consulta) {
         return ejecutarConsultaConLimite("personas-juridicas", consulta);
     }
 
-    /**
-     * Endpoint para reporte general de infracciones CON LÍMITE
-     */
     @PostMapping("/infracciones-general")
     public ResponseEntity<?> reporteGeneral(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("infracciones-general", consulta); // ✅ CORREGIDO
+        return ejecutarConsultaConLimite("infracciones-general", consulta);
     }
 
-    /**
-     * Endpoint para reporte de infracciones por equipos CON LÍMITE
-     */
     @PostMapping("/infracciones-por-equipos")
     public ResponseEntity<?> reportePorEquipos(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("infracciones-por-equipos", consulta); // ✅ CORREGIDO
+        return ejecutarConsultaConLimite("infracciones-por-equipos", consulta);
     }
 
-    /**
-     * Endpoint para reporte de radar fijo CON LÍMITE
-     */
     @PostMapping("/radar-fijo-por-equipo")
     public ResponseEntity<?> reporteRadarFijo(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("radar-fijo-por-equipo", consulta); // ✅ CORREGIDO
+        return ejecutarConsultaConLimite("radar-fijo-por-equipo", consulta);
     }
 
-    /**
-     * Endpoint para reporte de semáforo CON LÍMITE
-     */
     @PostMapping("/semaforo-por-equipo")
     public ResponseEntity<?> reporteSemaforo(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("semaforo-por-equipo", consulta); // ✅ CORREGIDO
+        return ejecutarConsultaConLimite("semaforo-por-equipo", consulta);
     }
 
-    /**
-     * Endpoint para consultar vehículos por municipio CON LÍMITE
-     */
     @PostMapping("/vehiculos-por-municipio")
     public ResponseEntity<?> vehiculosPorMunicipio(@Valid @RequestBody ConsultaQueryDTO consulta) {
         return ejecutarConsultaConLimite("vehiculos-por-municipio", consulta);
     }
 
-    /**
-     * Endpoint para consultar infracciones sin email por municipio CON LÍMITE
-     */
+
     @PostMapping("/sin-email-por-municipio")
     public ResponseEntity<?> reporteSinEmail(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("sin-email-por-municipio", consulta); // ✅ CORREGIDO
+        return ejecutarConsultaConLimite("sin-email-por-municipio", consulta);
     }
 
-    /**
-     * Endpoint para verificar imágenes de radar CON LÍMITE
-     */
     @PostMapping("/verificar-imagenes-radar")
     public ResponseEntity<?> verificarImagenesRadar(@Valid @RequestBody ConsultaQueryDTO consulta) {
         return ejecutarConsultaConLimite("verificar-imagenes-radar", consulta);
     }
 
-    /**
-     * Endpoint para reporte detallado de infracciones CON LÍMITE
-     */
     @PostMapping("/infracciones-detallado")
     public ResponseEntity<?> reporteDetallado(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return ejecutarConsultaConLimite("infracciones-detallado", consulta); // ✅ CORREGIDO
+        return ejecutarConsultaConLimite("infracciones-detallado", consulta);
     }
+
 
     // =============== MÉTODOS PRIVADOS ===============
 
     /**
      * Método que aplica límite automático y centraliza el manejo de errores
+     * DETECTA AUTOMÁTICAMENTE si es consolidación y ajusta la respuesta
      */
     private ResponseEntity<?> ejecutarConsultaConLimite(String tipoConsulta, ConsultaQueryDTO consulta) {
         try {
-            // APLICAR LÍMITE AUTOMÁTICO
+            // Aplicar límite automático
             ConsultaQueryDTO consultaConLimite = aplicarLimiteAutomatico(consulta);
 
-            log.info("Ejecutando consulta tipo: {} - LÍMITE APLICADO: {}",
-                    tipoConsulta, consultaConLimite.getParametrosFiltros().getLimiteEfectivo());
+            boolean esConsolidado = consultaConLimite.getParametrosFiltros() != null &&
+                    consultaConLimite.getParametrosFiltros().esConsolidado();
+
+            log.info("Ejecutando consulta tipo: {} - LÍMITE: {} - CONSOLIDADO: {}",
+                    tipoConsulta,
+                    consultaConLimite.getParametrosFiltros().getLimiteEfectivo(),
+                    esConsolidado);
 
             Object resultado = infraccionesService.ejecutarConsultaPorTipo(tipoConsulta, consultaConLimite);
 
-            // Agregar metadata sobre el límite aplicado
-            Map<String, Object> respuestaConMetadata = crearRespuestaConMetadata(resultado, consulta, consultaConLimite);
+            // Crear respuesta con metadata apropiada
+            Map<String, Object> respuestaConMetadata = esConsolidado ?
+                    crearRespuestaConsolidadaConMetadata(resultado, consulta, consultaConLimite, tipoConsulta) :
+                    crearRespuestaConMetadata(resultado, consulta, consultaConLimite);
 
             return ResponseEntity.ok(respuestaConMetadata);
 
@@ -191,12 +176,10 @@ public class InfraccionesController {
         ParametrosFiltrosDTO filtrosOriginales = consultaOriginal.getParametrosFiltros();
 
         if (filtrosOriginales == null) {
-            // Crear filtros por defecto con límite
             filtrosOriginales = ParametrosFiltrosDTO.builder()
                     .limite(maxRecordsDisplay)
                     .build();
         } else {
-            // Verificar si necesita aplicar límite
             int limiteActual = filtrosOriginales.getLimiteEfectivo();
             boolean limiteFueAplicado = false;
 
@@ -204,7 +187,6 @@ public class InfraccionesController {
                 log.info("Aplicando límite automático: {} -> {} registros", limiteActual, maxRecordsDisplay);
                 limiteFueAplicado = true;
 
-                // Crear nuevos filtros con límite aplicado
                 filtrosOriginales = filtrosOriginales.toBuilder()
                         .limite(maxRecordsDisplay)
                         .limiteMaximo(maxRecordsDisplay)
@@ -223,17 +205,14 @@ public class InfraccionesController {
     }
 
     /**
-     * Crea respuesta con metadata sobre límites aplicados
+     * Crea respuesta con metadata sobre límites aplicados (consultas normales)
      */
     private Map<String, Object> crearRespuestaConMetadata(Object resultado,
                                                           ConsultaQueryDTO consultaOriginal,
                                                           ConsultaQueryDTO consultaConLimite) {
         Map<String, Object> respuesta = new HashMap<>();
-
-        // Resultado principal
         respuesta.put("datos", resultado);
 
-        // Metadata sobre límites
         Map<String, Object> metadata = new HashMap<>();
 
         int limiteSolicitado = consultaOriginal.getParametrosFiltros() != null ?
@@ -244,6 +223,7 @@ public class InfraccionesController {
         metadata.put("limite_aplicado", limiteAplicado);
         metadata.put("limite_fue_reducido", limiteSolicitado > limiteAplicado);
         metadata.put("limite_maximo_consultas", maxRecordsDisplay);
+        metadata.put("tipo_consulta", "normal");
 
         if (limiteSolicitado > limiteAplicado) {
             metadata.put("mensaje", String.format(
@@ -252,6 +232,55 @@ public class InfraccionesController {
                     limiteAplicado
             ));
             metadata.put("endpoint_descarga_sugerido", "/api/infracciones/{tipoConsulta}/descargar");
+        }
+
+        respuesta.put("metadata", metadata);
+        respuesta.put("timestamp", new Date());
+
+        return respuesta;
+    }
+
+    /**
+     * Crea respuesta con metadata específica para consolidación
+     */
+    private Map<String, Object> crearRespuestaConsolidadaConMetadata(Object resultado,
+                                                                     ConsultaQueryDTO consultaOriginal,
+                                                                     ConsultaQueryDTO consultaConLimite,
+                                                                     String tipoConsulta) {
+        Map<String, Object> respuesta = new HashMap<>();
+        respuesta.put("datos", resultado);
+
+        Map<String, Object> metadata = new HashMap<>();
+
+        int limiteSolicitado = consultaOriginal.getParametrosFiltros() != null ?
+                consultaOriginal.getParametrosFiltros().getLimiteEfectivo() : maxRecordsDisplay;
+        int limiteAplicado = consultaConLimite.getParametrosFiltros().getLimiteEfectivo();
+
+        metadata.put("limite_solicitado", limiteSolicitado);
+        metadata.put("limite_aplicado", limiteAplicado);
+        metadata.put("limite_fue_reducido", limiteSolicitado > limiteAplicado);
+        metadata.put("limite_maximo_consultas", maxRecordsDisplay);
+        metadata.put("tipo_consulta", "consolidada");
+        metadata.put("consolidacion_activa", true);
+
+        // Información específica de consolidación
+        try {
+            Map<String, Object> infoConsolidacion = infraccionesService.obtenerInfoConsolidacion();
+            metadata.put("provincias_disponibles", infoConsolidacion.get("provincias_disponibles"));
+            metadata.put("total_provincias_consultadas", infoConsolidacion.get("total_provincias"));
+        } catch (Exception e) {
+            log.warn("No se pudo obtener info de consolidación para metadata: {}", e.getMessage());
+        }
+
+        if (limiteSolicitado > limiteAplicado) {
+            metadata.put("mensaje", String.format(
+                    "Su consulta CONSOLIDADA fue limitada a %d registros por provincia. " +
+                            "Para obtener datos completos consolidados, use '/descargar' que genera archivos sin límite.",
+                    limiteAplicado
+            ));
+            metadata.put("endpoint_descarga_sugerido", "/api/infracciones/" + tipoConsulta + "/descargar");
+        } else {
+            metadata.put("mensaje", "Consulta consolidada ejecutada exitosamente. Los datos incluyen información de todas las provincias disponibles.");
         }
 
         respuesta.put("metadata", metadata);
@@ -272,22 +301,4 @@ public class InfraccionesController {
         return ResponseEntity.status(status).body(errorResponse);
     }
 
-    // =============== ENDPOINT DE INFORMACIÓN ===============git
-
-    /**
-     * Endpoint para obtener información sobre límites
-     */
-    @GetMapping("/limits-info")
-    public ResponseEntity<?> obtenerInformacionLimites() {
-        Map<String, Object> info = new HashMap<>();
-        info.put("limite_maximo_consultas", maxRecordsDisplay);
-        info.put("limite_maximo_descargas", "Sin límite");
-        info.put("mensaje", "Los endpoints de consulta están limitados a " + maxRecordsDisplay +
-                " registros. Use /descargar para obtener archivos completos sin límite.");
-        info.put("endpoints_sin_limite", Arrays.asList(
-                "/api/infracciones/{tipoConsulta}/descargar",
-                "/api/infracciones/descargar/{tipoConsulta}"
-        ));
-        return ResponseEntity.ok(info);
-    }
 }

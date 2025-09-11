@@ -21,6 +21,8 @@ public enum Consultas {
     SIN_EMAIL_POR_MUNICIPIO("reporte_sin_email_por_municipio.sql", "Reporte de infracciones sin email"),
     VERIFICAR_IMAGENES_RADAR("verificar_imagenes_subidas_radar_concesion.sql", "Verificación de imágenes de radar");
 
+    
+
     private final String archivoQuery;
     private final String descripcion;
 

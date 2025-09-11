@@ -25,7 +25,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -46,6 +45,9 @@ public class InfraccionesService {
 
     @Autowired
     private BatchProcessor batchProcessor;
+
+    @Autowired
+    private ConsolidacionService consolidacionService;
 
     @Autowired
     private StreamingFormatoConverter streamingConverter;
@@ -69,7 +71,6 @@ public class InfraccionesService {
      */
     private static final Map<String, String> QUERY_MAPPING = Consultas.getMapeoCompleto();
 
-
     // Constructor para inicializar el thread pool
     public InfraccionesService() {
         this.executor = Executors.newFixedThreadPool(threadPoolSize > 0 ? threadPoolSize : 10);
@@ -84,16 +85,10 @@ public class InfraccionesService {
 
     // =============== MÉTODOS PÚBLICOS PRINCIPALES ===============
 
-    /**
-     * Método principal - decide entre procesamiento síncrono o por lotes
-     */
     public Object consultarInfracciones(ConsultaQueryDTO consulta) throws ValidationException {
         return consultarInfracciones(consulta, "consultar_personas_juridicas.sql");
     }
 
-    /**
-     * Método genérico que reemplaza todos los métodos específicos
-     */
     public Object ejecutarConsultaPorTipo(String tipoConsulta, ConsultaQueryDTO consulta) throws ValidationException {
         String nombreQuery = QUERY_MAPPING.get(tipoConsulta);
         if (nombreQuery == null) {
@@ -103,9 +98,6 @@ public class InfraccionesService {
         return consultarInfracciones(consulta, nombreQuery);
     }
 
-    /**
-     * Método genérico para descarga de archivos
-     */
     public ResponseEntity<byte[]> descargarConsultaPorTipo(String tipoConsulta, ConsultaQueryDTO consulta) throws ValidationException {
         String nombreQuery = QUERY_MAPPING.get(tipoConsulta);
         if (nombreQuery == null) {
@@ -116,7 +108,7 @@ public class InfraccionesService {
     }
 
     /**
-     * Método mejorado que decide automáticamente el tipo de procesamiento
+     * Método principal que maneja AUTOMÁTICAMENTE consolidación y procesamiento normal
      */
     public Object consultarInfracciones(ConsultaQueryDTO consulta, String nombreQuery) throws ValidationException {
         log.info("Iniciando consulta de infracciones con query: {}", nombreQuery);
@@ -124,7 +116,7 @@ public class InfraccionesService {
         // 1. Validar consulta
         validator.validarConsulta(consulta);
 
-        // 2. Determinar repositorios
+        // 2. Determinar repositorios (considera consolidación automáticamente)
         List<InfraccionesRepositoryImpl> repositories = determinarRepositories(consulta.getParametrosFiltros());
 
         if (repositories.isEmpty()) {
@@ -133,11 +125,20 @@ public class InfraccionesService {
                     consulta.getFormato() != null ? consulta.getFormato() : "json");
         }
 
-        // 3. Estimar tamaño de resultado
+        // 3. LÓGICA INTEGRADA: Verificar si es consolidación
+        if (consulta.getParametrosFiltros() != null && consulta.getParametrosFiltros().esConsolidado()) {
+            log.info("Modo consolidado detectado - ejecutando consolidación para {} provincias", repositories.size());
+            return ejecutarConsolidacion(repositories, consulta, nombreQuery);
+        }
+
+        // 4. Procesamiento normal (no consolidado)
+        log.info("Modo normal - procesando {} repositorios", repositories.size());
+
+        // Estimar tamaño de resultado
         int estimacionRegistros = estimarTamanoResultado(repositories, consulta.getParametrosFiltros(), nombreQuery);
         log.info("Estimación de registros: {}", estimacionRegistros);
 
-        // 4. Decidir estrategia de procesamiento
+        // Decidir estrategia de procesamiento
         if (estimacionRegistros <= maxRecordsSincrono) {
             log.info("Usando procesamiento síncrono (estimación: {} registros)", estimacionRegistros);
             return procesarSincrono(repositories, consulta, nombreQuery);
@@ -148,7 +149,7 @@ public class InfraccionesService {
     }
 
     /**
-     * Versión que retorna ResponseEntity para archivos grandes
+     * Método que maneja archivos - TAMBIÉN integra consolidación automáticamente
      */
     public ResponseEntity<byte[]> consultarInfraccionesComoArchivo(ConsultaQueryDTO consulta, String nombreQuery)
             throws ValidationException {
@@ -156,8 +157,148 @@ public class InfraccionesService {
         log.info("Generando archivo para consulta con query: {}", nombreQuery);
 
         validator.validarConsulta(consulta);
+
+        // Determinar repositorios (considera consolidación automáticamente)
         List<InfraccionesRepositoryImpl> repositories = determinarRepositories(consulta.getParametrosFiltros());
         String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
+
+        // LÓGICA INTEGRADA: Verificar si es consolidación para archivos
+        if (consulta.getParametrosFiltros() != null && consulta.getParametrosFiltros().esConsolidado()) {
+            log.info("Generando archivo consolidado para {} provincias", repositories.size());
+            return generarArchivoConsolidado(repositories, consulta, nombreQuery, formato);
+        }
+
+        // Procesamiento normal de archivos
+        return generarArchivoNormal(repositories, consulta, nombreQuery, formato);
+    }
+
+    // =============== MÉTODOS PRIVADOS - CONSOLIDACIÓN ===============
+
+    /**
+     * Ejecuta consolidación (llamado automáticamente cuando consolidado=true)
+     */
+    private Object ejecutarConsolidacion(List<InfraccionesRepositoryImpl> repositories,
+                                         ConsultaQueryDTO consulta, String nombreQuery) throws ValidationException {
+
+        ParametrosFiltrosDTO filtros = consulta.getParametrosFiltros();
+
+        // Validar que la consolidación es posible
+        if (!consolidacionService.validarConsolidacion(filtros)) {
+            throw new ValidationException("Consolidación no disponible con los filtros especificados");
+        }
+
+        try {
+            // Ejecutar consolidación
+            List<Map<String, Object>> datosConsolidados = consolidacionService.consolidarDatos(
+                    repositories, nombreQuery, filtros);
+
+            // Formatear resultado
+            Object resultadoFormateado = formatoConverter.convertir(datosConsolidados,
+                    consulta.getFormato() != null ? consulta.getFormato() : "json");
+
+            // Agregar metadata de consolidación si es JSON
+            if ("json".equals(consulta.getFormato()) || consulta.getFormato() == null) {
+                Map<String, Object> resumen = consolidacionService.generarResumenConsolidacion(datosConsolidados);
+                return agregarMetadataConsolidacion(resultadoFormateado, resumen);
+            }
+
+            return resultadoFormateado;
+
+        } catch (Exception e) {
+            log.error("Error en consolidación: {}", e.getMessage(), e);
+            throw new RuntimeException("Error ejecutando consolidación", e);
+        }
+    }
+
+    /**
+     * Genera archivo consolidado (llamado automáticamente cuando consolidado=true)
+     */
+    private ResponseEntity<byte[]> generarArchivoConsolidado(List<InfraccionesRepositoryImpl> repositories,
+                                                             ConsultaQueryDTO consulta, String nombreQuery, String formato) {
+
+        StreamingFormatoConverter.StreamingContext context = null;
+
+        try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+
+            context = streamingConverter.inicializarStreaming(formato, outputStream);
+
+            if (context == null) {
+                throw new RuntimeException("No se pudo inicializar streaming para archivo consolidado");
+            }
+
+            final StreamingFormatoConverter.StreamingContext finalContext = context;
+
+            // Procesar cada provincia secuencialmente
+            for (InfraccionesRepositoryImpl repo : repositories) {
+                String provincia = repo.getProvincia();
+
+                try {
+                    log.debug("Procesando provincia para archivo consolidado: {}", provincia);
+
+                    List<Map<String, Object>> datosProvider = repo.ejecutarQueryConFiltros(
+                            nombreQuery, consulta.getParametrosFiltros());
+
+                    if (datosProvider != null && !datosProvider.isEmpty()) {
+                        // Agregar información de provincia
+                        datosProvider.forEach(registro -> {
+                            registro.put("provincia_origen", provincia);
+                            registro.put("fuente_consolidacion", true);
+                        });
+
+                        // Procesar en streaming
+                        streamingConverter.procesarLoteStreaming(finalContext, datosProvider);
+                    }
+
+                } catch (Exception e) {
+                    log.error("Error procesando provincia {} para archivo consolidado: {}",
+                            provincia, e.getMessage(), e);
+
+                    // Agregar registro de error
+                    Map<String, Object> registroError = new HashMap<>();
+                    registroError.put("provincia_origen", provincia);
+                    registroError.put("error_consolidacion", true);
+                    registroError.put("mensaje_error", e.getMessage());
+                    registroError.put("timestamp_error", new java.util.Date());
+
+                    streamingConverter.procesarLoteStreaming(finalContext,
+                            Collections.singletonList(registroError));
+                }
+            }
+
+            streamingConverter.finalizarStreaming(context);
+
+            // Preparar respuesta HTTP
+            HttpHeaders headers = new HttpHeaders();
+            String filename = generarNombreArchivoConsolidado(formato);
+            headers.setContentDispositionFormData("attachment", filename);
+            headers.setContentType(determinarMediaType(formato));
+
+            byte[] responseData = outputStream.toByteArray();
+            log.info("Archivo consolidado generado: {} bytes, {} provincias",
+                    responseData.length, repositories.size());
+
+            return ResponseEntity.ok().headers(headers).body(responseData);
+
+        } catch (Exception e) {
+            log.error("Error generando archivo consolidado: {}", e.getMessage(), e);
+
+            if (context != null) {
+                try {
+                    streamingConverter.finalizarStreaming(context);
+                } catch (Exception cleanupException) {
+                    log.warn("Error limpiando contexto consolidado: {}", cleanupException.getMessage());
+                }
+            }
+
+            throw new RuntimeException("Error generando archivo consolidado", e);
+        }
+    }
+
+    /**
+     * Genera archivo normal (no consolidado)
+     */
+    private ResponseEntity<byte[]> generarArchivoNormal(List<InfraccionesRepositoryImpl> repositories,
+                                                        ConsultaQueryDTO consulta, String nombreQuery, String formato) {
 
         StreamingFormatoConverter.StreamingContext context = null;
 
@@ -192,28 +333,12 @@ public class InfraccionesService {
             HttpHeaders headers = new HttpHeaders();
             String filename = generarNombreArchivo(formato);
             headers.setContentDispositionFormData("attachment", filename);
-
-            MediaType mediaType;
-            switch (formato.toLowerCase()) {
-                case "csv":
-                    mediaType = MediaType.parseMediaType("text/csv");
-                    break;
-                case "excel":
-                    mediaType = MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-                    break;
-                case "json":
-                default:
-                    mediaType = MediaType.APPLICATION_JSON;
-                    break;
-            }
-            headers.setContentType(mediaType);
+            headers.setContentType(determinarMediaType(formato));
 
             byte[] responseData = outputStream.toByteArray();
             log.info("Archivo generado exitosamente: {} bytes", responseData.length);
 
-            return ResponseEntity.ok()
-                    .headers(headers)
-                    .body(responseData);
+            return ResponseEntity.ok().headers(headers).body(responseData);
 
         } catch (Exception e) {
             log.error("Error generando archivo: {}", e.getMessage(), e);
@@ -230,7 +355,7 @@ public class InfraccionesService {
         }
     }
 
-    // =============== MÉTODOS PRIVADOS DE PROCESAMIENTO ===============
+    // =============== MÉTODOS PRIVADOS - PROCESAMIENTO NORMAL ===============
 
     /**
      * Procesamiento síncrono tradicional (para consultas pequeñas)
@@ -327,6 +452,58 @@ public class InfraccionesService {
 
     // =============== MÉTODOS UTILITARIOS ===============
 
+    /**
+     * Determina repositorios considerando automáticamente consolidación
+     */
+    private List<InfraccionesRepositoryImpl> determinarRepositories(ParametrosFiltrosDTO filtros) {
+        // Si consolidado está activo, usar TODAS las provincias disponibles
+        if (filtros != null && filtros.esConsolidado()) {
+            log.debug("Consolidación activa - usando todos los repositorios disponibles");
+            return repositoryFactory.getAllRepositories().values().stream()
+                    .map(repo -> (InfraccionesRepositoryImpl) repo)
+                    .collect(Collectors.toList());
+        }
+
+        // Lógica normal para determinar repositorios
+        if (filtros != null && filtros.getUsarTodasLasBDS() != null && filtros.getUsarTodasLasBDS()) {
+            return repositoryFactory.getAllRepositories().values().stream()
+                    .map(repo -> (InfraccionesRepositoryImpl) repo)
+                    .collect(Collectors.toList());
+        } else if (filtros != null && filtros.getBaseDatos() != null && !filtros.getBaseDatos().isEmpty()) {
+            List<String> provinciasNormalizadas = validator.normalizarProvincias(filtros.getBaseDatos());
+
+            return provinciasNormalizadas.stream()
+                    .filter(repositoryFactory::isProvinciaSupported)
+                    .map(provincia -> (InfraccionesRepositoryImpl) repositoryFactory.getRepository(provincia))
+                    .collect(Collectors.toList());
+        } else {
+            return repositoryFactory.getAllRepositories().values().stream()
+                    .map(repo -> (InfraccionesRepositoryImpl) repo)
+                    .collect(Collectors.toList());
+        }
+    }
+
+    /**
+     * Agrega metadata de consolidación al resultado JSON
+     */
+    private Object agregarMetadataConsolidacion(Object resultado, Map<String, Object> resumen) {
+        if (resultado instanceof String) {
+            try {
+                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                Map<String, Object> resultadoMap = mapper.readValue((String) resultado, Map.class);
+
+                resultadoMap.put("consolidacion_resumen", resumen);
+                resultadoMap.put("es_consolidado", true);
+
+                return mapper.writeValueAsString(resultadoMap);
+            } catch (Exception e) {
+                log.warn("No se pudo agregar metadata a resultado JSON: {}", e.getMessage());
+                return resultado;
+            }
+        }
+        return resultado;
+    }
+
     private int estimarTamanoResultado(List<InfraccionesRepositoryImpl> repositories,
                                        ParametrosFiltrosDTO filtros, String nombreQuery) {
         ParametrosFiltrosDTO filtrosPrueba = filtros.toBuilder()
@@ -361,24 +538,37 @@ public class InfraccionesService {
         return String.format("infracciones_%s.%s", timestamp, formato.toLowerCase());
     }
 
-    private List<InfraccionesRepositoryImpl> determinarRepositories(ParametrosFiltrosDTO filtros) {
-        if (filtros.getUsarTodasLasBDS() != null && filtros.getUsarTodasLasBDS()) {
-            return repositoryFactory.getAllRepositories().values().stream()
-                    .map(repo -> (InfraccionesRepositoryImpl) repo)
-                    .collect(Collectors.toList());
-        } else if (filtros.getBaseDatos() != null && !filtros.getBaseDatos().isEmpty()) {
-            List<String> provinciasNormalizadas = validator.normalizarProvincias(filtros.getBaseDatos());
+    private String generarNombreArchivoConsolidado(String formato) {
+        String timestamp = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+        return String.format("infracciones_consolidado_%s.%s", timestamp, formato.toLowerCase());
+    }
 
-            return provinciasNormalizadas.stream()
-                    .filter(repositoryFactory::isProvinciaSupported)
-                    .map(provincia -> (InfraccionesRepositoryImpl) repositoryFactory.getRepository(provincia))
-                    .collect(Collectors.toList());
-        } else {
-            return repositoryFactory.getAllRepositories().values().stream()
-                    .map(repo -> (InfraccionesRepositoryImpl) repo)
-                    .collect(Collectors.toList());
+    private MediaType determinarMediaType(String formato) {
+        switch (formato.toLowerCase()) {
+            case "csv":
+                return MediaType.parseMediaType("text/csv");
+            case "excel":
+                return MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            case "json":
+            default:
+                return MediaType.APPLICATION_JSON;
         }
     }
 
+    // =============== MÉTODOS PÚBLICOS DE INFORMACIÓN ===============
 
+    /**
+     * Obtiene información sobre consolidación disponible
+     */
+    public Map<String, Object> obtenerInfoConsolidacion() {
+        return consolidacionService.obtenerInfoConsolidacion();
+    }
+
+    /**
+     * Valida si una consulta puede ser consolidada
+     */
+    public boolean puedeSerConsolidada(ParametrosFiltrosDTO filtros) {
+        return consolidacionService.validarConsolidacion(filtros);
+    }
 }
