@@ -82,6 +82,9 @@ public interface InfraccionesRepository {
      */
     List<Map<String, Object>> consultarReporteDetallado(ParametrosFiltrosDTO filtros);
 
+    List<Map<String,Object>> consultarCantidadInfraccionesEstado(ParametrosFiltrosDTO filtrosDTO);
+
+
     /**
      * Obtiene el nombre de la provincia asociada a este repositorio
      * @return Nombre de la provincia

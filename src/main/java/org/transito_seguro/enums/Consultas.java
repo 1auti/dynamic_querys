@@ -19,9 +19,8 @@ public enum Consultas {
     // Reportes especializados
     VEHICULOS_POR_MUNICIPIO("reporte_vehiculos_por_municipio.sql", "Reporte de vehículos por municipio"),
     SIN_EMAIL_POR_MUNICIPIO("reporte_sin_email_por_municipio.sql", "Reporte de infracciones sin email"),
-    VERIFICAR_IMAGENES_RADAR("verificar_imagenes_subidas_radar_concesion.sql", "Verificación de imágenes de radar");
-
-    
+    VERIFICAR_IMAGENES_RADAR("verificar_imagenes_subidas_radar_concesion.sql", "Verificación de imágenes de radar"),
+    INFRACCIONES_POR_ESTADO("reporte_cantidad_infracciones_estado.sql","Muestra la cantidad de infracciones por estado");
 
     private final String archivoQuery;
     private final String descripcion;

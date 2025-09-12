@@ -128,6 +128,11 @@ public class InfraccionesController {
         return ejecutarConsultaConLimite("infracciones-detallado", consulta);
     }
 
+    @PostMapping("/infracciones-por-estado")
+    public ResponseEntity<?> infraccionesPorEstado(@Valid @RequestBody ConsultaQueryDTO consulta){
+        return ejecutarConsultaConLimite("infracciones-por-estado",consulta);
+    }
+
 
     // =============== MÉTODOS PRIVADOS ===============
 

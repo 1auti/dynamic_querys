@@ -142,6 +142,13 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         return ejecutarQueryConFiltros(Consultas.INFRACCIONES_DETALLADO.getArchivoQuery(), filtros);
     }
 
+    @Override
+    public List<Map<String, Object>> consultarCantidadInfraccionesEstado(ParametrosFiltrosDTO filtrosDTO) {
+        log.debug("Consultar reporte de cantidad de infracciones por estado: {}",provincia);
+        return ejecutarQueryConFiltros(Consultas.INFRACCIONES_POR_ESTADO.getArchivoQuery(), filtrosDTO);
+    }
+
+
     /**
      * Método utilitario para validar la conectividad del repositorio
      *
