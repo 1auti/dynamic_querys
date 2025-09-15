@@ -492,8 +492,8 @@ public class InfraccionesService {
                 com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
                 Map<String, Object> resultadoMap = mapper.readValue((String) resultado, Map.class);
 
-                resultadoMap.put("consolidacion_resumen", resumen);
-                resultadoMap.put("es_consolidado", true);
+//                resultadoMap.put("consolidacion_resumen", resumen);
+//                resultadoMap.put("es_consolidado", true);
 
                 return mapper.writeValueAsString(resultadoMap);
             } catch (Exception e) {

@@ -218,29 +218,29 @@ public class InfraccionesController {
         Map<String, Object> respuesta = new HashMap<>();
         respuesta.put("datos", resultado);
 
-        Map<String, Object> metadata = new HashMap<>();
-
-        int limiteSolicitado = consultaOriginal.getParametrosFiltros() != null ?
-                consultaOriginal.getParametrosFiltros().getLimiteEfectivo() : maxRecordsDisplay;
-        int limiteAplicado = consultaConLimite.getParametrosFiltros().getLimiteEfectivo();
-
-        metadata.put("limite_solicitado", limiteSolicitado);
-        metadata.put("limite_aplicado", limiteAplicado);
-        metadata.put("limite_fue_reducido", limiteSolicitado > limiteAplicado);
-        metadata.put("limite_maximo_consultas", maxRecordsDisplay);
-        metadata.put("tipo_consulta", "normal");
-
-        if (limiteSolicitado > limiteAplicado) {
-            metadata.put("mensaje", String.format(
-                    "Su consulta fue limitada a %d registros para optimizar la respuesta. " +
-                            "Para obtener más datos, use los endpoints '/descargar' que generan archivos sin límite.",
-                    limiteAplicado
-            ));
-            metadata.put("endpoint_descarga_sugerido", "/api/infracciones/{tipoConsulta}/descargar");
-        }
-
-        respuesta.put("metadata", metadata);
-        respuesta.put("timestamp", new Date());
+//        Map<String, Object> metadata = new HashMap<>();
+//
+//        int limiteSolicitado = consultaOriginal.getParametrosFiltros() != null ?
+//                consultaOriginal.getParametrosFiltros().getLimiteEfectivo() : maxRecordsDisplay;
+//        int limiteAplicado = consultaConLimite.getParametrosFiltros().getLimiteEfectivo();
+//
+//        metadata.put("limite_solicitado", limiteSolicitado);
+//        metadata.put("limite_aplicado", limiteAplicado);
+//        metadata.put("limite_fue_reducido", limiteSolicitado > limiteAplicado);
+//        metadata.put("limite_maximo_consultas", maxRecordsDisplay);
+//        metadata.put("tipo_consulta", "normal");
+//
+//        if (limiteSolicitado > limiteAplicado) {
+//            metadata.put("mensaje", String.format(
+//                    "Su consulta fue limitada a %d registros para optimizar la respuesta. " +
+//                            "Para obtener más datos, use los endpoints '/descargar' que generan archivos sin límite.",
+//                    limiteAplicado
+//            ));
+//            metadata.put("endpoint_descarga_sugerido", "/api/infracciones/{tipoConsulta}/descargar");
+//        }
+//
+//        respuesta.put("metadata", metadata);
+//        respuesta.put("timestamp", new Date());
 
         return respuesta;
     }
@@ -255,41 +255,41 @@ public class InfraccionesController {
         Map<String, Object> respuesta = new HashMap<>();
         respuesta.put("datos", resultado);
 
-        Map<String, Object> metadata = new HashMap<>();
+//        Map<String, Object> metadata = new HashMap<>();
+//
+//        int limiteSolicitado = consultaOriginal.getParametrosFiltros() != null ?
+//                consultaOriginal.getParametrosFiltros().getLimiteEfectivo() : maxRecordsDisplay;
+//        int limiteAplicado = consultaConLimite.getParametrosFiltros().getLimiteEfectivo();
+//
+//        metadata.put("limite_solicitado", limiteSolicitado);
+//        metadata.put("limite_aplicado", limiteAplicado);
+//        metadata.put("limite_fue_reducido", limiteSolicitado > limiteAplicado);
+//        metadata.put("limite_maximo_consultas", maxRecordsDisplay);
+//        metadata.put("tipo_consulta", "consolidada");
+//        metadata.put("consolidacion_activa", true);
+//
+//        // Información específica de consolidación
+//        try {
+//            Map<String, Object> infoConsolidacion = infraccionesService.obtenerInfoConsolidacion();
+//            metadata.put("provincias_disponibles", infoConsolidacion.get("provincias_disponibles"));
+//            metadata.put("total_provincias_consultadas", infoConsolidacion.get("total_provincias"));
+//        } catch (Exception e) {
+//            log.warn("No se pudo obtener info de consolidación para metadata: {}", e.getMessage());
+//        }
+//
+//        if (limiteSolicitado > limiteAplicado) {
+//            metadata.put("mensaje", String.format(
+//                    "Su consulta CONSOLIDADA fue limitada a %d registros por provincia. " +
+//                            "Para obtener datos completos consolidados, use '/descargar' que genera archivos sin límite.",
+//                    limiteAplicado
+//            ));
+//            metadata.put("endpoint_descarga_sugerido", "/api/infracciones/" + tipoConsulta + "/descargar");
+//        } else {
+//            metadata.put("mensaje", "Consulta consolidada ejecutada exitosamente. Los datos incluyen información de todas las provincias disponibles.");
+//        }
 
-        int limiteSolicitado = consultaOriginal.getParametrosFiltros() != null ?
-                consultaOriginal.getParametrosFiltros().getLimiteEfectivo() : maxRecordsDisplay;
-        int limiteAplicado = consultaConLimite.getParametrosFiltros().getLimiteEfectivo();
-
-        metadata.put("limite_solicitado", limiteSolicitado);
-        metadata.put("limite_aplicado", limiteAplicado);
-        metadata.put("limite_fue_reducido", limiteSolicitado > limiteAplicado);
-        metadata.put("limite_maximo_consultas", maxRecordsDisplay);
-        metadata.put("tipo_consulta", "consolidada");
-        metadata.put("consolidacion_activa", true);
-
-        // Información específica de consolidación
-        try {
-            Map<String, Object> infoConsolidacion = infraccionesService.obtenerInfoConsolidacion();
-            metadata.put("provincias_disponibles", infoConsolidacion.get("provincias_disponibles"));
-            metadata.put("total_provincias_consultadas", infoConsolidacion.get("total_provincias"));
-        } catch (Exception e) {
-            log.warn("No se pudo obtener info de consolidación para metadata: {}", e.getMessage());
-        }
-
-        if (limiteSolicitado > limiteAplicado) {
-            metadata.put("mensaje", String.format(
-                    "Su consulta CONSOLIDADA fue limitada a %d registros por provincia. " +
-                            "Para obtener datos completos consolidados, use '/descargar' que genera archivos sin límite.",
-                    limiteAplicado
-            ));
-            metadata.put("endpoint_descarga_sugerido", "/api/infracciones/" + tipoConsulta + "/descargar");
-        } else {
-            metadata.put("mensaje", "Consulta consolidada ejecutada exitosamente. Los datos incluyen información de todas las provincias disponibles.");
-        }
-
-        respuesta.put("metadata", metadata);
-        respuesta.put("timestamp", new Date());
+//        respuesta.put("metadata", metadata);
+//        respuesta.put("timestamp", new Date());
 
         return respuesta;
     }
