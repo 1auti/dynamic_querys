@@ -136,6 +136,11 @@ public class InfraccionesController {
         return ejecutarConsultaConLimite("infracciones-por-estado", consulta);
     }
 
+    @PostMapping("/reporte-diego")
+    public ResponseEntity<?> reporteDieog(@Valid @RequestBody ConsultaQueryDTO consulta) {
+        return ejecutarConsultaConLimite("reporte-diego", consulta);
+    }
+
     // =============== MÉTODOS PRIVADOS MEJORADOS ===============
 
     /**
