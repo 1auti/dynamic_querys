@@ -231,7 +231,6 @@ public class StreamingFormatoConverter {
     private void inicializarJSONStreaming(StreamingContext context, CoutingOutputStream countingStream) throws IOException {
         context.jsonWriter = new PrintWriter(new OutputStreamWriter(countingStream, "UTF-8"));
         context.jsonWriter.println("{");
-        context.jsonWriter.println("  \"total\": 0,");
         context.jsonWriter.println("  \"datos\": [");
         context.jsonWriter.flush();
     }

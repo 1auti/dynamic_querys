@@ -177,6 +177,7 @@ public class InfraccionesService {
     /**
      * Ejecuta consolidación (llamado automáticamente cuando consolidado=true)
      */
+
     private Object ejecutarConsolidacion(List<InfraccionesRepositoryImpl> repositories,
                                          ConsultaQueryDTO consulta, String nombreQuery) throws ValidationException {
 
@@ -192,17 +193,30 @@ public class InfraccionesService {
             List<Map<String, Object>> datosConsolidados = consolidacionService.consolidarDatos(
                     repositories, nombreQuery, filtros);
 
-            // Formatear resultado
-            Object resultadoFormateado = formatoConverter.convertir(datosConsolidados,
-                    consulta.getFormato() != null ? consulta.getFormato() : "json");
+            String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
 
-            // Agregar metadata de consolidación si es JSON
-            if ("json".equals(consulta.getFormato()) || consulta.getFormato() == null) {
-                Map<String, Object> resumen = consolidacionService.generarResumenConsolidacion(datosConsolidados);
-                return agregarMetadataConsolidacion(resultadoFormateado, resumen);
+            // ✨ USAR EL NUEVO MÉTODO OPTIMIZADO PARA GENERAR LA RESPUESTA
+            Object resultadoOptimo = consolidacionService.generarRespuestaConsolidadaOptima(
+                    datosConsolidados, formato);
+
+            // Si no es formato optimizado, usar el convertidor tradicional
+            if (resultadoOptimo == datosConsolidados) {
+                return formatoConverter.convertir(datosConsolidados, formato);
             }
 
-            return resultadoFormateado;
+            // Para formato JSON optimizado, convertir a JSON string si es necesario
+            if ("json".equals(formato) && resultadoOptimo instanceof Map) {
+                try {
+                    com.fasterxml.jackson.databind.ObjectMapper mapper =
+                            new com.fasterxml.jackson.databind.ObjectMapper();
+                    return mapper.writeValueAsString(resultadoOptimo);
+                } catch (Exception e) {
+                    log.warn("Error convirtiendo resultado optimizado a JSON: {}", e.getMessage());
+                    return formatoConverter.convertir(datosConsolidados, formato);
+                }
+            }
+
+            return resultadoOptimo;
 
         } catch (Exception e) {
             log.error("Error en consolidación: {}", e.getMessage(), e);

@@ -1,5 +1,6 @@
 package org.transito_seguro.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,6 +23,9 @@ public class InfraccionesController {
 
     @Autowired
     private InfraccionesService infraccionesService;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Value("${app.limits.max-records-display:5000}")
     private int maxRecordsDisplay;
@@ -112,7 +116,6 @@ public class InfraccionesController {
         return ejecutarConsultaConLimite("vehiculos-por-municipio", consulta);
     }
 
-
     @PostMapping("/sin-email-por-municipio")
     public ResponseEntity<?> reporteSinEmail(@Valid @RequestBody ConsultaQueryDTO consulta) {
         return ejecutarConsultaConLimite("sin-email-por-municipio", consulta);
@@ -129,16 +132,15 @@ public class InfraccionesController {
     }
 
     @PostMapping("/infracciones-por-estado")
-    public ResponseEntity<?> infraccionesPorEstado(@Valid @RequestBody ConsultaQueryDTO consulta){
-        return ejecutarConsultaConLimite("infracciones-por-estado",consulta);
+    public ResponseEntity<?> infraccionesPorEstado(@Valid @RequestBody ConsultaQueryDTO consulta) {
+        return ejecutarConsultaConLimite("infracciones-por-estado", consulta);
     }
 
-
-    // =============== MÉTODOS PRIVADOS ===============
+    // =============== MÉTODOS PRIVADOS MEJORADOS ===============
 
     /**
      * Método que aplica límite automático y centraliza el manejo de errores
-     * DETECTA AUTOMÁTICAMENTE si es consolidación y ajusta la respuesta
+     * DETECTA AUTOMÁTICAMENTE si es consolidación y maneja la respuesta de forma unificada
      */
     private ResponseEntity<?> ejecutarConsultaConLimite(String tipoConsulta, ConsultaQueryDTO consulta) {
         try {
@@ -153,14 +155,28 @@ public class InfraccionesController {
                     consultaConLimite.getParametrosFiltros().getLimiteEfectivo(),
                     esConsolidado);
 
+            // Ejecutar consulta
             Object resultado = infraccionesService.ejecutarConsultaPorTipo(tipoConsulta, consultaConLimite);
 
-            // Crear respuesta con metadata apropiada
-            Map<String, Object> respuestaConMetadata = esConsolidado ?
-                    crearRespuestaConsolidadaConMetadata(resultado, consulta, consultaConLimite, tipoConsulta) :
-                    crearRespuestaConMetadata(resultado, consulta, consultaConLimite);
+            // Log de depuración (opcional - remover en producción)
+            logearTipoResultado(resultado, "Resultado del servicio");
 
-            return ResponseEntity.ok(respuestaConMetadata);
+            // ✅ UNIFICADO: Extraer datos crudos sin wrappers innecesarios
+            Object datosLimpios = extraerDatosCrudos(resultado);
+
+            // Log de depuración (opcional - remover en producción)
+            logearTipoResultado(datosLimpios, "Datos después de extracción");
+
+            // ✅ RESPUESTA UNIFICADA con headers informativos opcionales
+            ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.ok();
+
+            if (esConsolidado) {
+                responseBuilder
+                        .header("X-Consolidado", "true")
+                        .header("X-Tipo-Consulta", "consolidada");
+            }
+
+            return responseBuilder.body(datosLimpios);
 
         } catch (ValidationException e) {
             log.error("Error de validación en consulta {}: {}", tipoConsulta, e.getMessage());
@@ -171,6 +187,57 @@ public class InfraccionesController {
         } catch (Exception e) {
             log.error("Error interno en consulta {}: {}", tipoConsulta, e.getMessage(), e);
             return crearRespuestaError("Error interno del servidor", e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    /**
+     * ✅ MÉTODO UNIFICADO para extraer datos crudos (sin wrappers como {"total": X, "datos": []})
+     * Maneja todos los casos: String JSON, Map, List, etc.
+     */
+    private Object extraerDatosCrudos(Object resultado) {
+        try {
+            if (resultado instanceof String) {
+                String resultadoStr = (String) resultado;
+
+                // Si ya es un array JSON directo, no procesar
+                if (resultadoStr.trim().startsWith("[")) {
+                    return resultado;
+                }
+
+                // Si es un objeto JSON, intentar extraer "datos"
+                if (resultadoStr.trim().startsWith("{")) {
+                    Map<String, Object> datosParseados = objectMapper.readValue(resultadoStr, Map.class);
+                    Object datos = datosParseados.get("datos");
+
+                    // Si tiene "datos", devolverlo; sino devolver todo
+                    if (datos != null) {
+                        // Convertir de vuelta a JSON string si es necesario
+                        return objectMapper.writeValueAsString(datos);
+                    }
+                }
+
+                return resultado;
+
+            } else if (resultado instanceof Map) {
+                Map<?, ?> resultadoMap = (Map<?, ?>) resultado;
+                Object datos = resultadoMap.get("datos");
+
+                // Si tiene "datos", devolverlo; sino devolver todo el Map
+                return datos != null ? datos : resultado;
+
+            } else if (resultado instanceof List) {
+                // Si ya es una lista, devolverla directamente
+                return resultado;
+            }
+
+            // Para cualquier otro tipo, devolver tal como está
+            return resultado;
+
+        } catch (Exception e) {
+            log.error("Error extrayendo datos crudos de tipo {}: {}",
+                    resultado != null ? resultado.getClass().getSimpleName() : "null",
+                    e.getMessage());
+            return resultado; // Fallback seguro
         }
     }
 
@@ -210,88 +277,28 @@ public class InfraccionesController {
     }
 
     /**
-     * Crea respuesta con metadata sobre límites aplicados (consultas normales)
+     * Método de depuración para entender el tipo de datos que se están procesando
+     * ⚠️ REMOVER EN PRODUCCIÓN o cambiar log level a TRACE
      */
-    private Map<String, Object> crearRespuestaConMetadata(Object resultado,
-                                                          ConsultaQueryDTO consultaOriginal,
-                                                          ConsultaQueryDTO consultaConLimite) {
-        Map<String, Object> respuesta = new HashMap<>();
-        respuesta.put("datos", resultado);
-
-//        Map<String, Object> metadata = new HashMap<>();
-//
-//        int limiteSolicitado = consultaOriginal.getParametrosFiltros() != null ?
-//                consultaOriginal.getParametrosFiltros().getLimiteEfectivo() : maxRecordsDisplay;
-//        int limiteAplicado = consultaConLimite.getParametrosFiltros().getLimiteEfectivo();
-//
-//        metadata.put("limite_solicitado", limiteSolicitado);
-//        metadata.put("limite_aplicado", limiteAplicado);
-//        metadata.put("limite_fue_reducido", limiteSolicitado > limiteAplicado);
-//        metadata.put("limite_maximo_consultas", maxRecordsDisplay);
-//        metadata.put("tipo_consulta", "normal");
-//
-//        if (limiteSolicitado > limiteAplicado) {
-//            metadata.put("mensaje", String.format(
-//                    "Su consulta fue limitada a %d registros para optimizar la respuesta. " +
-//                            "Para obtener más datos, use los endpoints '/descargar' que generan archivos sin límite.",
-//                    limiteAplicado
-//            ));
-//            metadata.put("endpoint_descarga_sugerido", "/api/infracciones/{tipoConsulta}/descargar");
-//        }
-//
-//        respuesta.put("metadata", metadata);
-//        respuesta.put("timestamp", new Date());
-
-        return respuesta;
-    }
-
-    /**
-     * Crea respuesta con metadata específica para consolidación
-     */
-    private Map<String, Object> crearRespuestaConsolidadaConMetadata(Object resultado,
-                                                                     ConsultaQueryDTO consultaOriginal,
-                                                                     ConsultaQueryDTO consultaConLimite,
-                                                                     String tipoConsulta) {
-        Map<String, Object> respuesta = new HashMap<>();
-        respuesta.put("datos", resultado);
-
-//        Map<String, Object> metadata = new HashMap<>();
-//
-//        int limiteSolicitado = consultaOriginal.getParametrosFiltros() != null ?
-//                consultaOriginal.getParametrosFiltros().getLimiteEfectivo() : maxRecordsDisplay;
-//        int limiteAplicado = consultaConLimite.getParametrosFiltros().getLimiteEfectivo();
-//
-//        metadata.put("limite_solicitado", limiteSolicitado);
-//        metadata.put("limite_aplicado", limiteAplicado);
-//        metadata.put("limite_fue_reducido", limiteSolicitado > limiteAplicado);
-//        metadata.put("limite_maximo_consultas", maxRecordsDisplay);
-//        metadata.put("tipo_consulta", "consolidada");
-//        metadata.put("consolidacion_activa", true);
-//
-//        // Información específica de consolidación
-//        try {
-//            Map<String, Object> infoConsolidacion = infraccionesService.obtenerInfoConsolidacion();
-//            metadata.put("provincias_disponibles", infoConsolidacion.get("provincias_disponibles"));
-//            metadata.put("total_provincias_consultadas", infoConsolidacion.get("total_provincias"));
-//        } catch (Exception e) {
-//            log.warn("No se pudo obtener info de consolidación para metadata: {}", e.getMessage());
-//        }
-//
-//        if (limiteSolicitado > limiteAplicado) {
-//            metadata.put("mensaje", String.format(
-//                    "Su consulta CONSOLIDADA fue limitada a %d registros por provincia. " +
-//                            "Para obtener datos completos consolidados, use '/descargar' que genera archivos sin límite.",
-//                    limiteAplicado
-//            ));
-//            metadata.put("endpoint_descarga_sugerido", "/api/infracciones/" + tipoConsulta + "/descargar");
-//        } else {
-//            metadata.put("mensaje", "Consulta consolidada ejecutada exitosamente. Los datos incluyen información de todas las provincias disponibles.");
-//        }
-
-//        respuesta.put("metadata", metadata);
-//        respuesta.put("timestamp", new Date());
-
-        return respuesta;
+    private void logearTipoResultado(Object resultado, String contexto) {
+        if (log.isDebugEnabled()) {
+            if (resultado == null) {
+                log.debug("{} - Tipo: null", contexto);
+            } else if (resultado instanceof String) {
+                String str = (String) resultado;
+                String preview = str.length() > 100 ? str.substring(0, 100) + "..." : str;
+                log.debug("{} - Tipo: String, Longitud: {}, Preview: '{}'",
+                        contexto, str.length(), preview);
+            } else if (resultado instanceof List) {
+                List<?> list = (List<?>) resultado;
+                log.debug("{} - Tipo: List, Tamaño: {}", contexto, list.size());
+            } else if (resultado instanceof Map) {
+                Map<?, ?> map = (Map<?, ?>) resultado;
+                log.debug("{} - Tipo: Map, Keys: {}", contexto, map.keySet());
+            } else {
+                log.debug("{} - Tipo: {}", contexto, resultado.getClass().getSimpleName());
+            }
+        }
     }
 
     /**
@@ -305,5 +312,4 @@ public class InfraccionesController {
         errorResponse.put("status", status.value());
         return ResponseEntity.status(status).body(errorResponse);
     }
-
 }
