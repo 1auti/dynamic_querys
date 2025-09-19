@@ -572,12 +572,6 @@ public class InfraccionesService {
 
     // =============== MÉTODOS PÚBLICOS DE INFORMACIÓN ===============
 
-    /**
-     * Obtiene información sobre consolidación disponible
-     */
-    public Map<String, Object> obtenerInfoConsolidacion() {
-        return consolidacionService.obtenerInfoConsolidacion();
-    }
 
     /**
      * Valida si una consulta puede ser consolidada
