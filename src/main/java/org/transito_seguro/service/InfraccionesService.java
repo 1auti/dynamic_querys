@@ -255,7 +255,7 @@ public class InfraccionesService {
                     if (datosProvider != null && !datosProvider.isEmpty()) {
                         // Agregar información de provincia
                         datosProvider.forEach(registro -> {
-                            registro.put("provincia_origen", provincia);
+                            registro.put("provincia", provincia);
                             registro.put("fuente_consolidacion", true);
                         });
 
@@ -269,7 +269,7 @@ public class InfraccionesService {
 
                     // Agregar registro de error
                     Map<String, Object> registroError = new HashMap<>();
-                    registroError.put("provincia_origen", provincia);
+                    registroError.put("provincia", provincia);
                     registroError.put("error_consolidacion", true);
                     registroError.put("mensaje_error", e.getMessage());
                     registroError.put("timestamp_error", new java.util.Date());
@@ -386,7 +386,7 @@ public class InfraccionesService {
                         );
 
                         // Agregar provincia a cada registro
-                        resultado.forEach(registro -> registro.put("provincia_origen", provincia));
+                        resultado.forEach(registro -> registro.put("provincia", provincia));
                         return resultado.stream();
 
                     } catch (Exception e) {

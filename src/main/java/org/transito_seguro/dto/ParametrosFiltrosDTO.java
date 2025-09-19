@@ -4,6 +4,8 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +25,8 @@ public class ParametrosFiltrosDTO {
     private Boolean exportadoSacit, tieneEmail, usarTodasLasBDS,
             incluirVLR, incluirSE, incluirTS, soloPersonasJuridicas,consolidado;
 
+
+    private List<String> consolidacion;
 
     private Integer tamanoPagina;
     private Integer limiteMaximo;
@@ -56,8 +60,14 @@ public class ParametrosFiltrosDTO {
     }
 
     public boolean esConsolidado() {
-        return consolidado  != null && consolidado;
+        return consolidado != null && consolidado &&
+                consolidacion != null && !consolidacion.isEmpty();
     }
+
+    public List<String> getConsolidacionSeguro() {
+        return consolidacion != null ? consolidacion : new ArrayList<>();
+    }
+
 
     /**
      * Calcula el offset considerando diferentes fuentes

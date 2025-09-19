@@ -22,6 +22,6 @@ public class ConfiguracionConsolidacion {
     private List<String> camposTiempo = new ArrayList<>();
     private List<String> camposUbicacion = new ArrayList<>();
     private TipoConsolidacion tipo = TipoConsolidacion.AGREGACION;
-    private boolean mantenerProvinciasOrigen = true;
+    private boolean mantenerProvinciasOrigen = false;
 
 }

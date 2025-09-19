@@ -18,4 +18,5 @@ public class ConsultaQueryDTO {
     private String formato;
     private ParametrosFiltrosDTO parametrosFiltros;
 
+
 }

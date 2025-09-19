@@ -214,7 +214,7 @@ public class BatchProcessor {
             int endIndex = Math.min(i + chunkSize, lote.size());
 
             for (int j = i; j < endIndex; j++) {
-                lote.get(j).put("provincia_origen", provincia);
+                lote.get(j).put("provincia", provincia);
             }
 
             // Micro-pausa cada chunk para permitir GC

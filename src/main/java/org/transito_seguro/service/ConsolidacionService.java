@@ -5,16 +5,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.factory.RepositoryFactory;
-import org.transito_seguro.model.ConfiguracionConsolidacion;
-import org.transito_seguro.model.TipoColumna;
-import org.transito_seguro.model.TipoConsolidacion;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.regex.Pattern;
-
-import static org.transito_seguro.model.TipoConsolidacion.*;
 
 @Slf4j
 @Service
@@ -24,654 +18,332 @@ public class ConsolidacionService {
     private RepositoryFactory repositoryFactory;
 
     /**
-     * Consolida datos de forma dinámica analizando automáticamente la estructura
+     * Mapeo de códigos internos a nombres de provincias normalizados
+     */
+    private static final Map<String, String> MAPEO_PROVINCIAS = new HashMap<>();
+
+    static {
+        MAPEO_PROVINCIAS.put("Buenos Aires", "Buenos Aires");
+        MAPEO_PROVINCIAS.put("BuenosAires", "Buenos Aires");
+        MAPEO_PROVINCIAS.put("LaPampa", "La Pampa");
+        MAPEO_PROVINCIAS.put("Chaco", "Chaco");
+        MAPEO_PROVINCIAS.put("EntreRos", "Entre Ríos");
+        MAPEO_PROVINCIAS.put("Entre Ríos", "Entre Ríos");
+        MAPEO_PROVINCIAS.put("Formosa", "Formosa");
+    }
+
+
+    /**
+     * Método principal SIMPLE para consolidar datos con orden específico
      */
     public List<Map<String, Object>> consolidarDatos(
             List<InfraccionesRepositoryImpl> repositories,
             String nombreQuery,
             ParametrosFiltrosDTO filtros) {
 
-        log.info("Iniciando consolidación DINÁMICA de datos para {} provincias", repositories.size());
+        log.info("Iniciando consolidación para {} provincias", repositories.size());
 
-        // 1. Recopilar todos los datos
-        List<Map<String, Object>> todosLosDatos = recopilarDatosDeTodosLosRepositories(repositories, nombreQuery, filtros);
+        // 1. Recopilar datos de todas las provincias
+        List<Map<String, Object>> todosLosDatos = recopilarDatos(repositories, nombreQuery, filtros);
 
         if (todosLosDatos.isEmpty()) {
             log.info("No hay datos para consolidar");
             return Collections.emptyList();
         }
 
-        // 2. Analizar estructura automáticamente
-        ConfiguracionConsolidacion config = analizarEstructuraDatos(todosLosDatos, nombreQuery);
+        log.info("Total datos recopilados: {} registros", todosLosDatos.size());
 
-        log.info("Configuración detectada: Tipo={}, Agrupación={}, Numéricos={}, Únicos={}",
-                config.getTipo(), config.getCamposAgrupacion(),
-                config.getCamposNumericos(), config.getCamposUnicos());
+        // 2. Normalizar provincias en todos los registros
+        todosLosDatos = normalizarProvinciasEnDatos(todosLosDatos);
 
-        // 3. Aplicar consolidación dinámica
-        List<Map<String, Object>> datosConsolidados = aplicarConsolidacionDinamica(todosLosDatos, config);
+        // 3. PROCESAR CONSOLIDACIÓN POR ORDEN
+        List<Map<String, Object>> datosConsolidados = procesarConsolidacionPorOrden(todosLosDatos, filtros);
 
-        // 4. Aplicar límites
-        return aplicarLimitesConsolidacion(datosConsolidados, filtros);
+        // 4. Aplicar límites de paginación
+        return aplicarLimites(datosConsolidados, filtros);
     }
 
-    // =============== ANÁLISIS AUTOMÁTICO DE ESTRUCTURA ===============
+    // =============== CONSOLIDACIÓN POR ORDEN ===============
 
     /**
-     * Analiza automáticamente la estructura de los datos para determinar la configuración óptima
+     * Procesa la consolidación según el orden especificado en 'consolidacion'
      */
-    private ConfiguracionConsolidacion analizarEstructuraDatos(List<Map<String, Object>> datos, String nombreQuery) {
-        ConfiguracionConsolidacion config = new ConfiguracionConsolidacion();
+    private List<Map<String, Object>> procesarConsolidacionPorOrden(
+            List<Map<String, Object>> datos, ParametrosFiltrosDTO filtros) {
 
-        if (datos.isEmpty()) {
-            return config;
+        // Obtener la lista de consolidación del filtro usando el método correcto
+        List<String> ordenConsolidacion = filtros.getConsolidacionSeguro();
+
+        if (ordenConsolidacion.isEmpty()) {
+            log.info("No hay orden de consolidación especificado - usando detección automática");
+            return consolidarAutomatico(datos);
         }
 
-        Map<String, Object> registroMuestra = datos.get(0);
+        log.info("Aplicando consolidación por orden: {}", ordenConsolidacion);
 
-        // Analizar todos los registros para obtener estadísticas
-        Map<String, TipoColumna> analisisColumnas = analizarColumnas(datos);
-
-        // Detectar campos de agrupación
-        config.setCamposAgrupacion(detectarCamposAgrupacion(analisisColumnas));
-
-        // Detectar campos numéricos
-        config.setCamposNumericos(detectarCamposNumericos(analisisColumnas));
-
-        // Detectar campos únicos (para deduplicación)
-        config.setCamposUnicos(detectarCamposUnicos(analisisColumnas, datos));
-
-        // Detectar campos de tiempo
-        config.setCamposTiempo(detectarCamposTiempo(analisisColumnas));
-
-        // Detectar campos de ubicación
-        config.setCamposUbicacion(detectarCamposUbicacion(analisisColumnas));
-
-        // Determinar tipo de consolidación óptimo
-        config.setTipo(determinarTipoConsolidacion(config, nombreQuery, datos));
-
-        return config;
-    }
-
-
-
-    /**
-     * Analiza cada columna para determinar sus características
-     */
-    private Map<String, TipoColumna> analizarColumnas(List<Map<String, Object>> datos) {
-        Map<String, TipoColumna> analisis = new HashMap<>();
-
-        if (datos.isEmpty()) return analisis;
-
-        // Inicializar análisis para cada columna
-        Set<String> todasLasColumnas = datos.get(0).keySet();
-        for (String columna : todasLasColumnas) {
-            analisis.put(columna, new TipoColumna());
-        }
-
-        // Analizar una muestra representativa (máximo 1000 registros para performance)
-        int maxMuestra = Math.min(1000, datos.size());
-        for (int i = 0; i < maxMuestra; i++) {
-            Map<String, Object> registro = datos.get(i);
-
-            for (Map.Entry<String, Object> entrada : registro.entrySet()) {
-                String columna = entrada.getKey();
-                Object valor = entrada.getValue();
-
-                TipoColumna tipoCol = analisis.get(columna);
-                if (tipoCol == null) continue;
-
-                tipoCol.setTotalRegistros(tipoCol.getTotalRegistros() + 1);
-
-                if (valor != null) {
-                    // Agregar a valores únicos
-                    tipoCol.getValoresUnicos().add(valor);
-
-                    // Determinar tipo
-                    if (esNumerico(valor)) {
-                        tipoCol.setEsNumerico(true);
-                    } else if (valor instanceof String) {
-                        tipoCol.setEsTexto(true);
-                        String valorStr = (String) valor;
-
-                        // Detectar si parece fecha
-                        if (esFecha(valorStr)) {
-                            tipoCol.setEsFecha(true);
-                        }
-
-                        // Detectar patrones comunes
-                        if (tipoCol.getPatron() == null) {
-                            tipoCol.setPatron(detectarPatron(valorStr));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Determinar si cada columna tiene valores únicos (para deduplicación)
-        for (TipoColumna tipoCol : analisis.values()) {
-            double porcentajeUnicidad = (double) tipoCol.getValoresUnicos().size() / tipoCol.getTotalRegistros();
-            tipoCol.setEsUnico(porcentajeUnicidad > 0.8); // 80% de valores únicos
-        }
-
-        return analisis;
-    }
-
-    /**
-     * Detecta campos de agrupación (ubicación, categorías, etc.)
-     */
-    private List<String> detectarCamposAgrupacion(Map<String, TipoColumna> analisis) {
+        // Separar campos de agrupación y campos numéricos según su posición
         List<String> camposAgrupacion = new ArrayList<>();
-
-        // Palabras clave que indican campos de agrupación
-        String[] clavesAgrupacion = {
-                "municipio", "provincia", "descripcion", "contexto",
-                "tipo_infraccion", "estado", "categoria", "lugar", "partido"
-        };
-
-        for (String campo : analisis.keySet()) {
-            String campoLower = campo.toLowerCase();
-            TipoColumna tipo = analisis.get(campo);
-
-            // Verificar palabras clave
-            for (String clave : clavesAgrupacion) {
-                if (campoLower.contains(clave) && tipo.isEsTexto() && !tipo.isEsUnico()) {
-                    camposAgrupacion.add(campo);
-                    break;
-                }
-            }
-        }
-
-        return camposAgrupacion;
-    }
-
-    /**
-     * Detecta campos numéricos para agregación
-     */
-    private List<String> detectarCamposNumericos(Map<String, TipoColumna> analisis) {
         List<String> camposNumericos = new ArrayList<>();
 
-        // Palabras clave que indican campos numéricos importantes
-        String[] clavesNumericas = {
-                "total", "cantidad", "count", "velocidad", "luz_roja", "senda",
-                "vehiculos", "motos", "formato_no_valido", "infracciones"
-        };
-
-        for (Map.Entry<String, TipoColumna> entrada : analisis.entrySet()) {
-            String campo = entrada.getKey();
-            TipoColumna tipo = entrada.getValue();
-            String campoLower = campo.toLowerCase();
-
-            if (tipo.isEsNumerico()) {
-                // Priorizar campos con palabras clave importantes
-                boolean esPrioritario = Arrays.stream(clavesNumericas)
-                        .anyMatch(campoLower::contains);
-
-                if (esPrioritario || tipo.getValoresUnicos().size() > 10) {
-                    // Solo incluir si tiene variedad de valores (no solo 0s y 1s)
-                    camposNumericos.add(campo);
-                }
-            }
-        }
-
-        return camposNumericos;
-    }
-
-    /**
-     * Detecta campos únicos para deduplicación
-     */
-    private List<String> detectarCamposUnicos(Map<String, TipoColumna> analisis, List<Map<String, Object>> datos) {
-        List<String> camposUnicos = new ArrayList<>();
-
-        // Palabras clave que indican identificadores únicos
-        String[] clavesUnicas = {"id", "dominio", "numero_doc", "cuit", "serie_equipo"};
-
-        for (Map.Entry<String, TipoColumna> entrada : analisis.entrySet()) {
-            String campo = entrada.getKey();
-            TipoColumna tipo = entrada.getValue();
-            String campoLower = campo.toLowerCase();
-
-            // Verificar palabras clave o alta unicidad
-            boolean esId = Arrays.stream(clavesUnicas).anyMatch(campoLower::contains);
-
-            if ((esId || tipo.isEsUnico()) && tipo.getValoresUnicos().size() > 1) {
-                camposUnicos.add(campo);
-            }
-        }
-
-        return camposUnicos;
-    }
-
-    /**
-     * Detecta campos de tiempo/fecha
-     */
-    private List<String> detectarCamposTiempo(Map<String, TipoColumna> analisis) {
-        List<String> camposTiempo = new ArrayList<>();
-
-        String[] clavesTiempo = {"fecha", "date", "emision", "alta", "modificacion", "timestamp"};
-
-        for (Map.Entry<String, TipoColumna> entrada : analisis.entrySet()) {
-            String campo = entrada.getKey();
-            TipoColumna tipo = entrada.getValue();
-            String campoLower = campo.toLowerCase();
-
-            boolean esFecha = Arrays.stream(clavesTiempo).anyMatch(campoLower::contains) || tipo.isEsFecha();
-
-            if (esFecha) {
-                camposTiempo.add(campo);
-            }
-        }
-
-        return camposTiempo;
-    }
-
-    /**
-     * Detecta campos de ubicación
-     */
-    private List<String> detectarCamposUbicacion(Map<String, TipoColumna> analisis) {
-        List<String> camposUbicacion = new ArrayList<>();
-
-        String[] clavesUbicacion = {"municipio", "provincia", "contexto", "lugar", "localidad", "partido"};
-
-        for (String campo : analisis.keySet()) {
-            String campoLower = campo.toLowerCase();
-
-            if (Arrays.stream(clavesUbicacion).anyMatch(campoLower::contains)) {
-                camposUbicacion.add(campo);
-            }
-        }
-
-        return camposUbicacion;
-    }
-
-    /**
-     * Determina el tipo de consolidación óptimo
-     */
-    private TipoConsolidacion determinarTipoConsolidacion(ConfiguracionConsolidacion config,
-                                                          String nombreQuery,
-                                                          List<Map<String, Object>> datos) {
-
-        // Reglas basadas en el contenido
-        if (!config.getCamposUnicos().isEmpty() && nombreQuery.contains("personas_juridicas")) {
-            return DEDUPLICACION;
-        }
-
-        if (!config.getCamposNumericos().isEmpty() && !config.getCamposAgrupacion().isEmpty()) {
-            if (!config.getCamposUbicacion().isEmpty() && !config.getCamposTiempo().isEmpty()) {
-                return JERARQUICA;
+        for (String campo : ordenConsolidacion) {
+            if (esNumericoEnDatos(campo, datos)) {
+                camposNumericos.add(campo);
             } else {
-                return AGREGACION;
+                camposAgrupacion.add(campo);
             }
         }
 
-        if (!config.getCamposUnicos().isEmpty() && !config.getCamposNumericos().isEmpty()) {
-            return TipoConsolidacion.COMBINADA;
+        log.info("Campos de agrupación identificados: {}", camposAgrupacion);
+        log.info("Campos numéricos identificados: {}", camposNumericos);
+
+        // Si no hay campos de agrupación, usar provincia por defecto
+        if (camposAgrupacion.isEmpty()) {
+            camposAgrupacion.add("provincia");
         }
 
-        return AGREGACION; // Default
-    }
-
-    // =============== APLICACIÓN DE CONSOLIDACIÓN DINÁMICA ===============
-
-    /**
-     * Aplica la consolidación según la configuración detectada
-     */
-    private List<Map<String, Object>> aplicarConsolidacionDinamica(List<Map<String, Object>> datos,
-                                                                   ConfiguracionConsolidacion config) {
-
-        log.info("Aplicando consolidación dinámica tipo: {} a {} registros",
-                config.getTipo(), datos.size());
-
-        switch (config.getTipo()) {
-            case DEDUPLICACION:
-                return aplicarDeduplicacion(datos, config);
-            case AGREGACION:
-                return aplicarAgregacion(datos, config);
-            case JERARQUICA:
-                return aplicarConsolidacionJerarquica(datos, config);
-            case COMBINADA:
-                return aplicarConsolidacionCombinada(datos, config);
-            default:
-                return aplicarAgregacion(datos, config); // Fallback
-        }
+        return consolidarPorCamposEspecificos(datos, camposAgrupacion, camposNumericos);
     }
 
     /**
-     * Deduplicación por campos únicos
+     * Consolida usando campos específicos de agrupación y numéricos
      */
-    private List<Map<String, Object>> aplicarDeduplicacion(List<Map<String, Object>> datos,
-                                                           ConfiguracionConsolidacion config) {
-        if (config.getCamposUnicos().isEmpty()) {
-            log.warn("No hay campos únicos para deduplicación, usando todos los registros");
-            return datos;
-        }
+    private List<Map<String, Object>> consolidarPorCamposEspecificos(
+            List<Map<String, Object>> datos,
+            List<String> camposAgrupacion,
+            List<String> camposNumericos) {
 
-        Map<String, Map<String, Object>> registrosUnicos = new LinkedHashMap<>();
+        Map<String, Map<String, Object>> grupos = new LinkedHashMap<>();
 
         for (Map<String, Object> registro : datos) {
-            // Crear clave única combinando todos los campos únicos
-            String claveUnica = config.getCamposUnicos().stream()
-                    .map(campo -> String.valueOf(registro.getOrDefault(campo, "")))
-                    .collect(Collectors.joining("|"));
+            String claveGrupo = crearClaveGrupo(registro, camposAgrupacion);
 
-            if (!registrosUnicos.containsKey(claveUnica)) {
-                if (config.isMantenerProvinciasOrigen()) {
-                    registro.put("provincias_origen", Collections.singleton(registro.get("provincia_origen")));
-                }
-                registrosUnicos.put(claveUnica, registro);
-            }
-        }
+            Map<String, Object> grupoConsolidado = grupos.computeIfAbsent(claveGrupo,
+                    k -> crearGrupoSimple(registro, camposAgrupacion, camposNumericos));
 
-        log.info("Deduplicación completada: {} registros únicos de {} originales",
-                registrosUnicos.size(), datos.size());
-
-        return new ArrayList<>(registrosUnicos.values());
-    }
-
-    /**
-     * Agregación por campos de agrupación
-     */
-    private List<Map<String, Object>> aplicarAgregacion(List<Map<String, Object>> datos,
-                                                        ConfiguracionConsolidacion config) {
-        if (config.getCamposAgrupacion().isEmpty()) {
-            // Sin agrupación, sumar todo
-            return sumarTodosLosRegistros(datos, config.getCamposNumericos());
-        }
-
-        Map<String, Map<String, Object>> registrosConsolidados = new LinkedHashMap<>();
-
-        for (Map<String, Object> registro : datos) {
-            // Crear clave de agrupación
-            String claveAgrupacion = config.getCamposAgrupacion().stream()
-                    .map(campo -> String.valueOf(registro.getOrDefault(campo, "")))
-                    .collect(Collectors.joining("|"));
-
-            if (registrosConsolidados.containsKey(claveAgrupacion)) {
-                Map<String, Object> registroExistente = registrosConsolidados.get(claveAgrupacion);
-
-                // Sumar campos numéricos
-                for (String campoNumerico : config.getCamposNumericos()) {
-                    sumarCampoNumerico(registroExistente, registro, campoNumerico);
-                }
-
-                if (config.isMantenerProvinciasOrigen()) {
-                    agregarProvinciaOrigen(registroExistente, (String) registro.get("provincia_origen"));
-                }
-
-            } else {
-                Map<String, Object> nuevoRegistro = new LinkedHashMap<>(registro);
-                if (config.isMantenerProvinciasOrigen()) {
-                    Set<String> provincias = new HashSet<>();
-                    provincias.add((String) registro.get("provincia_origen"));
-                    nuevoRegistro.put("provincias_origen", provincias);
-                }
-                registrosConsolidados.put(claveAgrupacion, nuevoRegistro);
-            }
-        }
-
-        log.info("Agregación completada: {} registros consolidados de {} originales",
-                registrosConsolidados.size(), datos.size());
-
-        return new ArrayList<>(registrosConsolidados.values());
-    }
-
-    /**
-     * Consolidación jerárquica por ubicación y tiempo
-     */
-    private List<Map<String, Object>> aplicarConsolidacionJerarquica(List<Map<String, Object>> datos,
-                                                                     ConfiguracionConsolidacion config) {
-        Map<String, Map<String, Object>> consolidadoPorUbicacion = new LinkedHashMap<>();
-
-        for (Map<String, Object> registro : datos) {
-            // Obtener ubicación (primer campo de ubicación disponible)
-            String ubicacion = obtenerValorDeCampos(registro, config.getCamposUbicacion(), "SIN_UBICACION");
-
-            // Obtener período temporal
-            String periodo = obtenerValorDeCampos(registro, config.getCamposTiempo(), "SIN_PERIODO");
-            if (periodo != null && !periodo.equals("SIN_PERIODO")) {
-                periodo = extraerPeriodoDeFecha(periodo);
-            }
-
-            // Obtener o crear entrada de ubicación
-            Map<String, Object> datosDeUbicacion = consolidadoPorUbicacion.computeIfAbsent(ubicacion, k -> {
-                Map<String, Object> nueva = new LinkedHashMap<>();
-                nueva.put("ubicacion", ubicacion);
-                nueva.put("total_registros_consolidados", 0);
-                nueva.put("desglose_temporal", new LinkedHashMap<String, Object>());
-                nueva.put("total_general", 0L);
-                return nueva;
-            });
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> desgloseTemporal = (Map<String, Object>) datosDeUbicacion.get("desglose_temporal");
-
-            // Consolidar por período
-            for (String campoNumerico : config.getCamposNumericos()) {
-                Object valor = registro.get(campoNumerico);
-                if (valor != null && esNumerico(valor)) {
-                    Long valorNumerico = ((Number) valor).longValue();
-
-                    // Sumar al período específico
-                    Long valorPeriodo = (Long) desgloseTemporal.getOrDefault(periodo, 0L);
-                    desgloseTemporal.put(periodo, valorPeriodo + valorNumerico);
-
-                    // Sumar al total general
-                    Long totalGeneral = (Long) datosDeUbicacion.get("total_general");
-                    datosDeUbicacion.put("total_general", totalGeneral + valorNumerico);
-                }
-            }
+            // Sumar SOLO los campos numéricos especificados
+            sumarCamposNumericos(grupoConsolidado, registro, camposNumericos);
 
             // Incrementar contador
-            int registrosConsolidados = (Integer) datosDeUbicacion.get("total_registros_consolidados");
-            datosDeUbicacion.put("total_registros_consolidados", registrosConsolidados + 1);
+            Integer contador = (Integer) grupoConsolidado.getOrDefault("registros_consolidados", 0);
+            grupoConsolidado.put("registros_consolidados", contador + 1);
         }
 
-        // Generar resultado final
-        List<Map<String, Object>> resultado = new ArrayList<>();
-        for (Map<String, Object> datosUbicacion : consolidadoPorUbicacion.values()) {
-            Map<String, Object> registroConsolidado = new LinkedHashMap<>();
-            registroConsolidado.put("ubicacion", datosUbicacion.get("ubicacion"));
-            registroConsolidado.put("total_infracciones", datosUbicacion.get("total_general"));
-            registroConsolidado.put("desglose_temporal", datosUbicacion.get("desglose_temporal"));
-            resultado.add(registroConsolidado);
-        }
+        List<Map<String, Object>> resultado = new ArrayList<>(grupos.values());
 
-        log.info("Consolidación jerárquica completada: {} ubicaciones consolidadas de {} registros originales",
-                resultado.size(), datos.size());
+        log.info("Consolidación por orden completada: {} grupos consolidados", resultado.size());
 
         return resultado;
     }
 
     /**
-     * Consolidación combinada (deduplicación + agregación)
+     * Crea un grupo simple con solo los campos especificados
      */
-    private List<Map<String, Object>> aplicarConsolidacionCombinada(List<Map<String, Object>> datos,
-                                                                    ConfiguracionConsolidacion config) {
-        // Primero deduplicar
-        List<Map<String, Object>> datosDedupe = aplicarDeduplicacion(datos, config);
+    private Map<String, Object> crearGrupoSimple(Map<String, Object> registro,
+                                                 List<String> camposAgrupacion,
+                                                 List<String> camposNumericos) {
+        Map<String, Object> grupo = new LinkedHashMap<>();
 
-        // Luego agregar
-        return aplicarAgregacion(datosDedupe, config);
-    }
-
-    // =============== MÉTODOS UTILITARIOS ===============
-
-    private boolean esNumerico(Object valor) {
-        return valor instanceof Number;
-    }
-
-    private boolean esFecha(String valor) {
-        // Patrones comunes de fecha
-        return valor.matches("\\d{1,2}[/-]\\d{1,2}[/-]\\d{4}") ||
-                valor.matches("\\d{4}-\\d{1,2}-\\d{1,2}") ||
-                valor.matches("\\d{4}-\\d{1,2}") ||
-                valor.matches("\\d{1,2}/\\d{1,2}/\\d{4}");
-    }
-
-    private Pattern detectarPatron(String valor) {
-        // Detectar patrones comunes como dominios de vehículos
-        if (valor.matches("^[A-Z]{2,3}[0-9]{3}[A-Z]{2}$")) {
-            return Pattern.compile("^[A-Z]{2,3}[0-9]{3}[A-Z]{2}$"); // Dominio auto
+        // Campos de agrupación (mantener valores originales)
+        for (String campo : camposAgrupacion) {
+            grupo.put(campo, registro.get(campo));
         }
-        if (valor.matches("^[0-9]{3}[A-Z]{3}$")) {
-            return Pattern.compile("^[0-9]{3}[A-Z]{3}$"); // Dominio moto
+
+        // Campos numéricos (inicializar en 0)
+        for (String campo : camposNumericos) {
+            grupo.put(campo, 0L);
         }
-        return null;
+
+//        // Metadatos básicos
+//        grupo.put("consolidado", true);
+//        grupo.put("registros_consolidados", 0);
+
+        return grupo;
     }
 
-    private String obtenerValorDeCampos(Map<String, Object> registro, List<String> campos, String valorDefault) {
-        for (String campo : campos) {
+    /**
+     * Suma solo los campos numéricos especificados
+     */
+    private void sumarCamposNumericos(Map<String, Object> consolidado,
+                                      Map<String, Object> registro,
+                                      List<String> camposNumericos) {
+
+        for (String campo : camposNumericos) {
+            Object valorRegistro = registro.get(campo);
+            if (valorRegistro != null && esNumerico(valorRegistro)) {
+                Long valorNumerico = ((Number) valorRegistro).longValue();
+
+                Long valorActual = 0L;
+                Object valorConsolidado = consolidado.get(campo);
+                if (valorConsolidado != null && esNumerico(valorConsolidado)) {
+                    valorActual = ((Number) valorConsolidado).longValue();
+                }
+
+                consolidado.put(campo, valorActual + valorNumerico);
+
+                log.trace("Sumando campo {}: {} + {} = {}",
+                        campo, valorActual, valorNumerico, valorActual + valorNumerico);
+            }
+        }
+    }
+
+    /**
+     * Verifica si un campo es numérico analizando los datos reales
+     */
+    private boolean esNumericoEnDatos(String campo, List<Map<String, Object>> datos) {
+        if (datos.isEmpty()) return false;
+
+        int contadorNumerico = 0;
+        int muestra = Math.min(20, datos.size());
+
+        for (int i = 0; i < muestra; i++) {
+            Object valor = datos.get(i).get(campo);
+            if (valor != null && esNumerico(valor)) {
+                contadorNumerico++;
+            }
+        }
+
+        // Considerar numérico si >70% de la muestra son números
+        return (double) contadorNumerico / muestra > 0.7;
+    }
+
+    /**
+     * Consolidación automática cuando no hay orden específico
+     */
+    private List<Map<String, Object>> consolidarAutomatico(List<Map<String, Object>> datos) {
+        // Detección automática simple - solo provincia y campos numéricos más comunes
+        List<String> camposAgrupacion = Arrays.asList("provincia");
+        List<String> camposNumericos = detectarCamposNumericosComunes(datos);
+
+        return consolidarPorCamposEspecificos(datos, camposAgrupacion, camposNumericos);
+    }
+
+    /**
+     * Detecta campos numéricos comunes automáticamente
+     */
+    private List<String> detectarCamposNumericosComunes(List<Map<String, Object>> datos) {
+        if (datos.isEmpty()) return new ArrayList<>();
+
+        List<String> camposComunes = Arrays.asList(
+                "total", "vehiculos", "motos", "cantidad", "infracciones",
+                "formato_no_valido", "luz_roja", "senda"
+        );
+
+        return camposComunes.stream()
+                .filter(campo -> datos.get(0).containsKey(campo))
+                .filter(campo -> esNumericoEnDatos(campo, datos))
+                .collect(Collectors.toList());
+    }
+
+    // =============== NORMALIZACIÓN DE PROVINCIAS ===============
+
+    /**
+     * Normaliza los nombres de provincias en todos los registros
+     */
+    private List<Map<String, Object>> normalizarProvinciasEnDatos(List<Map<String, Object>> datos) {
+        for (Map<String, Object> registro : datos) {
+            String provincia = obtenerProvinciaDelRegistro(registro);
+            String provinciaNormalizada = MAPEO_PROVINCIAS.getOrDefault(provincia, provincia);
+
+            // Actualizar todos los campos relacionados con provincia
+            registro.put("provincia", provinciaNormalizada);
+            registro.put("provincia_origen", provinciaNormalizada);
+        }
+
+        log.debug("Provincias normalizadas en {} registros", datos.size());
+        return datos;
+    }
+
+    /**
+     * Obtiene la provincia de un registro desde cualquier campo disponible
+     */
+    private String obtenerProvinciaDelRegistro(Map<String, Object> registro) {
+        // Intentar diferentes campos donde puede estar la provincia
+        String[] camposProvincia = {"provincia", "provincia_origen", "contexto"};
+
+        for (String campo : camposProvincia) {
             Object valor = registro.get(campo);
             if (valor != null && !valor.toString().trim().isEmpty()) {
                 return valor.toString().trim();
             }
         }
-        return valorDefault;
+
+        return "SIN_PROVINCIA";
     }
 
-    private String extraerPeriodoDeFecha(String fecha) {
-        if (fecha == null) return "SIN_PERIODO";
+    // =============== MÉTODOS UTILITARIOS SIMPLIFICADOS ===============
 
-        try {
-            // Formato DD/MM/YYYY
-            if (fecha.matches("\\d{1,2}/\\d{1,2}/\\d{4}")) {
-                String[] partes = fecha.split("/");
-                if (partes.length >= 3) {
-                    String mes = partes[1].length() == 1 ? "0" + partes[1] : partes[1];
-                    return partes[2] + "-" + mes;
-                }
-            }
-            // Formato YYYY-MM-DD
-            if (fecha.matches("\\d{4}-\\d{1,2}-\\d{1,2}")) {
-                return fecha.substring(0, 7);
-            }
-            // Formato YYYY-MM
-            if (fecha.matches("\\d{4}-\\d{1,2}")) {
-                return fecha;
-            }
-        } catch (Exception e) {
-            log.warn("Error extrayendo período de fecha '{}': {}", fecha, e.getMessage());
-        }
-
-        return "SIN_PERIODO";
-    }
-
-    @SuppressWarnings("unchecked")
-    private void agregarProvinciaOrigen(Map<String, Object> registro, String provincia) {
-        Object provinciasObj = registro.get("provincias_origen");
-        Set<String> provincias = (provinciasObj instanceof Set) ?
-                (Set<String>) provinciasObj : new HashSet<>();
-
-        if (provincia != null) {
-            provincias.add(provincia);
-        }
-        registro.put("provincias_origen", provincias);
-    }
-
-    private void sumarCampoNumerico(Map<String, Object> destino, Map<String, Object> origen, String campo) {
-        Object valorDestino = destino.get(campo);
-        Object valorOrigen = origen.get(campo);
-
-        if (valorDestino == null) valorDestino = 0;
-        if (valorOrigen == null) valorOrigen = 0;
-
-        if (esNumerico(valorDestino) && esNumerico(valorOrigen)) {
-            Number numeroDestino = (Number) valorDestino;
-            Number numeroOrigen = (Number) valorOrigen;
-            destino.put(campo, numeroDestino.longValue() + numeroOrigen.longValue());
-        }
-    }
-
-    private List<Map<String, Object>> sumarTodosLosRegistros(List<Map<String, Object>> datos, List<String> camposNumericos) {
-        if (datos.isEmpty()) return datos;
-
-        Map<String, Object> registroConsolidado = new LinkedHashMap<>(datos.get(0));
-        Set<String> todasLasProvincias = new HashSet<>();
-
-        // Inicializar valores numéricos en 0
-        for (String campo : camposNumericos) {
-            registroConsolidado.put(campo, 0L);
-        }
-
-        // Sumar todos los registros
-        for (Map<String, Object> registro : datos) {
-            for (String campo : camposNumericos) {
-                sumarCampoNumerico(registroConsolidado, registro, campo);
-            }
-
-            String provincia = (String) registro.get("provincia_origen");
-            if (provincia != null) {
-                todasLasProvincias.add(provincia);
-            }
-        }
-
-        registroConsolidado.put("provincias_origen", todasLasProvincias);
-        registroConsolidado.put("consolidado", true);
-        registroConsolidado.put("total_registros_originales", datos.size());
-
-        return Arrays.asList(registroConsolidado);
-    }
-
-    // =============== MÉTODOS AUXILIARES MANTENIDOS ===============
-
-    private List<Map<String, Object>> recopilarDatosDeTodosLosRepositories(
+    /**
+     * Recopila datos de todos los repositories disponibles
+     */
+    private List<Map<String, Object>> recopilarDatos(
             List<InfraccionesRepositoryImpl> repositories,
             String nombreQuery,
             ParametrosFiltrosDTO filtros) {
 
         List<Map<String, Object>> todosLosDatos = new ArrayList<>();
-        Set<String> provinciasConErrores = new HashSet<>();
 
         for (InfraccionesRepositoryImpl repo : repositories) {
             String provincia = repo.getProvincia();
 
             try {
-                log.debug("Obteniendo datos de provincia: {}", provincia);
-
                 List<Map<String, Object>> datosProvider = repo.ejecutarQueryConFiltros(nombreQuery, filtros);
 
                 if (datosProvider != null && !datosProvider.isEmpty()) {
-                    // Agregar información de provincia origen a cada registro
+                    // Agregar provincia de origen a cada registro
                     datosProvider.forEach(registro -> {
+                        registro.put("provincia", provincia);
                         registro.put("provincia_origen", provincia);
                     });
-
                     todosLosDatos.addAll(datosProvider);
+
                     log.debug("Provincia {}: {} registros obtenidos", provincia, datosProvider.size());
                 }
 
             } catch (Exception e) {
-                log.error("Error obteniendo datos de provincia {}: {}", provincia, e.getMessage(), e);
-                provinciasConErrores.add(provincia);
+                log.error("Error obteniendo datos de provincia {}: {}", provincia, e.getMessage());
             }
         }
 
-        if (!provinciasConErrores.isEmpty()) {
-            log.warn("Provincias con errores en consolidación: {}", provinciasConErrores);
-        }
-
-        log.info("Recopilación completada: {} registros totales de {} provincias",
-                todosLosDatos.size(), repositories.size() - provinciasConErrores.size());
+        log.info("Total recopilado: {} registros de {} provincias",
+                todosLosDatos.size(), repositories.size());
 
         return todosLosDatos;
     }
 
-    private List<Map<String, Object>> aplicarLimitesConsolidacion(
+    /**
+     * Crea una clave única para el grupo basada en los campos de agrupación
+     */
+    private String crearClaveGrupo(Map<String, Object> registro, List<String> camposAgrupacion) {
+        return camposAgrupacion.stream()
+                .map(campo -> String.valueOf(registro.getOrDefault(campo, "")))
+                .collect(Collectors.joining("|"));
+    }
+
+    /**
+     * Verifica si un valor es numérico
+     */
+    private boolean esNumerico(Object valor) {
+        return valor instanceof Number;
+    }
+
+    /**
+     * Aplica límites de paginación a los datos consolidados
+     */
+    private List<Map<String, Object>> aplicarLimites(
             List<Map<String, Object>> datos,
             ParametrosFiltrosDTO filtros) {
 
         int limite = filtros.getLimiteEfectivo();
         int offset = filtros.calcularOffset();
 
-        log.debug("Aplicando límites consolidación: limite={}, offset={}, total={}",
-                limite, offset, datos.size());
+        log.debug("Aplicando límites: limite={}, offset={}, total={}", limite, offset, datos.size());
 
         // Aplicar offset
-        if (offset > 0 && offset < datos.size()) {
+        if (offset > 0) {
+            if (offset >= datos.size()) {
+                return Collections.emptyList();
+            }
             datos = datos.subList(offset, datos.size());
-        } else if (offset >= datos.size()) {
-            log.warn("Offset {} excede tamaño de datos {}", offset, datos.size());
-            return Collections.emptyList();
         }
 
         // Aplicar límite
@@ -683,41 +355,52 @@ public class ConsolidacionService {
         return datos;
     }
 
-    // Métodos públicos mantenidos para compatibilidad
+    // =============== MÉTODOS PÚBLICOS DE UTILIDAD ===============
+
+    /**
+     * Valida si es posible realizar consolidación
+     */
     public boolean validarConsolidacion(ParametrosFiltrosDTO filtros) {
         if (!filtros.esConsolidado()) {
             return false;
         }
 
         Map<String, ?> repositories = repositoryFactory.getAllRepositories();
-        if (repositories.isEmpty()) {
+        boolean valido = !repositories.isEmpty();
+
+        if (!valido) {
             log.warn("No hay repositorios disponibles para consolidación");
-            return false;
         }
 
-        log.debug("Consolidación validada: {} repositorios disponibles", repositories.size());
-        return true;
+        return valido;
     }
 
+    /**
+     * Obtiene información sobre el estado de la consolidación
+     */
     public Map<String, Object> obtenerInfoConsolidacion() {
-        Map<String, Object> info = new HashMap<>();
-
         Set<String> provinciasDisponibles = repositoryFactory.getProvinciasSoportadas();
         Map<String, ?> repositories = repositoryFactory.getAllRepositories();
 
+        Map<String, Object> info = new HashMap<>();
         info.put("provincias_disponibles", new ArrayList<>(provinciasDisponibles));
         info.put("total_provincias", provinciasDisponibles.size());
         info.put("repositories_activos", repositories.size());
         info.put("consolidacion_habilitada", !repositories.isEmpty());
-        info.put("tipo_consolidacion", "dinamica_adaptativa");
+        info.put("tipo_consolidacion", "simple_por_orden");
+        info.put("version", "3.0");
 
         return info;
     }
 
+    /**
+     * Genera respuesta optimizada según el formato solicitado
+     */
     public Object generarRespuestaConsolidadaOptima(List<Map<String, Object>> datos, String formato) {
         if (datos == null || datos.isEmpty()) {
             return Collections.emptyMap();
         }
-        return datos; // Por ahora devolver datos directamente, se puede optimizar según formato
+
+        return datos; // Devolver directamente los datos consolidados
     }
 }
