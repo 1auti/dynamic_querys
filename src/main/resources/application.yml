@@ -10,9 +10,58 @@ provincia:
     "Entre Ríos": entre-rios
     "Formosa": formosa
 
-# Configuración de las bases de datos
+# =============== CONFIGURACIÓN DE BASES DE DATOS ===============
 spring:
+  # === BASE DE DATOS PRINCIPAL H2 (Para QueryMetadata) ===
   datasource:
+    # DataSource PRIMARIO - H2 para metadata de queries
+    url: ${H2_URL:jdbc:h2:file:./data/query_metadata;DB_CLOSE_ON_EXIT=FALSE;AUTO_SERVER=TRUE}
+    username: ${H2_USERNAME:sa}
+    password: ${H2_PASSWORD:}
+    driver-class-name: org.h2.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 10000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      pool-name: "H2-QueryMetadata-Pool"
+
+  # === CONFIGURACIÓN JPA/H2 ===
+  jpa:
+    hibernate:
+      ddl-auto: update                    # Crear tablas automáticamente
+    show-sql: ${SHOW_SQL:false}           # Solo en desarrollo
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+        use_sql_comments: true
+    database-platform: org.hibernate.dialect.H2Dialect
+
+  # === CONSOLA H2 (Para debugging) ===
+  h2:
+    console:
+      enabled: ${H2_CONSOLE_ENABLED:true}  # Habilitar en desarrollo
+      path: /h2-console
+      settings:
+        web-allow-others: ${H2_WEB_ALLOW_OTHERS:false}
+        trace: false
+
+  # Configuración HTTP y Tomcat
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+  # Jackson JSON limits
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: false
+
+# =============== CONFIGURACIÓN POSTGRESQL (DATASOURCES SECUNDARIOS) ===============
+postgresql:
+  datasources:
     pba:
       jdbc-url: ${PBA_URL:jdbc:postgresql://localhost:5432/pba_db}
       username: ${PBA_USERNAME:postgres}
@@ -25,6 +74,7 @@ spring:
         idle-timeout: 300000
         max-lifetime: 1200000
         leak-detection-threshold: 60000
+        pool-name: "PostgreSQL-PBA-Pool"
     mda:
       jdbc-url: ${MDA_URL:jdbc:postgresql://localhost:5432/mda_db}
       username: ${MDA_USERNAME:postgres}
@@ -37,6 +87,7 @@ spring:
         idle-timeout: 300000
         max-lifetime: 1200000
         leak-detection-threshold: 60000
+        pool-name: "PostgreSQL-MDA-Pool"
     santa-rosa:
       jdbc-url: ${SANTA_ROSA_URL:jdbc:postgresql://localhost:5432/santa_rosa_db}
       username: ${SANTA_ROSA_USERNAME:postgres}
@@ -49,6 +100,7 @@ spring:
         idle-timeout: 300000
         max-lifetime: 1200000
         leak-detection-threshold: 60000
+        pool-name: "PostgreSQL-SantaRosa-Pool"
     chaco:
       jdbc-url: ${CHACO_URL:jdbc:postgresql://localhost:5432/chaco_db}
       username: ${CHACO_USERNAME:postgres}
@@ -61,6 +113,7 @@ spring:
         idle-timeout: 300000
         max-lifetime: 1200000
         leak-detection-threshold: 60000
+        pool-name: "PostgreSQL-Chaco-Pool"
     entre-rios:
       jdbc-url: ${ENTRE_RIOS_URL:jdbc:postgresql://localhost:5432/entre_rios_db}
       username: ${ENTRE_RIOS_USERNAME:postgres}
@@ -73,6 +126,7 @@ spring:
         idle-timeout: 300000
         max-lifetime: 1200000
         leak-detection-threshold: 60000
+        pool-name: "PostgreSQL-EntreRios-Pool"
     formosa:
       jdbc-url: ${FORMOSA_URL:jdbc:postgresql://localhost:5432/formosa_db}
       username: ${FORMOSA_USERNAME:postgres}
@@ -85,19 +139,7 @@ spring:
         idle-timeout: 300000
         max-lifetime: 1200000
         leak-detection-threshold: 60000
-
-  # Configuración HTTP y Tomcat
-  servlet:
-    multipart:
-      max-file-size: 50MB
-      max-request-size: 50MB
-
-  # Jackson JSON limits
-  spring:
-    jackson:
-      deserialization:
-        fail-on-unknown-properties: false
-
+        pool-name: "PostgreSQL-Formosa-Pool"
 
 # Configuración del servidor
 server:
@@ -113,27 +155,46 @@ server:
     include-message: always
     include-binding-errors: always
 
-# Configuración de queries
-queries:
-  path: "classpath:queries/"
-  files:
-    - "consultar_personas_juridicas.sql"
-    - "reporte_infracciones_detallado.sql"
-    - "reporte_infracciones_general.sql"
-    - "reporte_radar_fijo_por_equipo.sql"
-    - "reporte_semaforo_por_equipo.sql"
-    - "reporte_vehiculos_por_municipio.sql"
-    - "reporte_sin_email_por_municipio.sql"
-    - "verificar_imagenes_subidas_radar_concesion.sql"
-    - "reporte_cantidad_infracciones_estado.sql"
-    - "reporte_infracciones_generadas_bruto.sql"
-
-# Configuración de la aplicación
+# =============== CONFIGURACIÓN DE QUERY REGISTRY (NUEVA) ===============
 app:
+  query-registry:
+    # 🔍 Auto-descubrimiento de queries
+    auto-scan-enabled: ${AUTO_SCAN_QUERIES:true}        # Escanear /resources/querys/ automáticamente
+    queries-path: ${QUERIES_PATH:classpath:querys/}     # Ruta donde buscar queries
+    file-extensions: ${QUERY_EXTENSIONS:sql}            # Extensiones válidas (sql)
+
+    # 🚀 Comportamiento al iniciar
+    auto-analyze-on-startup: ${AUTO_ANALYZE_QUERIES:true}  # Analizar queries al iniciar
+    scan-on-startup: ${SCAN_ON_STARTUP:true}               # Escanear directorio al iniciar
+    update-existing: ${UPDATE_EXISTING:true}               # Actualizar queries existentes
+
+    # 📁 Configuración de archivos
+    h2-file-path: ${H2_FILE_PATH:./data/query_metadata}    # Ubicación del archivo H2
+    backup-enabled: ${BACKUP_ENABLED:true}                 # Backup automático
+    backup-interval-hours: ${BACKUP_INTERVAL:24}           # Cada 24 horas
+
+    # 📤 Upload de queries dinámico
+    upload-enabled: ${UPLOAD_ENABLED:true}                 # Permitir upload de queries
+    upload-path: ${UPLOAD_PATH:./uploads/queries/}         # Donde guardar queries subidas
+    max-file-size: ${MAX_QUERY_FILE_SIZE:1MB}              # Tamaño máximo por query
+    allowed-extensions: ${ALLOWED_EXTENSIONS:sql}           # Solo SQL
+
+  query-analyzer:
+    version: "1.0"                                          # Versión del analizador
+    enable-cache: false                                     # Sin cache en memoria (H2 es el cache)
+    fallback-strategy: CONSOLIDACION_SIMPLE                # Fallback si falla análisis
+    max-analysis-time-ms: 5000                             # Timeout para análisis complejos
+
+  # Configuración de consolidación
+  consolidacion:
+    default-strategy: "inteligente"       # inteligente | provincia | completa | temporal
+    max-grouping-fields: 5               # Máximo campos de agrupación
+    min-numeric-fields: 1                # Mínimo campos numéricos para consolidar
+
   limits:
     max-records-sync: 10000         # Para que consultas de hasta 5000 usen procesamiento síncrono
     max-records-total: 100000       # Máximo absoluto de registros
-    max-records-display: 10000       # Máximo para endpoints de consulta (Postman-friendly)
+    max-records-display: 10000      # Máximo para endpoints de consulta (Postman-friendly)
     max-concurrent-queries: 10      # Máximo de consultas concurrentes
   batch:
     size: 10000                     # Lotes más grandes
@@ -145,13 +206,22 @@ app:
   # Configuración para threads asíncronos
   async:
     thread-pool-size: 10
+
+# ❌ REMOVIDO: Configuración estática de queries
+# queries:
+#   path: "classpath:queries/"
+#   files: [...]  # Ya no necesario!
+
 # Configuración de logging
 logging:
   level:
     org.transito_seguro: DEBUG
     org.springframework.jdbc: DEBUG
+    org.hibernate.SQL: ${HIBERNATE_SQL_LOG:INFO}    # Solo en desarrollo
+    org.hibernate.type: ${HIBERNATE_TYPE_LOG:WARN}  # Solo en desarrollo
     com.zaxxer.hikari: INFO
     org.postgresql: WARN
+    org.h2: INFO
   pattern:
     console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
 
@@ -160,9 +230,86 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,metrics,info
+        include: health,metrics,info,h2,query-registry
   endpoint:
     health:
       show-details: when_authorized
     metrics:
       enabled: true
+    # Endpoint personalizado para Query Registry
+    query-registry:
+      enabled: true
+
+# =============== CONFIGURACIÓN POR AMBIENTE ===============
+---
+spring:
+  profiles: development
+
+  h2:
+    console:
+      enabled: true
+
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+app:
+  query-registry:
+    scan-on-startup: true          # Escanear siempre en desarrollo
+    upload-enabled: true           # Permitir uploads en desarrollo
+
+logging:
+  level:
+    org.transito_seguro: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type: DEBUG
+
+---
+spring:
+  profiles: production
+
+  datasource:
+    # En producción, usar H2 embebido más robusto
+    url: jdbc:h2:file:/opt/app/data/query_metadata;DB_CLOSE_ON_EXIT=FALSE;AUTO_SERVER=FALSE
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+
+  h2:
+    console:
+      enabled: false  # Deshabilitar consola en producción
+
+  jpa:
+    show-sql: false
+
+app:
+  query-registry:
+    backup-enabled: true
+    backup-interval-hours: 12      # Backup cada 12 horas en producción
+    upload-enabled: false          # Sin uploads directos en producción
+
+logging:
+  level:
+    org.transito_seguro: INFO
+    org.hibernate.SQL: WARN
+
+---
+spring:
+  profiles: testing
+
+  datasource:
+    # H2 en memoria para tests
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop  # Recrear schema en cada test
+    show-sql: true
+
+app:
+  query-registry:
+    auto-analyze-on-startup: false  # No auto-analizar en tests
+    scan-on-startup: false          # No escanear en tests
+    upload-enabled: false           # No uploads en tests

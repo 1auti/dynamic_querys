@@ -58,7 +58,6 @@ public class ConsolidacionService {
         }
 
         // Si solo hay un campo y es provincia, usar consolidación completa
-        // Si solo hay un campo y es un campo de agrupación (como provincia), usar consolidación completa
         if (ordenConsolidacion.size() == 1 &&
                 CamposNoNumericos.esNoNumerico(ordenConsolidacion.get(0))) {
             return consolidarPorProvincia(datos);
