@@ -3,10 +3,10 @@ package org.transito_seguro.service;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.transito_seguro.component.QueryAnalyzer;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.factory.RepositoryFactory;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
-import org.transito_seguro.utils.CamposNoNumericos;
 import org.transito_seguro.utils.NormalizadorProvincias;
 
 import java.util.*;
@@ -19,115 +19,171 @@ public class ConsolidacionService {
     @Autowired
     private RepositoryFactory repositoryFactory;
 
-    // Constantes para evitar magic numbers
+    @Autowired
+    private QueryRegistryService queryRegistryService; // 🆕 NUEVA DEPENDENCIA
+
+    // Constantes para análisis de datos (mantenidas como fallback)
     private static final int MIN_MUESTRA_NUMERICA = 3;
     private static final double UMBRAL_NUMERICO = 0.8;
     private static final int TAMAÑO_MUESTRA = 50;
 
     /**
-     * Método principal para consolidar datos
+     * 🚀 MÉTODO PRINCIPAL MEJORADO: Consolidación con Registry
      */
     public List<Map<String, Object>> consolidarDatos(
             List<InfraccionesRepositoryImpl> repositories,
             String nombreQuery,
             ParametrosFiltrosDTO filtros) {
 
-        log.info("Iniciando consolidación para {} provincias", repositories.size());
+        log.info("Iniciando consolidación con REGISTRY para {} provincias, query: {}",
+                repositories.size(), nombreQuery);
 
+        // 1. 🆕 NUEVO: Obtener análisis desde el Registry (BD H2)
+        QueryAnalyzer.AnalisisConsolidacion analisis =
+                queryRegistryService.obtenerAnalisisConsolidacion(nombreQuery);
+
+        if (!analisis.isEsConsolidado()) {
+            log.warn("Query '{}' NO es consolidable según Registry", nombreQuery);
+            return recopilarDatosSinConsolidar(repositories, nombreQuery, filtros);
+        }
+
+        log.info("Query '{}' es CONSOLIDABLE según Registry:", nombreQuery);
+        log.info("  📍 Campos Ubicación: {}", analisis.getCamposUbicacion());
+        log.info("  🏷️ Campos Agrupación: {}", analisis.getCamposAgrupacion());
+        log.info("  📊 Campos Numéricos: {}", analisis.getCamposNumericos());
+
+        // 2. Recopilar datos de todas las provincias
         List<Map<String, Object>> todosLosDatos = recopilarDatos(repositories, nombreQuery, filtros);
         if (todosLosDatos.isEmpty()) {
             return Collections.emptyList();
         }
 
+        // 3. Normalizar provincias
         todosLosDatos = normalizarProvinciasEnDatos(todosLosDatos);
-        List<Map<String, Object>> datosConsolidados = procesarConsolidacion(todosLosDatos, filtros);
 
+        // 4. 🆕 NUEVO: Procesamiento optimizado usando metadata del Registry
+        List<Map<String, Object>> datosConsolidados = procesarConsolidacionConRegistry(
+                todosLosDatos, filtros, analisis);
+
+        // 5. Aplicar límites
         return aplicarLimites(datosConsolidados, filtros);
     }
 
     /**
-     * Procesamiento simplificado de consolidación
+     * 🎯 NUEVO: Procesamiento optimizado usando metadata del Registry
      */
-    private List<Map<String, Object>> procesarConsolidacion(
-            List<Map<String, Object>> datos, ParametrosFiltrosDTO filtros) {
+    private List<Map<String, Object>> procesarConsolidacionConRegistry(
+            List<Map<String, Object>> datos,
+            ParametrosFiltrosDTO filtros,
+            QueryAnalyzer.AnalisisConsolidacion analisis) {
 
-        List<String> ordenConsolidacion = filtros.getConsolidacionSeguro();
+        // Determinar estrategia desde Registry + preferencias del usuario
+        List<String> camposAgrupacion = determinarCamposAgrupacionConRegistry(filtros, analisis);
+        List<String> camposNumericos = determinarCamposNumericosConRegistry(datos, analisis);
 
-        if (ordenConsolidacion.isEmpty()) {
-            return consolidarPorProvincia(datos);
-        }
+        log.info("Estrategia FINAL (Registry + Usuario):");
+        log.info("  🎯 Agrupar por: {}", camposAgrupacion);
+        log.info("  📊 Sumar: {}", camposNumericos);
 
-        // Si solo hay un campo y es provincia, usar consolidación completa
-        if (ordenConsolidacion.size() == 1 &&
-                CamposNoNumericos.esNoNumerico(ordenConsolidacion.get(0))) {
-            return consolidarPorProvincia(datos);
-        }
-        // Separar campos de agrupación vs numéricos
+        return consolidarPorCampos(datos, camposAgrupacion, camposNumericos);
+    }
+
+    /**
+     * Determina campos de agrupación priorizando Registry sobre análisis dinámico
+     */
+    private List<String> determinarCamposAgrupacionConRegistry(ParametrosFiltrosDTO filtros,
+                                                               QueryAnalyzer.AnalisisConsolidacion analisis) {
+
         List<String> camposAgrupacion = new ArrayList<>();
-        List<String> camposNumericos = new ArrayList<>();
+        List<String> consolidacionUsuario = filtros.getConsolidacionSeguro();
 
-        for (String campo : ordenConsolidacion) {
-            if (esNumericoEnDatos(campo, datos)) {
-                camposNumericos.add(campo);
-            } else {
-                camposAgrupacion.add(campo);
+        if (!consolidacionUsuario.isEmpty()) {
+            // Usuario especificó campos - validar contra el Registry
+            log.info("Validando campos del usuario contra Registry: {}", consolidacionUsuario);
+
+            for (String campo : consolidacionUsuario) {
+                if (analisis.getCamposAgrupacion().contains(campo) ||
+                        analisis.getCamposUbicacion().contains(campo)) {
+                    camposAgrupacion.add(campo);
+                    log.debug("  ✅ Campo '{}' válido", campo);
+                } else {
+                    log.warn("  ❌ Campo '{}' NO válido según Registry", campo);
+                }
             }
         }
 
+        // Si no hay campos válidos del usuario, usar Registry directamente
         if (camposAgrupacion.isEmpty()) {
-            camposAgrupacion.add("provincia");
+            log.info("Usando estrategia del Registry directamente");
+
+            // Prioridad: ubicación primero, luego categorización
+            camposAgrupacion.addAll(analisis.getCamposUbicacion());
+
+            // Agregar máximo 2 campos de agrupación adicionales (no ubicación, no tiempo)
+            List<String> camposAdicionales = analisis.getCamposAgrupacion().stream()
+                    .filter(campo -> !analisis.getCamposUbicacion().contains(campo))
+                    .filter(campo -> !analisis.getCamposTiempo().contains(campo))
+                    .limit(2)
+                    .collect(Collectors.toList());
+
+            camposAgrupacion.addAll(camposAdicionales);
         }
 
-        log.info("Consolidando por: {} (agrupación) + {} (numéricos)",
-                camposAgrupacion, camposNumericos);
+        // Garantizar que siempre haya "provincia"
+        if (!camposAgrupacion.contains("provincia")) {
+            camposAgrupacion.add(0, "provincia");
+        }
 
-        return consolidarPorCampos(datos, camposAgrupacion, camposNumericos);
+        return camposAgrupacion.stream().distinct().collect(Collectors.toList());
     }
 
     /**
-     * Consolidación específica por provincia detectando todos los campos numéricos
+     * Determina campos numéricos priorizando Registry sobre detección dinámica
      */
-    private List<Map<String, Object>> consolidarPorProvincia(List<Map<String, Object>> datos) {
-        log.info("Consolidación por provincia - detectando campos numéricos automáticamente");
+    private List<String> determinarCamposNumericosConRegistry(List<Map<String, Object>> datos,
+                                                              QueryAnalyzer.AnalisisConsolidacion analisis) {
 
-        List<String> camposNumericos = detectarCamposNumericos(datos);
-        List<String> camposAgrupacion = Arrays.asList("provincia");
+        Set<String> camposNumericos = new HashSet<>();
 
-        return consolidarPorCampos(datos, camposAgrupacion, camposNumericos);
-    }
+        // 1. 🆕 PRIORIDAD: Usar campos del Registry
+        camposNumericos.addAll(analisis.getCamposNumericos());
+        log.info("Campos numéricos desde Registry: {}", analisis.getCamposNumericos());
 
-    /**
-     * Detecta automáticamente campos numéricos
-     */
-    private List<String> detectarCamposNumericos(List<Map<String, Object>> datos) {
-        if (datos.isEmpty()) {
-            return Collections.emptyList();
-        }
+        // 2. FALLBACK: Solo si el Registry no tiene campos numéricos, detectar dinámicamente
+        if (camposNumericos.isEmpty() && !datos.isEmpty()) {
+            log.info("Registry sin campos numéricos, detectando dinámicamente...");
 
-        Set<String> todosCampos = datos.get(0).keySet();
-        List<String> camposNumericos = new ArrayList<>();
+            Set<String> todosLosCampos = datos.get(0).keySet();
 
-        for (String campo : todosCampos) {
-            // Si el campo NO está en la lista de no-numéricos Y es numérico en los datos
-            if (!CamposNoNumericos.esNoNumerico(campo) &&
-                    esNumericoEnDatos(campo, datos)) {
-                camposNumericos.add(campo);
+            for (String campo : todosLosCampos) {
+                // Solo analizar campos no clasificados por el Registry
+                if (!analisis.getTipoPorCampo().containsKey(campo) &&
+                        esNumericoEnDatos(campo, datos)) {
+                    camposNumericos.add(campo);
+                    log.debug("Campo numérico detectado dinámicamente: {}", campo);
+                }
             }
         }
 
-        log.info("Campos numéricos detectados: {} de {} totales",
-                camposNumericos.size(), todosCampos.size());
-
-        return camposNumericos;
+        List<String> resultado = new ArrayList<>(camposNumericos);
+        log.info("Campos numéricos FINALES: {}", resultado);
+        return resultado;
     }
 
     /**
-     * Consolidación por campos específicos - método unificado
+     * Consolidación por campos específicos - método optimizado (sin cambios)
      */
     private List<Map<String, Object>> consolidarPorCampos(
             List<Map<String, Object>> datos,
             List<String> camposAgrupacion,
             List<String> camposNumericos) {
+
+        if (camposAgrupacion.isEmpty()) {
+            log.warn("No hay campos de agrupación, retornando datos sin consolidar");
+            return datos;
+        }
+
+        log.info("Consolidando {} registros por campos: {}", datos.size(), camposAgrupacion);
 
         Map<String, Map<String, Object>> grupos = new LinkedHashMap<>();
 
@@ -140,12 +196,15 @@ public class ConsolidacionService {
             sumarCamposNumericos(grupo, registro, camposNumericos);
         }
 
-        return new ArrayList<>(grupos.values());
+        List<Map<String, Object>> resultado = new ArrayList<>(grupos.values());
+        log.info("Consolidación completada: {} registros → {} grupos",
+                datos.size(), resultado.size());
+
+        return resultado;
     }
 
-    /**
-     * Crea un nuevo grupo inicializado
-     */
+    // =============== MÉTODOS UTILITARIOS (sin cambios) ===============
+
     private Map<String, Object> crearGrupoNuevo(Map<String, Object> registro,
                                                 List<String> camposAgrupacion,
                                                 List<String> camposNumericos) {
@@ -164,9 +223,6 @@ public class ConsolidacionService {
         return grupo;
     }
 
-    /**
-     * Suma valores numéricos - método simplificado
-     */
     private void sumarCamposNumericos(Map<String, Object> grupo,
                                       Map<String, Object> registro,
                                       List<String> camposNumericos) {
@@ -183,9 +239,7 @@ public class ConsolidacionService {
         }
     }
 
-    /**
-     * Obtiene valor numérico de forma segura
-     */
+    // [Resto de métodos utilitarios sin cambios...]
     private Long obtenerValorNumerico(Object valor) {
         if (valor instanceof Number) {
             return ((Number) valor).longValue();
@@ -193,9 +247,6 @@ public class ConsolidacionService {
         return 0L;
     }
 
-    /**
-     * Convierte objeto a número de forma segura
-     */
     private Long convertirANumero(Object valor) {
         if (valor instanceof Number) {
             return ((Number) valor).longValue();
@@ -215,9 +266,6 @@ public class ConsolidacionService {
         return null;
     }
 
-    /**
-     * Verifica si un campo es numérico analizando los datos
-     */
     private boolean esNumericoEnDatos(String campo, List<Map<String, Object>> datos) {
         if (datos.isEmpty()) return false;
 
@@ -236,13 +284,9 @@ public class ConsolidacionService {
         }
 
         if (contadorNoNulo < MIN_MUESTRA_NUMERICA) return false;
-
         return (double) contadorNumerico / contadorNoNulo > UMBRAL_NUMERICO;
     }
 
-    /**
-     * Verifica si un valor específico es numérico
-     */
     private boolean esValorNumerico(Object valor) {
         if (valor instanceof Number) {
             return true;
@@ -260,11 +304,30 @@ public class ConsolidacionService {
         return false;
     }
 
-    // =============== MÉTODOS UTILITARIOS ===============
+    private List<Map<String, Object>> recopilarDatosSinConsolidar(
+            List<InfraccionesRepositoryImpl> repositories,
+            String nombreQuery,
+            ParametrosFiltrosDTO filtros) {
 
-    /**
-     * Normaliza provincias en los datos
-     */
+        log.info("Recopilando datos SIN consolidar (modo normal)");
+
+        List<Map<String, Object>> todosLosDatos = new ArrayList<>();
+
+        for (InfraccionesRepositoryImpl repo : repositories) {
+            try {
+                List<Map<String, Object>> datos = repo.ejecutarQueryConFiltros(nombreQuery, filtros);
+                if (datos != null && !datos.isEmpty()) {
+                    datos.forEach(registro -> registro.put("provincia", repo.getProvincia()));
+                    todosLosDatos.addAll(datos);
+                }
+            } catch (Exception e) {
+                log.error("Error en provincia {}: {}", repo.getProvincia(), e.getMessage());
+            }
+        }
+
+        return todosLosDatos;
+    }
+
     private List<Map<String, Object>> normalizarProvinciasEnDatos(List<Map<String, Object>> datos) {
         for (Map<String, Object> registro : datos) {
             String provincia = obtenerProvinciaDelRegistro(registro);
@@ -277,9 +340,6 @@ public class ConsolidacionService {
         return datos;
     }
 
-    /**
-     * Obtiene provincia de un registro
-     */
     private String obtenerProvinciaDelRegistro(Map<String, Object> registro) {
         String[] camposProvincia = {"provincia", "provincia_origen", "contexto"};
 
@@ -293,9 +353,6 @@ public class ConsolidacionService {
         return "SIN_PROVINCIA";
     }
 
-    /**
-     * Recopila datos de todos los repositories
-     */
     private List<Map<String, Object>> recopilarDatos(
             List<InfraccionesRepositoryImpl> repositories,
             String nombreQuery,
@@ -310,7 +367,6 @@ public class ConsolidacionService {
                 List<Map<String, Object>> datosProvider = repo.ejecutarQueryConFiltros(nombreQuery, filtros);
 
                 if (datosProvider != null && !datosProvider.isEmpty()) {
-                    // Agregar información de provincia a cada registro
                     for (Map<String, Object> registro : datosProvider) {
                         registro.put("provincia", provincia);
                         registro.put("provincia_origen", provincia);
@@ -331,18 +387,12 @@ public class ConsolidacionService {
         return todosLosDatos;
     }
 
-    /**
-     * Crea clave única para agrupación
-     */
     private String crearClaveGrupo(Map<String, Object> registro, List<String> camposAgrupacion) {
         return camposAgrupacion.stream()
                 .map(campo -> String.valueOf(registro.getOrDefault(campo, "")))
                 .collect(Collectors.joining("|"));
     }
 
-    /**
-     * Aplica límites de paginación
-     */
     private List<Map<String, Object>> aplicarLimites(
             List<Map<String, Object>> datos,
             ParametrosFiltrosDTO filtros) {
@@ -363,7 +413,7 @@ public class ConsolidacionService {
         return datos;
     }
 
-    // =============== MÉTODOS PÚBLICOS ===============
+    // =============== MÉTODOS PÚBLICOS (actualizados para usar Registry) ===============
 
     public boolean validarConsolidacion(ParametrosFiltrosDTO filtros) {
         return filtros.esConsolidado() && !repositoryFactory.getAllRepositories().isEmpty();
@@ -371,5 +421,26 @@ public class ConsolidacionService {
 
     public Object generarRespuestaConsolidadaOptima(List<Map<String, Object>> datos, String formato) {
         return datos != null && !datos.isEmpty() ? datos : Collections.emptyList();
+    }
+
+    /**
+     * 🆕 NUEVO: Método para validar si una query específica puede ser consolidada (usando Registry)
+     */
+    public boolean puedeSerConsolidada(String nombreQuery) {
+        try {
+            QueryAnalyzer.AnalisisConsolidacion analisis =
+                    queryRegistryService.obtenerAnalisisConsolidacion(nombreQuery);
+            return analisis.isEsConsolidado();
+        } catch (Exception e) {
+            log.error("Error validando consolidación para query '{}': {}", nombreQuery, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 🆕 NUEVO: Obtener metadata completa de consolidación desde Registry
+     */
+    public QueryAnalyzer.AnalisisConsolidacion obtenerMetadataConsolidacion(String nombreQuery) {
+        return queryRegistryService.obtenerAnalisisConsolidacion(nombreQuery);
     }
 }

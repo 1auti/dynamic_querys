@@ -65,6 +65,9 @@ public class QueryMetadata {
     @Column(name = "fecha_ultima_actualizacion")
     private LocalDateTime fechaUltimaActualizacion;
 
+    @Column(name = "complejidad", length = 20)
+    private String complejidad; // SIMPLE, MEDIA, COMPLEJA
+
     @Column(name = "fecha_ultimo_uso")
     private LocalDateTime fechaUltimoUso;
 
