@@ -1,12 +1,12 @@
 package org.transito_seguro.controller;
 
 import lombok.extern.slf4j.Slf4j;
-import lombok.var;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.transito_seguro.component.QueryAnalyzer;
 import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.dto.QueryStorageDTO;
@@ -15,11 +15,12 @@ import org.transito_seguro.service.DatabaseQueryService;
 
 import javax.validation.Valid;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
+/**
+ * Controller avanzado para gestión de queries dinámicas
+ * Maneja queries almacenadas en base de datos con análisis automático
+ */
 @Slf4j
 @RestController
 @RequestMapping("/api/queries-db")
@@ -29,11 +30,13 @@ public class DatabaseQueryController {
     @Autowired
     private DatabaseQueryService databaseQueryService;
 
+    @Autowired
+    private QueryAnalyzer queryAnalyzer;
+
     // =============== EJECUCIÓN DE QUERIES ===============
 
     /**
-     * ENDPOINT PRINCIPAL: Ejecutar query por código
-     * Integra automáticamente con consolidación dinámica
+     * Ejecutar query por código con soporte completo de consolidación
      */
     @PostMapping("/ejecutar/{codigo}")
     public ResponseEntity<?> ejecutarQuery(
@@ -41,44 +44,56 @@ public class DatabaseQueryController {
             @Valid @RequestBody ConsultaQueryDTO consulta) {
 
         try {
-            log.info("Ejecutando query desde BD: {} - Consolidado: {}",
-                    codigo, consulta.getParametrosFiltros() != null &&
-                            consulta.getParametrosFiltros().esConsolidado());
+            boolean consolidado = esConsolidado(consulta);
+
+            log.info("Ejecutando query BD: {} - Consolidado: {}", codigo, consolidado);
 
             Object resultado = databaseQueryService.ejecutarQueryPorCodigo(codigo, consulta);
 
             // Headers informativos
             ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.ok();
+            responseBuilder.header("X-Query-Fuente", "database");
+            responseBuilder.header("X-Query-Codigo", codigo);
 
-            if (consulta.getParametrosFiltros() != null && consulta.getParametrosFiltros().esConsolidado()) {
-                responseBuilder
-                        .header("X-Query-Consolidada", "true")
-                        .header("X-Query-Codigo", codigo);
+            if (consolidado) {
+                responseBuilder.header("X-Query-Consolidada", "true");
             }
 
             return responseBuilder.body(resultado);
 
         } catch (IllegalArgumentException e) {
-            log.error("Query no encontrada o inválida '{}': {}", codigo, e.getMessage());
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Query no válida");
-            body.put("codigo", codigo);
-            body.put("detalle", e.getMessage());
-            return ResponseEntity.badRequest().body(body);
-
+            return (ResponseEntity<?>) crearRespuestaError("Query no válida", codigo, e.getMessage(), HttpStatus.BAD_REQUEST);
         } catch (Exception e) {
             log.error("Error ejecutando query '{}': {}", codigo, e.getMessage(), e);
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Error interno");
-            body.put("codigo", codigo);
-            body.put("detalle", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
-
+            return (ResponseEntity<?>) crearRespuestaError("Error interno", codigo, e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
 
     /**
-     * Preview de query antes de ejecutar
+     * Ejecutar query específicamente en modo consolidado
+     */
+    @PostMapping("/consolidada/{codigo}")
+    public ResponseEntity<?> ejecutarQueryConsolidada(
+            @PathVariable String codigo,
+            @Valid @RequestBody ConsultaQueryDTO consulta) {
+
+        // Forzar consolidación
+        ParametrosFiltrosDTO filtrosConsolidados = consulta.getParametrosFiltros() != null ?
+                consulta.getParametrosFiltros().toBuilder()
+                        .consolidado(true)
+                        .consolidacion(Arrays.asList("provincia", "municipio"))
+                        .build() :
+                ParametrosFiltrosDTO.builder()
+                        .consolidado(true)
+                        .consolidacion(Arrays.asList("provincia", "municipio"))
+                        .build();
+        consulta.setParametrosFiltros(filtrosConsolidados);
+
+        return ejecutarQuery(codigo, consulta);
+    }
+
+    /**
+     * Preview de query sin ejecutar
      */
     @PostMapping("/preview/{codigo}")
     public ResponseEntity<Map<String, Object>> previewQuery(
@@ -89,25 +104,48 @@ public class DatabaseQueryController {
             Map<String, Object> preview = databaseQueryService.previewQuery(codigo, filtros);
             return ResponseEntity.ok(preview);
         } catch (Exception e) {
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Error generando preview");
-            body.put("codigo", codigo);
-            body.put("detalle", e.getMessage());
-            return ResponseEntity.badRequest().body(body);
-
+            return ResponseEntity.badRequest()
+                    .body(crearMapaError("Error en preview", codigo, e.getMessage()));
         }
     }
 
-    // =============== GESTIÓN CRUD DE QUERIES ===============
+    // =============== GESTIÓN DE QUERIES ===============
 
     /**
-     * Listar todas las queries activas
+     * Listar queries con filtros opcionales
      */
     @GetMapping
-    public ResponseEntity<List<QueryStorage>> listarQueries() {
+    public ResponseEntity<Map<String, Object>> listarQueries(
+            @RequestParam(required = false) String categoria,
+            @RequestParam(required = false) Boolean consolidable,
+            @RequestParam(required = false, defaultValue = "20") int limite) {
+
         try {
-            List<QueryStorage> queries = databaseQueryService.obtenerQueriesActivas();
-            return ResponseEntity.ok(queries);
+            List<QueryStorage> queries;
+
+            if (categoria != null) {
+                queries = databaseQueryService.obtenerQueriesPorCategoria(categoria);
+            } else if (consolidable != null && consolidable) {
+                queries = databaseQueryService.obtenerQueriesConsolidables();
+            } else {
+                queries = databaseQueryService.obtenerQueriesActivas();
+            }
+
+            // Aplicar límite
+            if (limite > 0 && queries.size() > limite) {
+                queries = queries.subList(0, limite);
+            }
+
+            // Respuesta enriquecida
+            Map<String, Object> respuesta = new HashMap<>();
+            respuesta.put("queries", queries);
+            respuesta.put("total", queries.size());
+            respuesta.put("consolidables", queries.stream()
+                    .mapToLong(q -> q.getEsConsolidable() ? 1 : 0)
+                    .sum());
+
+            return ResponseEntity.ok(respuesta);
+
         } catch (Exception e) {
             log.error("Error listando queries: {}", e.getMessage(), e);
             return ResponseEntity.internalServerError().build();
@@ -115,15 +153,21 @@ public class DatabaseQueryController {
     }
 
     /**
-     * Obtener query específica por código
+     * Obtener query específica
      */
     @GetMapping("/{codigo}")
-    public ResponseEntity<QueryStorage> obtenerQuery(@PathVariable String codigo) {
+    public ResponseEntity<Map<String, Object>> obtenerQuery(@PathVariable String codigo) {
         try {
-            Optional<QueryStorage> query = databaseQueryService.obtenerQueryPorCodigo(codigo);
+            Optional<QueryStorage> queryOpt = databaseQueryService.obtenerQueryPorCodigo(codigo);
 
-            if (query.isPresent()) {
-                return ResponseEntity.ok(query.get());
+            if (queryOpt.isPresent()) {
+                QueryStorage query = queryOpt.get();
+
+                Map<String, Object> respuesta = new HashMap<>();
+                respuesta.put("query", query);
+                respuesta.put("estadisticas", databaseQueryService.obtenerEstadisticasUso(codigo));
+
+                return ResponseEntity.ok(respuesta);
             } else {
                 return ResponseEntity.notFound().build();
             }
@@ -134,34 +178,32 @@ public class DatabaseQueryController {
     }
 
     /**
-     * Crear nueva query
+     * Crear nueva query con análisis automático
      */
     @PostMapping
-    public ResponseEntity<?> crearQuery(@Valid @RequestBody QueryStorageDTO dto) {
+    public ResponseEntity<Map<String, Object>> crearQuery(@Valid @RequestBody QueryStorageDTO dto) {
         try {
             QueryStorage queryCreada = databaseQueryService.guardarQuery(dto);
 
-            Map<String, Object> body = new HashMap<>();
-            body.put("mensaje", "Query creada exitosamente");
-            body.put("codigo", queryCreada.getCodigo());
-            body.put("id", queryCreada.getId());
-            body.put("consolidable", queryCreada.getEsConsolidable());
-            return ResponseEntity.ok(body);
+            Map<String, Object> respuesta = new HashMap<>();
+            respuesta.put("mensaje", "Query creada exitosamente");
+            respuesta.put("query", queryCreada);
+            respuesta.put("consolidable", queryCreada.getEsConsolidable());
+
+            if (queryCreada.getEsConsolidable()) {
+                respuesta.put("campos_agrupacion", queryCreada.getCamposAgrupacionList());
+                respuesta.put("campos_numericos", queryCreada.getCamposNumericosList());
+            }
+
+            return ResponseEntity.ok(respuesta);
 
         } catch (IllegalArgumentException e) {
-
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Error de validación");
-            body.put("detalle", e.getMessage());
-            return ResponseEntity.badRequest().body(body);
-
+            return ResponseEntity.badRequest()
+                    .body(crearMapaError("Error de validación", dto.getCodigo(), e.getMessage()));
         } catch (Exception e) {
             log.error("Error creando query: {}", e.getMessage(), e);
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Error interno");
-            body.put("detalle", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
-
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(crearMapaError("Error interno", dto.getCodigo(), e.getMessage()));
         }
     }
 
@@ -169,35 +211,27 @@ public class DatabaseQueryController {
      * Actualizar query existente
      */
     @PutMapping("/{codigo}")
-    public ResponseEntity<?> actualizarQuery(
+    public ResponseEntity<Map<String, Object>> actualizarQuery(
             @PathVariable String codigo,
             @Valid @RequestBody QueryStorageDTO dto) {
 
         try {
             QueryStorage queryActualizada = databaseQueryService.actualizarQuery(codigo, dto);
 
-            Map<String, Object> body = new HashMap<>();
-            body.put("mensaje", "Query actualizada exitosamente");
-            body.put("codigo", queryActualizada.getCodigo());
-            body.put("version", queryActualizada.getVersion());
-            body.put("consolidable", queryActualizada.getEsConsolidable());
-            return ResponseEntity.ok(body);
+            Map<String, Object> respuesta = new HashMap<>();
+            respuesta.put("mensaje", "Query actualizada exitosamente");
+            respuesta.put("query", queryActualizada);
+            respuesta.put("version", queryActualizada.getVersion());
+
+            return ResponseEntity.ok(respuesta);
 
         } catch (IllegalArgumentException e) {
-
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Query no encontrada o inválida");
-            body.put("codigo", codigo);
-            body.put("detalle", e.getMessage());
-            return ResponseEntity.badRequest().body(body);
-
+            return ResponseEntity.badRequest()
+                    .body(crearMapaError("Query no encontrada", codigo, e.getMessage()));
         } catch (Exception e) {
             log.error("Error actualizando query '{}': {}", codigo, e.getMessage(), e);
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Error interno");
-            body.put("detalle", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
-
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(crearMapaError("Error interno", codigo, e.getMessage()));
         }
     }
 
@@ -209,36 +243,26 @@ public class DatabaseQueryController {
         try {
             databaseQueryService.eliminarQuery(codigo);
 
-            Map<String, Object> body = new HashMap<>();
-            body.put("mensaje", "Query eliminada exitosamente");
-            body.put("codigo", codigo);
+            Map<String, Object> respuesta = new HashMap<>();
+            respuesta.put("mensaje", "Query eliminada exitosamente");
+            respuesta.put("codigo", codigo);
 
-            return ResponseEntity.ok(body);
-
+            return ResponseEntity.ok(respuesta);
 
         } catch (IllegalArgumentException e) {
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Query no encontrada");
-            body.put("codigo", codigo);
-
-            return ResponseEntity.badRequest().body(body);
-
+            return ResponseEntity.badRequest()
+                    .body(crearMapaError("Query no encontrada", codigo, e.getMessage()));
         } catch (Exception e) {
             log.error("Error eliminando query '{}': {}", codigo, e.getMessage(), e);
-
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Error interno");
-            body.put("detalle", e.getMessage());
-
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
-
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(crearMapaError("Error interno", codigo, e.getMessage()));
         }
     }
 
-    // =============== CARGA DE QUERIES DESDE ARCHIVO ===============
+    // =============== CARGA Y VALIDACIÓN ===============
 
     /**
-     * Cargar query desde archivo
+     * Cargar query desde archivo con análisis automático
      */
     @PostMapping("/cargar")
     public ResponseEntity<Map<String, Object>> cargarQueryDesdeArchivo(
@@ -252,10 +276,8 @@ public class DatabaseQueryController {
         try {
             // Validaciones básicas
             if (archivo.isEmpty()) {
-                Map<String, Object> body = new HashMap<>();
-                body.put("error", "Archivo vacío");
-
-                return ResponseEntity.badRequest().body(body);
+                return ResponseEntity.badRequest()
+                        .body(crearMapaError("Archivo vacío", codigo, "No se recibió contenido"));
             }
 
             // Leer contenido
@@ -263,19 +285,17 @@ public class DatabaseQueryController {
 
             // Validar SQL
             if (!databaseQueryService.validarSqlQuery(sqlContent)) {
-                Map<String, Object> body = new HashMap<>();
-                body.put("error", "SQL no válido o inseguro");
-                body.put("detalle", "El archivo debe contener una query SELECT válida con parámetros dinámicos");
-
-                return ResponseEntity.badRequest().body(body);
+                return ResponseEntity.badRequest()
+                        .body(crearMapaError("SQL no válido", codigo,
+                                "El archivo debe contener una query SELECT válida"));
             }
-
 
             // Crear DTO
             QueryStorageDTO dto = QueryStorageDTO.builder()
                     .codigo(codigo)
                     .nombre(nombre)
-                    .descripcion(descripcion != null ? descripcion : "Cargada desde archivo: " + archivo.getOriginalFilename())
+                    .descripcion(descripcion != null ? descripcion :
+                            "Cargada desde archivo: " + archivo.getOriginalFilename())
                     .sqlQuery(sqlContent)
                     .categoria(categoria)
                     .creadoPor(creadoPor != null ? creadoPor : "UPLOAD_USUARIO")
@@ -285,113 +305,18 @@ public class DatabaseQueryController {
             // Guardar
             QueryStorage queryGuardada = databaseQueryService.guardarQuery(dto);
 
-            Map<String, Object> response = new HashMap<>();
-            response.put("mensaje", "Query cargada exitosamente");
-            response.put("codigo", queryGuardada.getCodigo());
-            response.put("consolidable", queryGuardada.getEsConsolidable());
-            response.put("archivo_original", archivo.getOriginalFilename());
+            Map<String, Object> respuesta = new HashMap<>();
+            respuesta.put("mensaje", "Query cargada exitosamente");
+            respuesta.put("query", queryGuardada);
+            respuesta.put("archivo_original", archivo.getOriginalFilename());
 
-            if (queryGuardada.getEsConsolidable()) {
-                response.put("campos_agrupacion", queryGuardada.getCamposAgrupacionList());
-                response.put("campos_numericos", queryGuardada.getCamposNumericosList());
-            }
+            return ResponseEntity.ok(respuesta);
 
-            return ResponseEntity.ok(response);
-
-        }catch (IllegalArgumentException e) {
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Error de validación");
-            body.put("detalle", e.getMessage());
-
-            return ResponseEntity.badRequest().body(body);
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             log.error("Error cargando query desde archivo: {}", e.getMessage(), e);
-
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Error interno");
-            body.put("detalle", e.getMessage());
-
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(crearMapaError("Error interno", codigo, e.getMessage()));
         }
-
-    }
-
-    // =============== BÚSQUEDA Y FILTRADO ===============
-
-    @GetMapping("/buscar")
-    public ResponseEntity<List<QueryStorage>> buscarQueries(@RequestParam(required = false) String q) {
-        try {
-            List<QueryStorage> queries = databaseQueryService.buscarQueries(q);
-            return ResponseEntity.ok(queries);
-        } catch (Exception e) {
-            log.error("Error buscando queries: {}", e.getMessage(), e);
-            return ResponseEntity.internalServerError().build();
-        }
-    }
-
-    @GetMapping("/categoria/{categoria}")
-    public ResponseEntity<List<QueryStorage>> obtenerPorCategoria(@PathVariable String categoria) {
-        try {
-            List<QueryStorage> queries = databaseQueryService.obtenerQueriesPorCategoria(categoria);
-            return ResponseEntity.ok(queries);
-        } catch (Exception e) {
-            log.error("Error obteniendo queries por categoría '{}': {}", categoria, e.getMessage(), e);
-            return ResponseEntity.internalServerError().build();
-        }
-    }
-
-    @GetMapping("/consolidables")
-    public ResponseEntity<List<QueryStorage>> obtenerQueriesConsolidables() {
-        try {
-            List<QueryStorage> queries = databaseQueryService.obtenerQueriesConsolidables();
-            return ResponseEntity.ok(queries);
-        } catch (Exception e) {
-            log.error("Error obteniendo queries consolidables: {}", e.getMessage(), e);
-            return ResponseEntity.internalServerError().build();
-        }
-    }
-
-    @GetMapping("/populares")
-    public ResponseEntity<List<QueryStorage>> obtenerQueriesPopulares(@RequestParam(defaultValue = "10") int limite) {
-        try {
-            List<QueryStorage> queries = databaseQueryService.obtenerQueriesPopulares(limite);
-            return ResponseEntity.ok(queries);
-        } catch (Exception e) {
-            log.error("Error obteniendo queries populares: {}", e.getMessage(), e);
-            return ResponseEntity.internalServerError().build();
-        }
-    }
-
-    // =============== HERRAMIENTAS ADMINISTRATIVAS ===============
-
-    /**
-     * Migrar queries desde archivos a BD
-     */
-    @PostMapping("/migrar-archivos")
-    public ResponseEntity<Map<String, Object>> migrarDesdeArchivos() {
-        try {
-            log.info("Iniciando migración de queries desde archivos");
-
-            int migradas = databaseQueryService.migrarQueriesDesdeArchivos();
-
-            Map<String, Object> body = new HashMap<>();
-            body.put("mensaje", "Migración completada");
-            body.put("queries_migradas", migradas);
-
-            return ResponseEntity.ok(body);
-
-
-        }catch (Exception e) {
-            log.error("Error en migración: {}", e.getMessage(), e);
-
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Error en migración");
-            body.put("detalle", e.getMessage());
-
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
-        }
-
     }
 
     /**
@@ -408,66 +333,64 @@ public class DatabaseQueryController {
             validacion.put("lineas", sql.split("\n").length);
 
             if (valido) {
-                // Analizar consolidación potencial
-                org.transito_seguro.component.QueryAnalyzer analyzer =
-                        new org.transito_seguro.component.QueryAnalyzer();
-                var analisis = analyzer.analizarParaConsolidacion(sql);
+                // Analizar consolidación
+                QueryAnalyzer.AnalisisConsolidacion analisis =
+                        queryAnalyzer.analizarParaConsolidacion(sql);
 
                 validacion.put("consolidable", analisis.isEsConsolidado());
-                if (analisis.isEsConsolidado()) {
-                    validacion.put("campos_agrupacion", analisis.getCamposAgrupacion());
-                    validacion.put("campos_numericos", analisis.getCamposNumericos());
-                }
+                validacion.put("campos_agrupacion", analisis.getCamposAgrupacion());
+                validacion.put("campos_numericos", analisis.getCamposNumericos());
+                validacion.put("campos_ubicacion", analisis.getCamposUbicacion());
             }
 
             return ResponseEntity.ok(validacion);
 
         } catch (Exception e) {
-            Map<String, Object> body = new HashMap<>();
-            body.put("sql_valido", false);
-            body.put("error", e.getMessage());
-
-            return ResponseEntity.ok(body);
+            Map<String, Object> respuesta = new HashMap<>();
+            respuesta.put("sql_valido", false);
+            respuesta.put("error", e.getMessage());
+            return ResponseEntity.ok(respuesta);
         }
-
     }
 
-    /**
-     * Ejecutar query específicamente en modo consolidado
-     */
-    @PostMapping("/consolidada/{codigo}")
-    public ResponseEntity<?> ejecutarQueryConsolidada(
-            @PathVariable String codigo,
-            @Valid @RequestBody ConsultaQueryDTO consulta) {
+    // =============== BÚSQUEDA Y FILTRADO ===============
 
+    @GetMapping("/buscar")
+    public ResponseEntity<List<QueryStorage>> buscarQueries(
+            @RequestParam(required = false) String q) {
         try {
-            // Forzar consolidación
-            ParametrosFiltrosDTO filtrosConsolidados = consulta.getParametrosFiltros() != null ?
-                    consulta.getParametrosFiltros().toBuilder()
-                            .consolidado(true)
-                            .build() :
-                    ParametrosFiltrosDTO.builder()
-                            .consolidado(true)
-                            .build();
-
-            consulta.setParametrosFiltros(filtrosConsolidados);
-
-            return ejecutarQuery(codigo, consulta);
-
+            List<QueryStorage> queries = databaseQueryService.buscarQueries(q);
+            return ResponseEntity.ok(queries);
         } catch (Exception e) {
-            log.error("Error ejecutando query consolidada '{}': {}", codigo, e.getMessage(), e);
-
-            Map<String, Object> body = new HashMap<>();
-            body.put("error", "Error en consolidación");
-            body.put("codigo", codigo);
-            body.put("detalle", e.getMessage());
-
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+            log.error("Error buscando queries: {}", e.getMessage(), e);
+            return ResponseEntity.internalServerError().build();
         }
-
     }
 
-    // =============== ESTADÍSTICAS Y ANÁLISIS ===============
+    @GetMapping("/consolidables")
+    public ResponseEntity<List<QueryStorage>> obtenerQueriesConsolidables() {
+        try {
+            List<QueryStorage> queries = databaseQueryService.obtenerQueriesConsolidables();
+            return ResponseEntity.ok(queries);
+        } catch (Exception e) {
+            log.error("Error obteniendo queries consolidables: {}", e.getMessage(), e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    @GetMapping("/populares")
+    public ResponseEntity<List<QueryStorage>> obtenerQueriesPopulares(
+            @RequestParam(defaultValue = "10") int limite) {
+        try {
+            List<QueryStorage> queries = databaseQueryService.obtenerQueriesPopulares(limite);
+            return ResponseEntity.ok(queries);
+        } catch (Exception e) {
+            log.error("Error obteniendo queries populares: {}", e.getMessage(), e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    // =============== ESTADÍSTICAS Y ADMINISTRACIÓN ===============
 
     @GetMapping("/estadisticas")
     public ResponseEntity<Map<String, Object>> obtenerEstadisticas() {
@@ -493,30 +416,78 @@ public class DatabaseQueryController {
         }
     }
 
+    @PostMapping("/migrar-archivos")
+    public ResponseEntity<Map<String, Object>> migrarDesdeArchivos() {
+        try {
+            log.info("Iniciando migración de queries desde archivos");
+            int migradas = databaseQueryService.migrarQueriesDesdeArchivos();
+
+            Map<String, Object> respuesta = new HashMap<>();
+            respuesta.put("mensaje", "Migración completada");
+            respuesta.put("queries_migradas", migradas);
+
+            return ResponseEntity.ok(respuesta);
+
+        } catch (Exception e) {
+            log.error("Error en migración: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(crearMapaError("Error en migración", "migración", e.getMessage()));
+        }
+    }
+
     @GetMapping("/health")
     public ResponseEntity<Map<String, Object>> healthCheck() {
         try {
-            Map<String, Object> health = new HashMap<>();
-
             List<QueryStorage> queries = databaseQueryService.obtenerQueriesActivas();
-            int consolidables = (int) queries.stream().mapToLong(q -> q.getEsConsolidable() ? 1 : 0).sum();
+            int consolidables = (int) queries.stream()
+                    .mapToLong(q -> q.getEsConsolidable() ? 1 : 0)
+                    .sum();
 
+            Map<String, Object> health = new HashMap<>();
             health.put("status", "UP");
-            health.put("total_queries_activas", queries.size());
+            health.put("total_queries", queries.size());
             health.put("queries_consolidables", consolidables);
-            health.put("sistema_operativo", queries.size() > 0);
+            health.put("porcentaje_consolidables",
+                    queries.size() > 0 ? (double) consolidables / queries.size() * 100 : 0);
 
             return ResponseEntity.ok(health);
 
         } catch (Exception e) {
             log.error("Error en health check: {}", e.getMessage(), e);
 
-            Map<String, Object> body = new HashMap<>();
-            body.put("status", "DOWN");
-            body.put("error", e.getMessage());
+            Map<String, Object> errorHealth = new HashMap<>();
+            errorHealth.put("status", "DOWN");
+            errorHealth.put("error", e.getMessage());
 
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(errorHealth);
         }
+    }
 
+    // =============== MÉTODOS UTILITARIOS ===============
+
+    private boolean esConsolidado(ConsultaQueryDTO consulta) {
+        return consulta.getParametrosFiltros() != null &&
+                consulta.getParametrosFiltros().esConsolidado();
+    }
+
+    private Map<String, Object> crearRespuestaError(String error, String codigo,
+                                                    String detalle, HttpStatus status) {
+        Map<String, Object> respuesta = new HashMap<>();
+        respuesta.put("error", error);
+        respuesta.put("codigo", codigo);
+        respuesta.put("detalle", detalle);
+        respuesta.put("timestamp", java.time.LocalDateTime.now());
+        respuesta.put("status", status.value());
+        return respuesta;
+    }
+
+    private Map<String, Object> crearMapaError(String error, String codigo, String detalle) {
+        Map<String, Object> mapa = new HashMap<>();
+        mapa.put("error", error);
+        mapa.put("codigo", codigo);
+        mapa.put("detalle", detalle);
+        mapa.put("timestamp", java.time.LocalDateTime.now());
+        return mapa;
     }
 }

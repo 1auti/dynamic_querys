@@ -20,7 +20,7 @@ public class ConsolidacionService {
     private RepositoryFactory repositoryFactory;
 
     @Autowired
-    private QueryRegistryService queryRegistryService; // 🆕 NUEVA DEPENDENCIA
+    private QueryRegistryService queryRegistryService;
 
     // Constantes para análisis de datos (mantenidas como fallback)
     private static final int MIN_MUESTRA_NUMERICA = 3;

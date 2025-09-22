@@ -13,6 +13,7 @@ import javax.sql.DataSource;
 @Slf4j
 public class DataSourceConfig {
 
+    // =============== H2 DATASOURCE PRIMARIO ===============
     @Primary
     @Bean(name = "primaryDataSource")
     @ConfigurationProperties(prefix = "spring.datasource")
@@ -23,52 +24,59 @@ public class DataSourceConfig {
                 .build();
     }
 
+    // =============== POSTGRESQL DATASOURCES  ===============
+
     @Bean(name = "pbaDataSource")
-    @ConfigurationProperties(prefix = "postgresql.datasource.pba")
+    @ConfigurationProperties(prefix = "postgresql.datasources.pba")
     public DataSource pbaDataSource() {
-        log.info("Configurando PBA Database");
-        return DataSourceBuilder.create().type(HikariDataSource.class).build();
+        log.info("Configurando PBA PostgreSQL DataSource");
+        return DataSourceBuilder.create()
+                .type(HikariDataSource.class)
+                .build();
     }
 
     @Bean(name = "mdaDataSource")
-    @ConfigurationProperties(prefix = "postgresql.datasource.mda")
+    @ConfigurationProperties(prefix = "postgresql.datasources.mda")
     public DataSource mdaDataSource() {
-        log.info("Configurando MDA Database");
-        return DataSourceBuilder.create().type(HikariDataSource.class).build();
+        log.info("Configurando MDA PostgreSQL DataSource");
+        return DataSourceBuilder.create()
+                .type(HikariDataSource.class)
+                .build();
     }
 
     @Bean(name = "santa-rosaDataSource")
-    @ConfigurationProperties(prefix = "postgresql.datasource.santa-rosa")
+    @ConfigurationProperties(prefix = "postgresql.datasources.santa-rosa")
     public DataSource santaRosaDataSource() {
-        log.info("Configurando SANTA_ROSA Database");
-        return DataSourceBuilder.create().type(HikariDataSource.class).build();
+        log.info("Configurando Santa Rosa PostgreSQL DataSource");
+        return DataSourceBuilder.create()
+                .type(HikariDataSource.class)
+                .build();
     }
 
     @Bean(name = "chacoDataSource")
-    @ConfigurationProperties(prefix = "postgresql.datasource.chaco")
+    @ConfigurationProperties(prefix = "postgresql.datasources.chaco")
     public DataSource chacoDataSource() {
-        log.info("Configurando CHACO Database");
-        return DataSourceBuilder.create().type(HikariDataSource.class).build();
+        log.info("Configurando Chaco PostgreSQL DataSource");
+        return DataSourceBuilder.create()
+                .type(HikariDataSource.class)
+                .build();
     }
 
     @Bean(name = "entre-riosDataSource")
-    @ConfigurationProperties(prefix = "postgresql.datasource.entre-rios")
+    @ConfigurationProperties(prefix = "postgresql.datasources.entre-rios")
     public DataSource entreRiosDataSource() {
-        log.info("Configurando ENTRE_RIOS Database");
-        return DataSourceBuilder.create().type(HikariDataSource.class).build();
+        log.info("Configurando Entre Ríos PostgreSQL DataSource");
+        return DataSourceBuilder.create()
+                .type(HikariDataSource.class)
+                .build();
     }
 
     @Bean(name = "formosaDataSource")
-    @ConfigurationProperties(prefix = "postgresql.datasource.formosa")
+    @ConfigurationProperties(prefix = "postgresql.datasources.formosa")
     public DataSource formosaDataSource() {
-        log.info("Configurando FORMOSA Database");
-        return DataSourceBuilder.create().type(HikariDataSource.class).build();
-    }
-
-    // DataSource por defecto (opcional, puedes usar cualquiera)
-    @Primary
-    @Bean(name = "defaultDataSource")
-    public DataSource defaultDataSource() {
-        return DataSourceBuilder.create().type(HikariDataSource.class).build();
+        log.info("Configurando Formosa PostgreSQL DataSource");
+        return DataSourceBuilder.create()
+                .type(HikariDataSource.class)
+                .build();
     }
 }

@@ -28,10 +28,10 @@ public class QueryStorage {
 
     // Identificador único de la query
     @Column(name = "codigo", unique = true, nullable = false, length = 100)
-    private String codigo; // ej: "personas-juridicas-v2", "infracciones-radar-fijo"
+    private String codigo;
 
     @Column(name = "nombre", nullable = false, length = 200)
-    private String nombre; // Nombre descriptivo para UI
+    private String nombre;
 
     @Column(name = "descripcion", columnDefinition = "TEXT")
     private String descripcion;
@@ -41,17 +41,17 @@ public class QueryStorage {
     private String sqlQuery;
 
     @Column(name = "categoria", length = 50)
-    private String categoria; // INFRACCIONES, VEHICULOS, PERSONAS, REPORTES
+    private String categoria;
 
-    // Metadata de consolidación (heredada de QueryMetadata)
+    // Metadata de consolidación
     @Column(name = "es_consolidable", nullable = false)
     private Boolean esConsolidable = false;
 
     @Column(name = "campos_agrupacion", columnDefinition = "TEXT")
-    private String camposAgrupacion; // JSON: ["provincia", "municipio"]
+    private String camposAgrupacion;
 
     @Column(name = "campos_numericos", columnDefinition = "TEXT")
-    private String camposNumericos; // JSON: ["total", "cantidad"]
+    private String camposNumericos;
 
     @Column(name = "campos_ubicacion", columnDefinition = "TEXT")
     private String camposUbicacion;
@@ -59,15 +59,18 @@ public class QueryStorage {
     @Column(name = "campos_tiempo", columnDefinition = "TEXT")
     private String camposTiempo;
 
-    // Control de versiones y estado
+    // ✅ CRÍTICO: Control de versiones - VALOR POR DEFECTO
     @Column(name = "version", nullable = false)
-    private Integer version = 1;
+    @Builder.Default  // ✅ NUEVO: Para el builder
+    private Integer version = 1;  // ✅ CORREGIDO: Valor por defecto no-null
 
     @Column(name = "activa", nullable = false)
+    @Builder.Default  // ✅ NUEVO: Para el builder
     private Boolean activa = true;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "estado")
+    @Builder.Default  // ✅ NUEVO: Para el builder
     private EstadoQuery estado = EstadoQuery.PENDIENTE;
 
     // Auditoría
@@ -84,18 +87,21 @@ public class QueryStorage {
     private LocalDateTime ultimoUso;
 
     @Column(name = "contador_usos")
+    @Builder.Default  // ✅ NUEVO: Para el builder
     private Long contadorUsos = 0L;
 
     // Configuración de ejecución
     @Column(name = "timeout_segundos")
+    @Builder.Default  // ✅ NUEVO: Para el builder
     private Integer timeoutSegundos = 30;
 
     @Column(name = "limite_maximo")
+    @Builder.Default  // ✅ NUEVO: Para el builder
     private Integer limiteMaximo = 50000;
 
     // Tags para búsqueda y organización
     @Column(name = "tags", length = 500)
-    private String tags; // Separados por comas
+    private String tags;
 
     // =============== MÉTODOS DE CONVENIENCIA ===============
 
@@ -200,6 +206,23 @@ public class QueryStorage {
     protected void onCreate() {
         this.fechaCreacion = LocalDateTime.now();
         this.fechaActualizacion = LocalDateTime.now();
+
+        // ✅ SEGURIDAD: Asegurar valores por defecto en @PrePersist
+        if (this.version == null) {
+            this.version = 1;
+        }
+        if (this.activa == null) {
+            this.activa = true;
+        }
+        if (this.estado == null) {
+            this.estado = EstadoQuery.PENDIENTE;
+        }
+        if (this.esConsolidable == null) {
+            this.esConsolidable = false;
+        }
+        if (this.contadorUsos == null) {
+            this.contadorUsos = 0L;
+        }
     }
 
     @PreUpdate

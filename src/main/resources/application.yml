@@ -15,7 +15,7 @@ spring:
   # === BASE DE DATOS PRINCIPAL H2 (Para QueryMetadata) ===
   datasource:
     # DataSource PRIMARIO - H2 para metadata de queries
-    url: ${H2_URL:jdbc:h2:file:./data/query_metadata;DB_CLOSE_ON_EXIT=FALSE;AUTO_SERVER=TRUE}
+    jdbc-url: ${H2_URL:jdbc:h2:file:./data/query_metadata}
     username: ${H2_USERNAME:sa}
     password: ${H2_PASSWORD:}
     driver-class-name: org.h2.Driver
@@ -243,7 +243,9 @@ management:
 # =============== CONFIGURACIÓN POR AMBIENTE ===============
 ---
 spring:
-  profiles: development
+  config:
+    activate:
+      on-profile: development
 
   h2:
     console:

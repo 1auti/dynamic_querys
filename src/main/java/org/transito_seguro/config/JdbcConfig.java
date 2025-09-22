@@ -52,11 +52,5 @@ public class JdbcConfig {
         return new NamedParameterJdbcTemplate(dataSource);
     }
 
-    @Bean(name = "defaultJdbcTemplate")
-    public NamedParameterJdbcTemplate defaultJdbcTemplate(@Qualifier("defaultDataSource") DataSource dataSource) {
-        log.debug("Configurando JdbcTemplate por defecto (H2)");
-        return new NamedParameterJdbcTemplate(dataSource);
-    }
-
 
 }
