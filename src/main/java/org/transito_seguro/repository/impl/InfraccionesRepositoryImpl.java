@@ -2,6 +2,7 @@ package org.transito_seguro.repository.impl;
 
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
@@ -204,4 +205,10 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
     public String toString() {
         return String.format("InfraccionesRepositoryImpl{provincia='%s'}", provincia);
     }
+
+    public JdbcOperations getJdbcTemplate() {
+        return jdbcTemplate.getJdbcTemplate();
+    }
+
+
 }
