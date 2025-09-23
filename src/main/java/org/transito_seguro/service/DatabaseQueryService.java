@@ -4,6 +4,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.transito_seguro.component.FormatoConverter;
+import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.component.QueryAnalyzer;
 import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
@@ -19,7 +21,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * 🗄️ Servicio para gestionar queries almacenadas en base de datos
+ *  Servicio para gestionar queries almacenadas en base de datos
  * Integra con el sistema de consolidación dinámico existente
  */
 @Slf4j
@@ -38,6 +40,12 @@ public class DatabaseQueryService {
 
     @Autowired
     private InfraccionesService infraccionesService;
+
+    @Autowired
+    private FormatoConverter formatoConverter;
+
+    @Autowired
+    private ParametrosProcessor parametrosProcessor;
 
 
 
@@ -237,45 +245,333 @@ public class DatabaseQueryService {
      * 🔗 Ejecuta consolidación usando QueryStorage en lugar de archivo
      */
     private Object ejecutarConsolidacionConQueryStorage(QueryStorage queryStorage, ConsultaQueryDTO consulta) {
+        log.info("Ejecutando consolidación con QueryStorage: {}", queryStorage.getCodigo());
 
-        // Simular estructura que espera ConsolidacionService
+        // 1. Obtener repositorios para consolidación
         List<InfraccionesRepositoryImpl> repositories = obtenerRepositoriosParaConsolidacion(consulta.getParametrosFiltros());
 
-        // Crear un "nombreQuery" temporal para usar con el sistema existente
-        String nombreQueryTemporal = crearArchivoTemporalParaQuery(queryStorage);
+        if (repositories.isEmpty()) {
+            log.warn("No hay repositorios disponibles para consolidación");
+            return formatoConverter.convertir(Collections.emptyList(),
+                    consulta.getFormato() != null ? consulta.getFormato() : "json");
+        }
+
+        ParametrosFiltrosDTO filtros = consulta.getParametrosFiltros();
 
         try {
-            // Usar ConsolidacionService existente
-            List<Map<String, Object>> datosConsolidados = consolidacionService.consolidarDatos(
-                    repositories, nombreQueryTemporal, consulta.getParametrosFiltros());
+            // 2. Recopilar datos DIRECTAMENTE usando QueryStorage sin archivos temporales
+            List<Map<String, Object>> todosLosDatos = recopilarDatosConQueryStorageDirecto(
+                    queryStorage, repositories, filtros);
 
-            // Formatear respuesta
+            if (todosLosDatos.isEmpty()) {
+                return formatoConverter.convertir(Collections.emptyList(),
+                        consulta.getFormato() != null ? consulta.getFormato() : "json");
+            }
+
+            // 3. Normalizar provincias
+            todosLosDatos = normalizarProvinciasEnDatos(todosLosDatos);
+
+            // 4. Consolidar usando metadata de BD
+            List<Map<String, Object>> datosConsolidados = consolidarConMetadataDeBaseDatos(
+                    todosLosDatos, filtros, queryStorage);
+
             String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
-            return consolidacionService.generarRespuestaConsolidadaOptima(datosConsolidados, formato);
+            return formatoConverter.convertir(datosConsolidados, formato);
 
-        } finally {
-            // Limpiar archivo temporal
-            limpiarArchivoTemporal(nombreQueryTemporal);
+        } catch (Exception e) {
+            log.error("Error en consolidación con QueryStorage '{}': {}", queryStorage.getCodigo(), e.getMessage(), e);
+            throw new RuntimeException("Error ejecutando consolidación desde BD", e);
         }
+    }
+
+    private List<Map<String, Object>> recopilarDatosConQueryStorageDirecto(QueryStorage queryStorage,
+                                                                           List<InfraccionesRepositoryImpl> repositories,
+                                                                           ParametrosFiltrosDTO filtros) {
+
+        List<Map<String, Object>> todosLosDatos = new ArrayList<>();
+
+        for (InfraccionesRepositoryImpl repo : repositories) {
+            String provincia = repo.getProvincia();
+
+            try {
+                // Ejecutar SQL DIRECTAMENTE usando el ParametrosProcessor
+                ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
+                        queryStorage.getSqlQuery(), filtros);
+
+                // Ejecutar query SQL directamente en el JdbcTemplate
+                List<Map<String, Object>> datosProvider = repo.getNamedParameterJdbcTemplate().queryForList(
+                        resultado.getQueryModificada(),
+                        resultado.getParametros()
+                );
+
+                if (datosProvider != null && !datosProvider.isEmpty()) {
+                    // Agregar metadata de provincia
+                    for (Map<String, Object> registro : datosProvider) {
+                        registro.put("provincia", provincia);
+                        registro.put("provincia_origen", provincia);
+                        registro.put("query_codigo", queryStorage.getCodigo()); // Para auditoría
+                    }
+
+                    todosLosDatos.addAll(datosProvider);
+                    log.debug("Query BD '{}' en provincia {}: {} registros",
+                            queryStorage.getCodigo(), provincia, datosProvider.size());
+                }
+
+            } catch (Exception e) {
+                log.error("Error ejecutando QueryStorage '{}' en provincia {}: {}",
+                        queryStorage.getCodigo(), provincia, e.getMessage());
+
+                // Agregar registro de error en lugar de fallar completamente
+                Map<String, Object> registroError = new HashMap<>();
+                registroError.put("provincia", provincia);
+                registroError.put("error_consolidacion", true);
+                registroError.put("mensaje_error", e.getMessage());
+                registroError.put("query_codigo", queryStorage.getCodigo());
+                registroError.put("timestamp_error", new java.util.Date());
+
+                todosLosDatos.add(registroError);
+            }
+        }
+
+        log.info("QueryStorage '{}': Total recopilado {} registros de {} provincias",
+                queryStorage.getCodigo(), todosLosDatos.size(), repositories.size());
+
+        return todosLosDatos;
+    }
+
+    private List<Map<String, Object>> normalizarProvinciasEnDatos(List<Map<String, Object>> datos) {
+        for (Map<String, Object> registro : datos) {
+            String provincia = obtenerProvinciaDelRegistro(registro);
+            String provinciaNormalizada = org.transito_seguro.utils.NormalizadorProvincias.normalizar(provincia);
+
+            registro.put("provincia", provinciaNormalizada);
+            registro.put("provincia_origen", provinciaNormalizada);
+        }
+
+        return datos;
+    }
+
+
+    private String obtenerProvinciaDelRegistro(Map<String, Object> registro) {
+        String[] camposProvincia = {"provincia", "provincia_origen", "contexto"};
+
+        for (String campo : camposProvincia) {
+            Object valor = registro.get(campo);
+            if (valor != null && !valor.toString().trim().isEmpty()) {
+                return valor.toString().trim();
+            }
+        }
+
+        return "SIN_PROVINCIA";
+    }
+
+    private List<Map<String, Object>> consolidarConMetadataDeBaseDatos(List<Map<String, Object>> datos,
+                                                                       ParametrosFiltrosDTO filtros,
+                                                                       QueryStorage queryStorage) {
+
+        if (datos.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // Usar metadata de consolidación de BD
+        List<String> camposAgrupacion = determinarCamposAgrupacionDesdeBD(filtros, queryStorage);
+        List<String> camposNumericos = queryStorage.getCamposNumericosList();
+
+        log.info("Consolidación desde BD - Query: {}, Agrupación: {}, Numéricos: {}",
+                queryStorage.getCodigo(), camposAgrupacion, camposNumericos);
+
+        return consolidarPorCampos(datos, camposAgrupacion, camposNumericos);
+    }
+
+    private List<String> determinarCamposAgrupacionDesdeBD(ParametrosFiltrosDTO filtros, QueryStorage queryStorage) {
+
+        List<String> camposAgrupacion = new ArrayList<>();
+        List<String> consolidacionUsuario = filtros.getConsolidacionSeguro();
+
+        if (!consolidacionUsuario.isEmpty()) {
+            // Usuario especificó campos - validar contra BD
+            List<String> camposValidosBD = queryStorage.getCamposAgrupacionList();
+
+            for (String campo : consolidacionUsuario) {
+                if (camposValidosBD.contains(campo)) {
+                    camposAgrupacion.add(campo);
+                    log.debug("Campo '{}' válido desde BD para query '{}'", campo, queryStorage.getCodigo());
+                } else {
+                    log.warn("Campo '{}' NO válido según BD para query '{}'", campo, queryStorage.getCodigo());
+                }
+            }
+        }
+
+        // Si no hay campos válidos del usuario, usar los de BD
+        if (camposAgrupacion.isEmpty()) {
+            camposAgrupacion.addAll(queryStorage.getCamposAgrupacionList());
+            log.info("Usando campos de agrupación de BD para query '{}': {}",
+                    queryStorage.getCodigo(), camposAgrupacion);
+        }
+
+        // Garantizar que siempre haya "provincia"
+        if (!camposAgrupacion.contains("provincia")) {
+            camposAgrupacion.add(0, "provincia");
+        }
+
+        return camposAgrupacion.stream().distinct().collect(Collectors.toList());
+    }
+
+    private List<Map<String, Object>> consolidarPorCampos(
+            List<Map<String, Object>> datos,
+            List<String> camposAgrupacion,
+            List<String> camposNumericos) {
+
+        if (camposAgrupacion.isEmpty()) {
+            log.warn("No hay campos de agrupación, retornando datos sin consolidar");
+            return datos;
+        }
+
+        log.info("Consolidando {} registros por campos: {}", datos.size(), camposAgrupacion);
+
+        Map<String, Map<String, Object>> grupos = new LinkedHashMap<>();
+
+        for (Map<String, Object> registro : datos) {
+            String claveGrupo = crearClaveGrupo(registro, camposAgrupacion);
+
+            Map<String, Object> grupo = grupos.computeIfAbsent(claveGrupo,
+                    k -> crearGrupoNuevo(registro, camposAgrupacion, camposNumericos));
+
+            sumarCamposNumericos(grupo, registro, camposNumericos);
+        }
+
+        List<Map<String, Object>> resultado = new ArrayList<>(grupos.values());
+        log.info("Consolidación completada: {} registros → {} grupos",
+                datos.size(), resultado.size());
+
+        return resultado;
+    }
+
+    private Map<String, Object> crearGrupoNuevo(Map<String, Object> registro,
+                                                List<String> camposAgrupacion,
+                                                List<String> camposNumericos) {
+        Map<String, Object> grupo = new LinkedHashMap<>();
+
+        // Copiar campos de agrupación
+        for (String campo : camposAgrupacion) {
+            grupo.put(campo, registro.get(campo));
+        }
+
+        // Inicializar campos numéricos en 0
+        for (String campo : camposNumericos) {
+            grupo.put(campo, 0L);
+        }
+
+        return grupo;
+    }
+
+    /**
+     * NUEVO: Sumar campos numéricos para consolidación
+     */
+    private void sumarCamposNumericos(Map<String, Object> grupo,
+                                      Map<String, Object> registro,
+                                      List<String> camposNumericos) {
+        for (String campo : camposNumericos) {
+            Object valorRegistro = registro.get(campo);
+
+            if (valorRegistro == null) continue;
+
+            Long valorNumerico = convertirANumero(valorRegistro);
+            if (valorNumerico == null) continue;
+
+            Long valorActual = obtenerValorNumerico(grupo.get(campo));
+            grupo.put(campo, valorActual + valorNumerico);
+        }
+    }
+
+    /**
+     * NUEVO: Crear clave de grupo para consolidación
+     */
+    private String crearClaveGrupo(Map<String, Object> registro, List<String> camposAgrupacion) {
+        return camposAgrupacion.stream()
+                .map(campo -> String.valueOf(registro.getOrDefault(campo, "")))
+                .collect(Collectors.joining("|"));
+    }
+
+    /**
+     * NUEVO: Convertir valor a número
+     */
+    private Long convertirANumero(Object valor) {
+        if (valor instanceof Number) {
+            return ((Number) valor).longValue();
+        }
+
+        if (valor instanceof String) {
+            String str = valor.toString().trim();
+            if (!str.isEmpty()) {
+                try {
+                    return Math.round(Double.parseDouble(str));
+                } catch (NumberFormatException e) {
+                    return null;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * NUEVO: Obtener valor numérico existente
+     */
+    private Long obtenerValorNumerico(Object valor) {
+        if (valor instanceof Number) {
+            return ((Number) valor).longValue();
+        }
+        return 0L;
     }
 
     /**
      * 📄 Ejecuta query como si fuera un archivo tradicional
      */
-    private Object ejecutarQueryComoArchivo(QueryStorage queryStorage, ConsultaQueryDTO consulta) throws ValidationException {
+    private Object ejecutarQueryComoArchivo(QueryStorage queryStorage, ConsultaQueryDTO consulta) {
 
-        // Crear archivo temporal
-        String nombreQueryTemporal = crearArchivoTemporalParaQuery(queryStorage);
+        // En lugar de crear archivos temporales, usar directamente el SQL de QueryStorage
+        List<InfraccionesRepositoryImpl> repositories = obtenerRepositoriosParaConsolidacion(consulta.getParametrosFiltros());
 
-        try {
-            // Usar InfraccionesService existente
-            return infraccionesService.ejecutarConsultaPorTipo(
-                    nombreQueryTemporal.replace(".sql", ""), consulta);
-
-        } finally {
-            // Limpiar archivo temporal
-            limpiarArchivoTemporal(nombreQueryTemporal);
+        if (repositories.isEmpty()) {
+            return formatoConverter.convertir(Collections.emptyList(),
+                    consulta.getFormato() != null ? consulta.getFormato() : "json");
         }
+
+        // Ejecutar en modo normal (sin consolidación) usando SQL directo
+        List<Map<String, Object>> resultadosCombinados = repositories.parallelStream()
+                .flatMap(repo -> {
+                    try {
+                        String provincia = repo.getProvincia();
+
+                        // Procesar parámetros con SQL de BD
+                        ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
+                                queryStorage.getSqlQuery(), consulta.getParametrosFiltros());
+
+                        // Ejecutar
+                        List<Map<String, Object>> datos = repo.getNamedParameterJdbcTemplate().queryForList(
+                                resultado.getQueryModificada(),
+                                resultado.getParametros()
+                        );
+
+                        // Agregar provincia a cada registro
+                        datos.forEach(registro -> {
+                            registro.put("provincia", provincia);
+                            registro.put("query_codigo", queryStorage.getCodigo());
+                        });
+
+                        return datos.stream();
+
+                    } catch (Exception e) {
+                        log.error("Error ejecutando QueryStorage '{}' en provincia {}: {}",
+                                queryStorage.getCodigo(), repo.getProvincia(), e.getMessage());
+                        return java.util.stream.Stream.empty();
+                    }
+                })
+                .collect(java.util.stream.Collectors.toList());
+
+        String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
+        return formatoConverter.convertir(resultadosCombinados, formato);
     }
 
     // =============== CONSULTAS Y BÚSQUEDAS ===============
@@ -369,45 +665,7 @@ public class DatabaseQueryService {
 
     private List<InfraccionesRepositoryImpl> obtenerRepositoriosParaConsolidacion(ParametrosFiltrosDTO filtros) {
         // Reutilizar lógica del InfraccionesService existente
-        if (filtros != null && filtros.esConsolidado()) {
-            // Para consolidación, usar todas las provincias
-            return infraccionesService.determinarRepositories(filtros);
-        }
-        return Collections.emptyList();
-    }
-
-    /**
-     * 📁 Crea archivo temporal para integrar con sistema existente
-     */
-    private String crearArchivoTemporalParaQuery(QueryStorage queryStorage) {
-        String nombreTemporal = "temp_" + queryStorage.getCodigo().replace("-", "_") + ".sql";
-
-        try {
-            // En un sistema real, escribirías el SQL a un archivo temporal
-            // Por ahora, almacenar en cache o usar estrategia diferente
-            java.io.File tempFile = java.io.File.createTempFile("query_", ".sql");
-            java.nio.file.Files.write(tempFile.toPath(), queryStorage.getSqlQuery().getBytes());
-
-            log.debug("Archivo temporal creado: {} para query: {}", tempFile.getPath(), queryStorage.getCodigo());
-            return tempFile.getName();
-
-        } catch (Exception e) {
-            log.error("Error creando archivo temporal para query {}: {}", queryStorage.getCodigo(), e.getMessage());
-            throw new RuntimeException("Error creando archivo temporal", e);
-        }
-    }
-
-    private void limpiarArchivoTemporal(String nombreArchivo) {
-        try {
-            // Limpiar archivo temporal creado
-            java.io.File tempFile = new java.io.File(System.getProperty("java.io.tmpdir"), nombreArchivo);
-            if (tempFile.exists()) {
-                tempFile.delete();
-                log.debug("Archivo temporal eliminado: {}", nombreArchivo);
-            }
-        } catch (Exception e) {
-            log.warn("Error eliminando archivo temporal {}: {}", nombreArchivo, e.getMessage());
-        }
+        return infraccionesService.determinarRepositories(filtros);
     }
 
     // =============== MÉTODOS PÚBLICOS ADICIONALES ===============

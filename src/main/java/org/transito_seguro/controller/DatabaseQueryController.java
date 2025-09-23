@@ -62,10 +62,10 @@ public class DatabaseQueryController {
             return responseBuilder.body(resultado);
 
         } catch (IllegalArgumentException e) {
-            return (ResponseEntity<?>) crearRespuestaError("Query no válida", codigo, e.getMessage(), HttpStatus.BAD_REQUEST);
+            return crearRespuestaError("Query no válida", codigo, e.getMessage(), HttpStatus.BAD_REQUEST);
         } catch (Exception e) {
             log.error("Error ejecutando query '{}': {}", codigo, e.getMessage(), e);
-            return (ResponseEntity<?>) crearRespuestaError("Error interno", codigo, e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+            return crearRespuestaError("Error interno", codigo, e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
 
@@ -464,24 +464,31 @@ public class DatabaseQueryController {
         }
     }
 
-    // =============== MÉTODOS UTILITARIOS ===============
+    // =============== MÉTODOS UTILITARIOS CORREGIDOS ===============
 
     private boolean esConsolidado(ConsultaQueryDTO consulta) {
         return consulta.getParametrosFiltros() != null &&
                 consulta.getParametrosFiltros().esConsolidado();
     }
 
-    private Map<String, Object> crearRespuestaError(String error, String codigo,
-                                                    String detalle, HttpStatus status) {
+    /**
+     * CORREGIDO: Crear respuesta de error que devuelve ResponseEntity
+     */
+    private ResponseEntity<Map<String, Object>> crearRespuestaError(String error, String codigo,
+                                                                    String detalle, HttpStatus status) {
         Map<String, Object> respuesta = new HashMap<>();
         respuesta.put("error", error);
         respuesta.put("codigo", codigo);
         respuesta.put("detalle", detalle);
         respuesta.put("timestamp", java.time.LocalDateTime.now());
         respuesta.put("status", status.value());
-        return respuesta;
+
+        return ResponseEntity.status(status).body(respuesta);
     }
 
+    /**
+     * Crear mapa de error para métodos que ya retornan ResponseEntity
+     */
     private Map<String, Object> crearMapaError(String error, String codigo, String detalle) {
         Map<String, Object> mapa = new HashMap<>();
         mapa.put("error", error);

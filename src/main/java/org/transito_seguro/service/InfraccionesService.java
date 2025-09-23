@@ -288,7 +288,7 @@ public class InfraccionesService {
                         queryStorage.getSqlQuery(), filtros);
 
                 // Ejecutar query SQL de BD
-                List<Map<String, Object>> datosProvider = repo.getJdbcTemplate().queryForList(
+                List<Map<String, Object>> datosProvider = repo.getNamedParameterJdbcTemplate().queryForList(
                         resultado.getQueryModificada(),
                         resultado.getParametros()
                 );
@@ -682,7 +682,7 @@ public class InfraccionesService {
                                 queryStorage.getSqlQuery(), consulta.getParametrosFiltros());
 
                         // Ejecutar
-                        List<Map<String, Object>> datos = repo.getJdbcTemplate().queryForList(
+                        List<Map<String, Object>> datos = repo.getNamedParameterJdbcTemplate().queryForList(
                                 resultado.getQueryModificada(),
                                 resultado.getParametros()
                         );

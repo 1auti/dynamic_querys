@@ -206,8 +206,8 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         return String.format("InfraccionesRepositoryImpl{provincia='%s'}", provincia);
     }
 
-    public JdbcOperations getJdbcTemplate() {
-        return jdbcTemplate.getJdbcTemplate();
+    public NamedParameterJdbcTemplate getNamedParameterJdbcTemplate() {
+        return jdbcTemplate;
     }
 
 
