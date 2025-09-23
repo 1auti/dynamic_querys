@@ -1,22 +1,25 @@
 package org.transito_seguro.component;
 
+import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
+import org.transito_seguro.enums.EstrategiaProcessing;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Component
 public class BatchProcessor {
 
-    @Value("${app.batch.size:1000}")
+    @Value("${app.batch.size:5000}")
     private int defaultBatchSize;
 
     @Value("${app.batch.max-memory-per-batch:50}")
@@ -31,14 +34,233 @@ public class BatchProcessor {
     @Value("${app.batch.memory-critical-threshold:0.85}")
     private double memoryCriticalThreshold;
 
+    // Properties nuevas
+    @Value("${app.batch.parallel-threshold-per-province:50000}")
+    private int parallelThresholdPerProvince;
+
+    @Value("${app.batch.parallel-threshold-total:300000}")
+    private int parallelThresholdTotal;
+
+    @Value("${app.batch.massive-threshold-per-province:200000}")
+    private int massiveThresholdPerProvince;
+
+    @Value("${app.batch.max-parallel-provinces:3}")
+    private int maxParallelProvinces;
+
+    // Sirve para crear tareas en paralelo sin tener que crear y destruir hilos manualmente
+    private final Executor parallelExecutor = Executors.newFixedThreadPool(6);
+
+
+    // ============= CLASE AUXILLAR ===============================
+
+    @AllArgsConstructor
+    private static class EstimacionDataset{
+        final int totalEstimado;
+        final double promedioPorProvincia;
+        final int maximoPorProvincia;
+        final List<Integer> muestrasPorProvicia;
+    }
+
+
     /**
-     * Procesa datos en lotes de manera eficiente
-     */
-    // Método corregido en BatchProcessor.java
-    /**
-     * Procesa datos en lotes de manera eficiente con gestión de memoria mejorada
-     */
+     * Procesamiento datos en lotes de forma
+     * */
+
     public void procesarEnLotes(
+            List<InfraccionesRepositoryImpl> repositories,
+            ParametrosFiltrosDTO filtros,
+            String nombreQuery,
+            Consumer<List<Map<String,Object>>> procesarLotes
+    ){
+
+        log.info("Iniciando procesamiento de lotes para {} repositorios",repositories.size());
+
+        // 1. Estimacion
+        EstimacionDataset estimacionDataset = estimarDataset(repositories,filtros,nombreQuery);
+        log.info("Estimacion {} total, {} por provincia promedio",
+                estimacionDataset.totalEstimado,estimacionDataset.promedioPorProvincia);
+
+        // 2. Decision Estrategia
+        EstrategiaProcessing estrategia = decidirEstrategia(estimacionDataset);
+        log.info("Estrategia selecionada {}",estrategia);
+
+        // 3. Ejecutamos la Estrategia
+
+        switch (estrategia){
+            case PARALELO:
+                procesarParaleloCompleto(repositories,filtros,nombreQuery,procesarLotes);
+                break;
+            case HIBRIDO:
+                procesarHibridoControlado(repositories,filtros,nombreQuery,procesarLotes,estimacionDataset);
+                break;
+            case SECUENCIAL:
+                procesarEnLotesFormaSecuencial(repositories,filtros,nombreQuery,procesarLotes);
+                break;
+        }
+    }
+
+
+    /**
+     * Estimacion del tamanio del dataset
+     * */
+
+    private EstimacionDataset estimarDataset(List<InfraccionesRepositoryImpl> repositories,
+                                             ParametrosFiltrosDTO filtros,
+                                             String nombreQuery){
+
+        ParametrosFiltrosDTO filtrosPrueba = filtros.toBuilder()
+                .limite(50)
+                .offset(0)
+                .build();
+
+        List<Integer> muestras = repositories.parallelStream()
+                .map(repo -> {
+                    try {
+                        List<Map<String, Object>> muestra = repo.ejecutarQueryConFiltros(nombreQuery, filtrosPrueba);
+
+                        // Estimación basada en tamaño de muestra
+                        if (muestra.size() >= 50) {
+                            return 10000; // Extrapolación conservadora
+                        } else if (muestra.size() >= 20) {
+                            return muestra.size() * 500;
+                        } else if (muestra.size() > 0) {
+                            return muestra.size() * 200;
+                        }
+                        return 0;
+
+                    } catch (Exception e) {
+                        log.warn("Error estimando para provincia {}: {}", repo.getProvincia(), e.getMessage());
+                        return 1000; // Estimación conservadora
+                    }
+                })
+                .collect(Collectors.toList());
+
+        int totalEstimado = muestras.stream().mapToInt(Integer::intValue).sum();
+        int promedioPorProvincia = totalEstimado / repositories.size();
+        int maximoPorProvincia = muestras.stream().mapToInt(Integer::intValue).max().orElse(0);
+
+        return new EstimacionDataset(totalEstimado, promedioPorProvincia, maximoPorProvincia, muestras);
+
+    }
+
+    /**
+     * Estrategia
+     * */
+
+    private EstrategiaProcessing decidirEstrategia(EstimacionDataset estimacion) {
+
+        // CRITERIO 1: Dataset pequeño-mediano → PARALELO COMPLETO
+        if (estimacion.promedioPorProvincia < parallelThresholdPerProvince &&
+                estimacion.totalEstimado < parallelThresholdTotal) {
+            return EstrategiaProcessing.PARALELO;
+        }
+
+        // CRITERIO 2: Dataset masivo → SECUENCIAL
+        if (estimacion.maximoPorProvincia > massiveThresholdPerProvince) {
+            return EstrategiaProcessing.SECUENCIAL;
+        }
+
+        // CRITERIO 3: Dataset intermedio → HÍBRIDO
+        return EstrategiaProcessing.HIBRIDO;
+    }
+
+    /**
+     * Estrategias de procesamientos
+     * */
+
+    /**
+     *  ESTRATEGIA 1: Paralelo Completo (datasets pequeños-medianos)
+     */
+    private void procesarParaleloCompleto(List<InfraccionesRepositoryImpl> repositories,
+                                          ParametrosFiltrosDTO filtros,
+                                          String nombreQuery,
+                                          Consumer<List<Map<String, Object>>> procesadorLote) {
+
+        log.info("🚀 Ejecutando PARALELO COMPLETO");
+        long startTime = System.currentTimeMillis();
+
+        List<CompletableFuture<List<Map<String, Object>>>> futures = repositories.stream()
+                .map(repo -> CompletableFuture.supplyAsync(() -> {
+                    return ejecutarProvinciaCompleta(repo, filtros, nombreQuery);
+                }, parallelExecutor))
+                .collect(Collectors.toList());
+
+        // Procesar resultados conforme van llegando
+        futures.forEach(future -> {
+            try {
+                List<Map<String, Object>> datos = future.get();
+                if (!datos.isEmpty()) {
+                    procesadorLote.accept(datos);
+                }
+            } catch (Exception e) {
+                log.error("Error en procesamiento paralelo: {}", e.getMessage());
+            }
+        });
+
+        long duration = System.currentTimeMillis() - startTime;
+        log.info("✅ PARALELO COMPLETO finalizado en {} ms", duration);
+    }
+
+    /**
+     * ESTRATEGIA 2: Híbrido Controlado (datasets intermedios)
+     */
+    private void procesarHibridoControlado(List<InfraccionesRepositoryImpl> repositories,
+                                           ParametrosFiltrosDTO filtros,
+                                           String nombreQuery,
+                                           Consumer<List<Map<String, Object>>> procesadorLote,
+                                           EstimacionDataset estimacion) {
+
+        log.info("⚖️ Ejecutando HÍBRIDO CONTROLADO con {} provincias paralelas", maxParallelProvinces);
+        long startTime = System.currentTimeMillis();
+
+        // Procesar en grupos de N provincias simultáneas
+        for (int i = 0; i < repositories.size(); i += maxParallelProvinces) {
+            int endIndex = Math.min(i + maxParallelProvinces, repositories.size());
+            List<InfraccionesRepositoryImpl> grupoRepositories = repositories.subList(i, endIndex);
+
+            log.info("📦 Procesando grupo {}-{} de {} provincias",
+                    i + 1, endIndex, repositories.size());
+
+            List<CompletableFuture<List<Map<String, Object>>>> futures = grupoRepositories.stream()
+                    .map(repo -> CompletableFuture.supplyAsync(() -> {
+                        return ejecutarProvinciaCompleta(repo, filtros, nombreQuery);
+                    }, parallelExecutor))
+                    .collect(Collectors.toList());
+
+            // Esperar que termine este grupo antes de continuar
+            futures.forEach(future -> {
+                try {
+                    List<Map<String, Object>> datos = future.get();
+                    if (!datos.isEmpty()) {
+                        procesadorLote.accept(datos);
+                    }
+                } catch (Exception e) {
+                    log.error("Error en grupo híbrido: {}", e.getMessage());
+                }
+            });
+
+            // Pausa entre grupos para liberar memoria
+            if (endIndex < repositories.size()) {
+                try {
+                    Thread.sleep(500);
+                    System.gc(); // Sugerir limpieza
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+
+        long duration = System.currentTimeMillis() - startTime;
+        log.info("✅ HÍBRIDO CONTROLADO finalizado en {} ms", duration);
+    }
+
+    /**
+     *  ESTRATEGIA 3: Secuencial Optimizado (datasets masivos)
+     */
+    /**
+     * Procesa datos en lotes de manera eficiente con gestión de memoria mejorada de forma secuencial
+     */
+    public void procesarEnLotesFormaSecuencial(
             List<InfraccionesRepositoryImpl> repositories,
             ParametrosFiltrosDTO filtros,
             String nombreQuery,
@@ -154,6 +376,55 @@ public class BatchProcessor {
         log.info("Procesamiento en lotes completado. Total procesados: {}, memoria final: {}%",
                 totalProcesados, obtenerPorcentajeMemoriaUsada());
     }
+
+    /**
+     * 🏭 Ejecutar provincia completa (para estrategias paralelas)
+     */
+    private List<Map<String, Object>> ejecutarProvinciaCompleta(InfraccionesRepositoryImpl repo,
+                                                                ParametrosFiltrosDTO filtros,
+                                                                String nombreQuery) {
+        String provincia = repo.getProvincia();
+        List<Map<String, Object>> todosLosDatos = new ArrayList<>();
+
+        try {
+            int offset = 0;
+            boolean hayMasDatos = true;
+
+            while (hayMasDatos) {
+                ParametrosFiltrosDTO filtrosLote = filtros.toBuilder()
+                        .limite(defaultBatchSize)
+                        .offset(offset)
+                        .build();
+
+                List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
+
+                if (lote == null || lote.isEmpty()) {
+                    hayMasDatos = false;
+                } else {
+                    // Agregar provincia a cada registro
+                    lote.forEach(registro -> registro.put("provincia", provincia));
+                    todosLosDatos.addAll(lote);
+                    offset += defaultBatchSize;
+
+                    if (lote.size() < defaultBatchSize) {
+                        hayMasDatos = false;
+                    }
+                }
+            }
+
+            log.info("✅ Provincia {} recopilada: {} registros", provincia, todosLosDatos.size());
+            return todosLosDatos;
+
+        } catch (Exception e) {
+            log.error("❌ Error ejecutando provincia {}: {}", provincia, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+
+
+
+
 
     /**
      * Procesa el lote en chunks con liberación inmediata de memoria
@@ -316,33 +587,6 @@ public class BatchProcessor {
         return (double) memoriaUsada / runtime.totalMemory() * 100;
     }
 
-    /**
-     * Divide un lote en chunks más pequeños y los procesa uno por uno
-     */
-    private void procesarLoteEnChunks(List<Map<String, Object>> lote,
-                                      Consumer<List<Map<String, Object>>> procesadorLote) {
-
-        int currentChunkSize = Math.min(chunkSize, lote.size());
-
-        for (int i = 0; i < lote.size(); i += currentChunkSize) {
-            int endIndex = Math.min(i + currentChunkSize, lote.size());
-
-            // Crear sublista (vista, no copia completa)
-            List<Map<String, Object>> chunk = lote.subList(i, endIndex);
-
-            // Procesar el chunk
-            procesadorLote.accept(chunk);
-
-
-            // Liberar referencia explícitamente
-            chunk = null;
-
-            // Verificar memoria cada 10 chunks
-            if (i > 0 && (i / currentChunkSize) % 10 == 0 && esMemoriaAlta()) {
-                pausaMicro();
-            }
-        }
-    }
 
     /**
      * Verifica si la memoria está en nivel crítico
@@ -478,24 +722,6 @@ public class BatchProcessor {
         return filtrosLote;
     }
 
-    /**
-     * Estimación del uso de memoria por registro (aproximado)
-     */
-    private long estimarMemoriaPorRegistro(Map<String, Object> registro) {
-        // Estimación aproximada: cada campo como 50 bytes promedio
-        return registro.size() * 50L;
-    }
-
-    /**
-     * Verifica si hay suficiente memoria para procesar un lote
-     */
-    public boolean hayMemoriaSuficiente(int tamanoLote) {
-        Runtime runtime = Runtime.getRuntime();
-        long memoriaLibre = runtime.freeMemory();
-        long memoriaEstimada = tamanoLote * 1024L; // 1KB por registro estimado
-
-        return memoriaLibre > (memoriaEstimada * 2); // Factor de seguridad x2
-    }
 
     /**
      * Fuerza limpieza de memoria
@@ -515,50 +741,5 @@ public class BatchProcessor {
         }
     }
 
-    /**
-     * Obtiene estadísticas de memoria actual
-     */
-    public Map<String, Object> obtenerEstadisticasMemoria() {
-        Runtime runtime = Runtime.getRuntime();
-        long memoriaTotal = runtime.totalMemory();
-        long memoriaLibre = runtime.freeMemory();
-        long memoriaUsada = memoriaTotal - memoriaLibre;
-        long memoriaMaxima = runtime.maxMemory();
-
-        Map<String, Object> stats = new HashMap<>();
-        stats.put("memoria_total_mb", memoriaTotal / (1024 * 1024));
-        stats.put("memoria_libre_mb", memoriaLibre / (1024 * 1024));
-        stats.put("memoria_usada_mb", memoriaUsada / (1024 * 1024));
-        stats.put("memoria_maxima_mb", memoriaMaxima / (1024 * 1024));
-        stats.put("porcentaje_uso", (double) memoriaUsada / memoriaTotal * 100);
-
-        return stats;
-    }
-
-    /**
-     * Obtiene estadísticas extendidas incluyendo chunks
-     */
-    public Map<String, Object> obtenerEstadisticasMemoriaExtendidas() {
-        Runtime runtime = Runtime.getRuntime();
-        long memoriaTotal = runtime.totalMemory();
-        long memoriaLibre = runtime.freeMemory();
-        long memoriaUsada = memoriaTotal - memoriaLibre;
-        long memoriaMaxima = runtime.maxMemory();
-
-        Map<String, Object> stats = new HashMap<>();
-        stats.put("memoria_total_mb", memoriaTotal / (1024 * 1024));
-        stats.put("memoria_libre_mb", memoriaLibre / (1024 * 1024));
-        stats.put("memoria_usada_mb", memoriaUsada / (1024 * 1024));
-        stats.put("memoria_maxima_mb", memoriaMaxima / (1024 * 1024));
-        stats.put("porcentaje_uso", (double) memoriaUsada / memoriaTotal * 100);
-
-        // Nuevas estadísticas
-        stats.put("chunk_size_configurado", chunkSize);
-        stats.put("memoria_critica_threshold", memoryCriticalThreshold);
-        stats.put("es_memoria_critica", esMemoriaCritica());
-        stats.put("es_memoria_alta", esMemoriaAlta());
-
-        return stats;
-    }
 
 }

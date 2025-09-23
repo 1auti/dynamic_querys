@@ -522,6 +522,7 @@ public class InfraccionesService {
      */
     private Object procesarSincrono(List<InfraccionesRepositoryImpl> repositories,
                                     ConsultaQueryDTO consulta, String nombreQuery) throws ValidationException {
+        log.info("Iniciando procesando sincronico en paralelo");
 
         List<Map<String, Object>> resultadosCombinados = repositories.parallelStream()
                 .flatMap(repo -> {
@@ -556,10 +557,12 @@ public class InfraccionesService {
         StreamingFormatoConverter.StreamingContext context = null;
 
         try {
+
             File tempFile = File.createTempFile("infracciones_", "." + formato);
             FileOutputStream fileOutputStream = new FileOutputStream(tempFile);
             BufferedOutputStream outputStream = new BufferedOutputStream(fileOutputStream, 8192);
 
+            log.info("Inicializamos el streaming de datos");
             context = streamingConverter.inicializarStreaming(formato, outputStream);
 
             if (context == null) {
@@ -567,7 +570,7 @@ public class InfraccionesService {
             }
 
             final StreamingFormatoConverter.StreamingContext finalContext = context;
-
+            log.info("Iniciando procesamiento en Lotes");
             batchProcessor.procesarEnLotes(
                     repositories,
                     consulta.getParametrosFiltros(),
