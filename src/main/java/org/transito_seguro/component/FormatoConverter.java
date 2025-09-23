@@ -48,7 +48,6 @@ public class FormatoConverter {
     private Object convertirAJson(List<Map<String, Object>> datos) {
         try {
             Map<String, Object> mapa = new HashMap<>();
-            mapa.put("datos",datos);
             return objectMapper.writeValueAsString(mapa);
         } catch (Exception e) {
             throw new RuntimeException("Error convirtiendo a JSON", e);
