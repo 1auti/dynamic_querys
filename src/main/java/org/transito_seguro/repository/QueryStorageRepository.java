@@ -53,5 +53,8 @@ public interface QueryStorageRepository extends JpaRepository<QueryStorage, Long
 
     // Queries creadas por usuario
     List<QueryStorage> findByCreadoPorAndActivaTrueOrderByFechaCreacionDesc(String creadoPor);
+
+    @Query("SELECT q.codigo FROM QueryStorage q WHERE q.activa = true")
+    List<String> findAllbyCodigo();
 }
 

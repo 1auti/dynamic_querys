@@ -2,21 +2,24 @@ package org.transito_seguro.repository.impl;
 
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.enums.Consultas;
+import org.transito_seguro.model.QueryStorage;
 import org.transito_seguro.repository.InfraccionesRepository;
+import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.utils.SqlUtils;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Implementación del repositorio de infracciones para una provincia específica.
  * Maneja la ejecución de consultas SQL dinámicas con filtros parametrizados.
+ * NUEVO: Soporte para queries desde BD y archivos
  */
 @Slf4j
 public class InfraccionesRepositoryImpl implements InfraccionesRepository {
@@ -28,12 +31,11 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
 
     private final ParametrosProcessor parametrosProcessor;
 
+    // NUEVO: Repositorio para queries en BD
+    private QueryStorageRepository queryStorageRepository;
+
     /**
      * Constructor que recibe todas las dependencias por parámetro
-     *
-     * @param jdbcTemplate Template JDBC específico para la provincia
-     * @param provincia Nombre de la provincia
-     * @param parametrosProcessor Procesador de parámetros dinámicos
      */
     public InfraccionesRepositoryImpl(NamedParameterJdbcTemplate jdbcTemplate,
                                       String provincia,
@@ -45,29 +47,11 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         log.debug("Inicializado InfraccionesRepositoryImpl para provincia: {}", provincia);
     }
 
-    @Override
-    public List<Map<String, Object>> consultarPersonasJuridicas(ParametrosFiltrosDTO filtro) {
-        log.debug("Consultando personas jurídicas en provincia: {}", provincia);
-
-        String queryBase = SqlUtils.cargarQuery(Consultas.PERSONAS_JURIDICAS.getArchivoQuery());
-
-        // Procesar la query con filtros dinámicos
-        ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(queryBase, filtro);
-
-        try {
-            List<Map<String, Object>> resultados = jdbcTemplate.queryForList(
-                    resultado.getQueryModificada(),
-                    resultado.getParametros()
-            );
-
-            log.debug("Consulta personas jurídicas completada. Resultados: {} registros", resultados.size());
-            return resultados;
-
-        } catch (Exception e) {
-            log.error("Error ejecutando consulta personas jurídicas en provincia {}: {}",
-                    provincia, e.getMessage(), e);
-            throw new RuntimeException("Error en consulta personas jurídicas", e);
-        }
+    /**
+     * NUEVO: Setter para inyectar QueryStorageRepository después de la construcción
+     */
+    public void setQueryStorageRepository(QueryStorageRepository queryStorageRepository) {
+        this.queryStorageRepository = queryStorageRepository;
     }
 
     @Override
@@ -75,11 +59,13 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         log.debug("Ejecutando query '{}' en provincia: {}", nombreQuery, provincia);
 
         try {
-            String queryBase = SqlUtils.cargarQuery(nombreQuery);
+            // 1. NUEVO: Intentar cargar desde BD primero
+            String querySQL = cargarQueryDesdeBaseDatosOArchivo(nombreQuery);
 
-            // Procesar la query con filtros dinámicos
-            ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(queryBase, filtros);
+            // 2. Procesar la query con filtros dinámicos
+            ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(querySQL, filtros);
 
+            // 3. Ejecutar
             List<Map<String, Object>> resultados = jdbcTemplate.queryForList(
                     resultado.getQueryModificada(),
                     resultado.getParametros()
@@ -93,6 +79,49 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
                     nombreQuery, provincia, e.getMessage(), e);
             throw new RuntimeException("Error ejecutando query: " + nombreQuery, e);
         }
+    }
+
+    /**
+     * NUEVO: Método híbrido que carga query desde BD o archivo
+     */
+    private String cargarQueryDesdeBaseDatosOArchivo(String nombreQuery) {
+
+        // 1. Intentar desde BD primero
+        if (queryStorageRepository != null) {
+            try {
+                Optional<QueryStorage> queryStorage = queryStorageRepository.findByCodigo(nombreQuery);
+
+                if (queryStorage.isPresent() && queryStorage.get().estaLista()) {
+                    log.debug("✅ Query '{}' cargada desde BD", nombreQuery);
+                    return queryStorage.get().getSqlQuery();
+                }
+
+                log.debug("❌ Query '{}' no encontrada en BD", nombreQuery);
+
+            } catch (Exception e) {
+                log.warn("Error accediendo BD para query '{}': {}", nombreQuery, e.getMessage());
+            }
+        }
+
+        // 2. Fallback: cargar desde archivo
+        try {
+            String querySQL = SqlUtils.cargarQuery(nombreQuery);
+            log.debug("📁 Query '{}' cargada desde archivo", nombreQuery);
+            return querySQL;
+
+        } catch (Exception e) {
+            log.error("❌ Query '{}' no encontrada ni en BD ni en archivos", nombreQuery);
+            throw new RuntimeException("Query no encontrada: " + nombreQuery +
+                    ". No existe en BD ni en archivos.", e);
+        }
+    }
+
+    // =============== MÉTODOS EXISTENTES SIN CAMBIOS ===============
+
+    @Override
+    public List<Map<String, Object>> consultarPersonasJuridicas(ParametrosFiltrosDTO filtro) {
+        log.debug("Consultando personas jurídicas en provincia: {}", provincia);
+        return ejecutarQueryConFiltros("consultar_personas_juridicas.sql", filtro);
     }
 
     @Override
@@ -145,15 +174,12 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
 
     @Override
     public List<Map<String, Object>> consultarCantidadInfraccionesEstado(ParametrosFiltrosDTO filtrosDTO) {
-        log.debug("Consultar reporte de cantidad de infracciones por estado: {}",provincia);
+        log.debug("Consultar reporte de cantidad de infracciones por estado: {}", provincia);
         return ejecutarQueryConFiltros(Consultas.INFRACCIONES_POR_ESTADO.getArchivoQuery(), filtrosDTO);
     }
 
-
     /**
      * Método utilitario para validar la conectividad del repositorio
-     *
-     * @return true si la conexión es válida, false en caso contrario
      */
     public boolean validarConectividad() {
         try {
@@ -168,8 +194,6 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
 
     /**
      * Método utilitario para obtener información del datasource
-     *
-     * @return Mapa con información del datasource
      */
     public Map<String, Object> obtenerInfoDatasource() {
         try {
@@ -190,8 +214,6 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
 
     /**
      * Método utilitario para estadísticas de uso
-     *
-     * @return Mapa con estadísticas básicas
      */
     public Map<String, Object> obtenerEstadisticas() {
         Map<String, Object> estadisticas = new HashMap<>();
@@ -209,6 +231,4 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
     public NamedParameterJdbcTemplate getNamedParameterJdbcTemplate() {
         return jdbcTemplate;
     }
-
-
 }

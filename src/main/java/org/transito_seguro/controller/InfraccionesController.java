@@ -85,62 +85,6 @@ public class InfraccionesController {
         return descargarArchivo(tipoConsulta, consulta);
     }
 
-    // =============== ENDPOINTS ESPECÍFICOS (COMPATIBILIDAD) ===============
-
-    @PostMapping("/personas-juridicas")
-    public ResponseEntity<?> consultarPersonasJuridicas(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("personas-juridicas", consulta);
-    }
-
-    @PostMapping("/infracciones-general")
-    public ResponseEntity<?> reporteGeneral(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("infracciones-general", consulta);
-    }
-
-    @PostMapping("/infracciones-por-equipos")
-    public ResponseEntity<?> reportePorEquipos(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("infracciones-por-equipos", consulta);
-    }
-
-    @PostMapping("/radar-fijo-por-equipo")
-    public ResponseEntity<?> reporteRadarFijo(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("radar-fijo-por-equipo", consulta);
-    }
-
-    @PostMapping("/semaforo-por-equipo")
-    public ResponseEntity<?> reporteSemaforo(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("semaforo-por-equipo", consulta);
-    }
-
-    @PostMapping("/vehiculos-por-municipio")
-    public ResponseEntity<?> vehiculosPorMunicipio(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("vehiculos-por-municipio", consulta);
-    }
-
-    @PostMapping("/sin-email-por-municipio")
-    public ResponseEntity<?> reporteSinEmail(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("sin-email-por-municipio", consulta);
-    }
-
-    @PostMapping("/verificar-imagenes-radar")
-    public ResponseEntity<?> verificarImagenesRadar(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("verificar-imagenes-radar", consulta);
-    }
-
-    @PostMapping("/infracciones-detallado")
-    public ResponseEntity<?> reporteDetallado(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("infracciones-detallado", consulta);
-    }
-
-    @PostMapping("/infracciones-por-estado")
-    public ResponseEntity<?> infraccionesPorEstado(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("infracciones-por-estado", consulta);
-    }
-
-    @PostMapping("/reporte-diego")
-    public ResponseEntity<?> reporteDiego(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("reporte-diego", consulta);
-    }
 
     // =============== MÉTODOS PRIVADOS ===============
 

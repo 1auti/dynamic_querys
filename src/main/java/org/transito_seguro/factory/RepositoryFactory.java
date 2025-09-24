@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.config.ProvinciaMapping;
 import org.transito_seguro.repository.InfraccionesRepository;
+import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 
 import java.util.Map;
@@ -24,9 +25,13 @@ public class RepositoryFactory {
     @Autowired
     private ParametrosProcessor parametrosProcessor;
 
+    // NUEVO: Inyectar QueryStorageRepository
+    @Autowired
+    private QueryStorageRepository queryStorageRepository;
+
     /**
      * Obtiene un repository por nombre de provincia o código de datasource
-     * Acepta tanto "Buenos Aires" como "pba"
+     * ACTUALIZADO: Con soporte para queries de BD
      */
     public InfraccionesRepository getRepository(String provinciaOCodigo) {
         String datasourceName = resolverDatasource(provinciaOCodigo);
@@ -47,8 +52,20 @@ public class RepositoryFactory {
         // Para el repository, usar el nombre original como identificador
         String provinciaIdentificador = obtenerNombreProvincia(provinciaOCodigo);
 
-        return new InfraccionesRepositoryImpl(jdbcTemplate, provinciaIdentificador, parametrosProcessor);
+        // NUEVO: Crear repository con soporte BD + archivos
+        InfraccionesRepositoryImpl repository = new InfraccionesRepositoryImpl(
+                jdbcTemplate,
+                provinciaIdentificador,
+                parametrosProcessor
+        );
+
+        // NUEVO: Inyectar QueryStorageRepository para acceso a BD
+        repository.setQueryStorageRepository(queryStorageRepository);
+
+        return repository;
     }
+
+    // =============== MÉTODOS EXISTENTES SIN CAMBIOS ===============
 
     /**
      * Resuelve el nombre del datasource a partir de un nombre de provincia o código
