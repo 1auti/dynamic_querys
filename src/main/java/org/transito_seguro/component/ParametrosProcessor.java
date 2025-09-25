@@ -44,6 +44,7 @@ public class ParametrosProcessor {
         mapearParametrosDominios(filtros, parametros);
         mapearParametrosAdicionalesSeguro(filtros, parametros);
         mapearPaginacionSeguro(filtros, parametros);
+        mapearPaginacionInteligente(filtros,parametros);
 
         log.debug("Query procesada con tipos seguros. Parámetros mapeados: {}", parametros.getParameterNames().length);
 
@@ -73,6 +74,21 @@ public class ParametrosProcessor {
 
         // Arrays de enteros para PostgreSQL
         params.addValue("concesiones", convertirListaEnterosAArrayPostgreSQL(filtros.getConcesiones()), Types.OTHER);
+    }
+
+    private void mapearPaginacionInteligente(ParametrosFiltrosDTO filtros, MapSqlParameterSource params){
+
+        Integer limite = filtros.getLimite();
+        Integer offset = filtros.calcularOffset();
+
+        params.addValue("limite",null,Types.INTEGER);
+
+        if(limite != null && limite > 0){
+            params.addValue("offset",offset,Types.BOOLEAN);
+        }else{
+            params.addValue("offset",false,Types.BOOLEAN);
+        }
+
     }
 
     // =================== MAPEO DE EQUIPOS CORREGIDO ===================

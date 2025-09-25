@@ -321,22 +321,64 @@ public class InfraccionesService {
                                                   List<InfraccionesRepositoryImpl> repositories,
                                                   ConsultaQueryDTO consulta) throws ValidationException {
 
+        ParametrosFiltrosDTO filtros = consulta.getParametrosFiltros();
+
         // Verificar si requiere consolidación
-        boolean esConsolidado = consulta.getParametrosFiltros() != null &&
-                consulta.getParametrosFiltros().esConsolidado() &&
+        boolean esConsolidado = filtros != null &&
+                filtros.esConsolidado() &&
                 queryStorage.getEsConsolidable();
 
-        if (esConsolidado) {
-            log.info("Modo consolidado detectado para query BD: {}", queryStorage.getCodigo());
-            return ejecutarConsolidacionConQueryStorage(queryStorage, repositories, consulta);
+        // CORREGIDO: Lógica mejorada para detectar cuándo usar lotes
+        boolean usarLotes = false;
+        if (filtros != null) {
+            // Usar lotes si:
+            boolean todasLasBDS = Boolean.TRUE.equals(filtros.getUsarTodasLasBDS());
+            int limiteEfectivo = filtros.getLimiteEfectivo();
+            int numRepositorios = repositories.size();
+
+            usarLotes = todasLasBDS ||                          // Todas las BDS
+                    limiteEfectivo > 25000 ||                // Límite alto
+                    numRepositorios >= 4 ||                  // Muchas provincias
+                    limiteEfectivo == Integer.MAX_VALUE;     // Sin límite
+
+            log.info("Análisis para lotes - TodasBDS: {}, Límite: {}, Repos: {}, Usar lotes: {}",
+                    todasLasBDS, limiteEfectivo, numRepositorios, usarLotes);
         }
 
-        // Procesamiento normal
-        log.info("Modo normal para query BD: {}", queryStorage.getCodigo());
-        return ejecutarQueryStorageNormal(queryStorage, repositories, consulta);
+        if (esConsolidado) {
+            log.info("🔄 Modo CONSOLIDADO para query BD: {}", queryStorage.getCodigo());
+            return ejecutarConsolidacionConQueryStorage(queryStorage, repositories, consulta);
+        }
+        else if (usarLotes) {
+            log.info("📦 Modo LOTES para query: {} (repos: {}, límite: {})",
+                    queryStorage.getCodigo(), repositories.size(),
+                    filtros != null ? filtros.getLimiteEfectivo() : "null");
+            return ejecutarConLotes(queryStorage, repositories, consulta);
+        }
+        else {
+            log.info("⚡ Modo NORMAL para query: {}", queryStorage.getCodigo());
+            return ejecutarQueryStorageNormal(queryStorage, repositories, consulta);
+        }
     }
 
     // =============== MÉTODOS PRIVADOS: CONSOLIDACIÓN ===============
+
+    private Object ejecutarConLotes(QueryStorage queryStorage,
+                                    List<InfraccionesRepositoryImpl> repositories,
+                                    ConsultaQueryDTO consulta){
+        List<Map<String,Object>> resultados = new ArrayList<>();
+
+        batchProcessor.procesarEnLotes(
+                repositories,
+                consulta.getParametrosFiltros(),
+                queryStorage.getCodigo(),
+                lote -> resultados.addAll(lote)
+        );
+
+        String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
+        return formatoConverter.convertir(resultados,formato);
+
+    }
 
     /**
      * Ejecuta consolidación usando metadata de QueryStorage.

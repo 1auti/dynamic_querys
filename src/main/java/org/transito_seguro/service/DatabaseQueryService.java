@@ -113,7 +113,7 @@ public class DatabaseQueryService {
     }
 
     /**
-     * ✏️ Actualizar query existente
+     * ✏ Actualizar query existente
      */
     public QueryStorage actualizarQuery(String codigo, QueryStorageDTO dto) {
         log.info("Actualizando query: {}", codigo);
@@ -166,7 +166,7 @@ public class DatabaseQueryService {
     }
 
     /**
-     * 🗑️ Eliminar query (soft delete)
+     *  Eliminar query (soft delete)
      */
     public void eliminarQuery(String codigo) {
         log.info("Eliminando query: {}", codigo);
@@ -182,7 +182,7 @@ public class DatabaseQueryService {
     // =============== EJECUCIÓN DE QUERIES ===============
 
     /**
-     * 🚀 MÉTODO PRINCIPAL: Ejecutar query desde base de datos
+     *  MÉTODO PRINCIPAL: Ejecutar query desde base de datos
      * Integra automáticamente con consolidación dinámica
      */
     public Object ejecutarQueryPorCodigo(String codigo, ConsultaQueryDTO consulta) {
@@ -220,7 +220,7 @@ public class DatabaseQueryService {
     }
 
     /**
-     * 🎯 Ejecutar query con consolidación dinámica
+     *  Ejecutar query con consolidación dinámica
      */
     private Object ejecutarQueryConsolidada(QueryStorage queryStorage, ConsultaQueryDTO consulta) {
         log.info("Ejecutando query CONSOLIDADA desde BD: {}", queryStorage.getCodigo());
@@ -230,7 +230,7 @@ public class DatabaseQueryService {
     }
 
     /**
-     * 📊 Ejecutar query normal (sin consolidación)
+     *  Ejecutar query normal (sin consolidación)
      */
     private Object ejecutarQueryNormal(QueryStorage queryStorage, ConsultaQueryDTO consulta) throws ValidationException {
         log.info("Ejecutando query NORMAL desde BD: {}", queryStorage.getCodigo());
@@ -242,7 +242,7 @@ public class DatabaseQueryService {
     // =============== INTEGRACIÓN CON SISTEMA EXISTENTE ===============
 
     /**
-     * 🔗 Ejecuta consolidación usando QueryStorage en lugar de archivo
+     *  Ejecuta consolidación usando QueryStorage en lugar de archivo
      */
     private Object ejecutarConsolidacionConQueryStorage(QueryStorage queryStorage, ConsultaQueryDTO consulta) {
         log.info("Ejecutando consolidación con QueryStorage: {}", queryStorage.getCodigo());
@@ -526,7 +526,7 @@ public class DatabaseQueryService {
     }
 
     /**
-     * 📄 Ejecuta query como si fuera un archivo tradicional
+     *  Ejecuta query como si fuera un archivo tradicional
      */
     private Object ejecutarQueryComoArchivo(QueryStorage queryStorage, ConsultaQueryDTO consulta) {
 
@@ -577,7 +577,7 @@ public class DatabaseQueryService {
     // =============== CONSULTAS Y BÚSQUEDAS ===============
 
     /**
-     * 📋 Obtener todas las queries activas
+     *  Obtener todas las queries activas
      */
     public List<QueryStorage> obtenerQueriesActivas() {
         return queryRepository.findByActivaTrueOrderByNombreAsc();
@@ -594,21 +594,21 @@ public class DatabaseQueryService {
     }
 
     /**
-     * 📊 Obtener queries por categoría
+     *  Obtener queries por categoría
      */
     public List<QueryStorage> obtenerQueriesPorCategoria(String categoria) {
         return queryRepository.findByCategoriaAndActivaTrueOrderByNombreAsc(categoria);
     }
 
     /**
-     * 🎯 Obtener queries consolidables
+     *  Obtener queries consolidables
      */
     public List<QueryStorage> obtenerQueriesConsolidables() {
         return queryRepository.findByEsConsolidableAndActivaTrueOrderByNombreAsc(true);
     }
 
     /**
-     * 🔥 Obtener queries más utilizadas
+     *  Obtener queries más utilizadas
      */
     public List<QueryStorage> obtenerQueriesPopulares(int limite) {
         List<QueryStorage> populares = queryRepository.findByActivaTrueOrderByContadorUsosDescNombreAsc();
@@ -616,7 +616,7 @@ public class DatabaseQueryService {
     }
 
     /**
-     * 🏷️ Obtener queries por tag
+     *  Obtener queries por tag
      */
     public List<QueryStorage> obtenerQueriesPorTag(String tag) {
         return queryRepository.findByTag(tag);

@@ -28,7 +28,7 @@ public class InfraccionesController {
     @Autowired
     private InfraccionesService infraccionesService;
 
-    @Value("${app.limits.max-records-display:5000}")
+    @Value("${app.limits.max-records-display:100000}")
     private int maxRecordsDisplay;
 
     // =============== ENDPOINTS PRINCIPALES ===============
@@ -94,7 +94,7 @@ public class InfraccionesController {
     private ResponseEntity<?> procesarConsulta(String tipoConsulta, ConsultaQueryDTO consulta) {
         try {
             // Aplicar límite automático
-            ConsultaQueryDTO consultaConLimite = aplicarLimiteAutomatico(consulta);
+            ConsultaQueryDTO consultaConLimite = consulta;
             boolean consolidado = esConsolidado(consultaConLimite);
 
             log.info("Procesando: {} - Límite: {} - Consolidado: {}",
@@ -135,16 +135,24 @@ public class InfraccionesController {
         ParametrosFiltrosDTO filtros = consulta.getParametrosFiltros();
 
         if (filtros == null) {
+            // Solo crear filtros con límite si no hay filtros del usuario
             filtros = ParametrosFiltrosDTO.builder()
                     .limite(maxRecordsDisplay)
                     .build();
         } else {
-            int limite = filtros.getLimiteEfectivo();
-            if (limite > maxRecordsDisplay) {
-                log.info("Aplicando límite: {} -> {}", limite, maxRecordsDisplay);
-                filtros = filtros.toBuilder()
-                        .limite(maxRecordsDisplay)
-                        .build();
+            // NUEVO: Solo aplicar límite si el usuario no especificó uno
+            Integer limiteUsuario = filtros.getLimiteEfectivo();
+
+            // Si el usuario quiere "todas las BDS", no aplicar límite automático
+            if (filtros.getUsarTodasLasBDS() != null && filtros.getUsarTodasLasBDS()) {
+                log.info("Usuario solicitó todas las BDS - no aplicando límite automático");
+                // No modificar filtros
+            }
+            // Si el límite del usuario es muy alto, avisar pero permitir
+            else if (limiteUsuario != null && limiteUsuario > maxRecordsDisplay) {
+                log.warn("Usuario solicitó límite alto: {} (máximo recomendado: {})",
+                        limiteUsuario, maxRecordsDisplay);
+                // Permitir pero con advertencia
             }
         }
 

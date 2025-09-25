@@ -191,10 +191,10 @@ public class ConsolidacionService {
      */
     private void logAnalisisConsolidacion(String nombreQuery, QueryAnalyzer.AnalisisConsolidacion analisis) {
         log.info("Query '{}' es CONSOLIDABLE según Registry:", nombreQuery);
-        log.info("  🌍 Campos Ubicación: {}", analisis.getCamposUbicacion());
-        log.info("  🏷️ Campos Agrupación: {}", analisis.getCamposAgrupacion());
-        log.info("  📊 Campos Numéricos: {}", analisis.getCamposNumericos());
-        log.info("  ⏰ Campos Tiempo: {}", analisis.getCamposTiempo());
+        log.info("   Campos Ubicación: {}", analisis.getCamposUbicacion());
+        log.info("  ️ Campos Agrupación: {}", analisis.getCamposAgrupacion());
+        log.info("   Campos Numéricos: {}", analisis.getCamposNumericos());
+        log.info("   Campos Tiempo: {}", analisis.getCamposTiempo());
     }
 
     /**
@@ -215,8 +215,8 @@ public class ConsolidacionService {
         List<String> camposNumericos = determinarCamposNumericos(datos, analisis);
 
         log.info("Estrategia de consolidación aplicada:");
-        log.info("  🎯 Agrupar por: {}", camposAgrupacion);
-        log.info("  📊 Sumar: {}", camposNumericos);
+        log.info("   Agrupar por: {}", camposAgrupacion);
+        log.info("   Sumar: {}", camposNumericos);
 
         return consolidarPorCampos(datos, camposAgrupacion, camposNumericos);
     }
