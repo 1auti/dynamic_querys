@@ -7,6 +7,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.transito_seguro.component.FormatoConverter;
 import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.component.QueryAnalyzer;
+import org.transito_seguro.component.QueryPaginacionProcessor;
 import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.dto.QueryStorageDTO;
@@ -34,6 +35,9 @@ public class DatabaseQueryService {
 
     @Autowired
     private QueryAnalyzer queryAnalyzer;
+
+    @Autowired
+    private QueryPaginacionProcessor paginacionProcessor;
 
     @Autowired
     private ConsolidacionService consolidacionService;
@@ -70,12 +74,14 @@ public class DatabaseQueryService {
         // Analizar query automáticamente
         QueryAnalyzer.AnalisisConsolidacion analisis = queryAnalyzer.analizarParaConsolidacion(dto.getSqlQuery());
 
+        String sqlConPaginacion = paginacionProcessor.agregarPaginacion(dto.getSqlQuery(), dto.getEsConsolidable());
+
         // Crear entidad
         QueryStorage query = QueryStorage.builder()
                 .codigo(dto.getCodigo())
                 .nombre(dto.getNombre())
                 .descripcion(dto.getDescripcion())
-                .sqlQuery(dto.getSqlQuery())
+                .sqlQuery(sqlConPaginacion)
                 .categoria(dto.getCategoria() != null ? dto.getCategoria() : "GENERAL")
                 .esConsolidable(analisis.isEsConsolidado())
                 .timeoutSegundos(dto.getTimeoutSegundos())
@@ -793,6 +799,7 @@ public class DatabaseQueryService {
                     // Analizar automáticamente
                     QueryAnalyzer.AnalisisConsolidacion analisis =
                             queryAnalyzer.analizarParaConsolidacion(sql);
+
 
                     // Crear registro en BD
                     QueryStorage queryStorage = QueryStorage.builder()

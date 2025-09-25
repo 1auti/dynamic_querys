@@ -4,6 +4,7 @@ package org.transito_seguro.component;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.transito_seguro.enums.TipoCampo;
 
@@ -100,12 +101,15 @@ public class QueryAnalyzer {
         log.debug("Analizando query SQL para consolidación dinámica");
 
         try {
+
+
             // 1. Extraer SELECT clause
             String selectClause = extraerSelectClause(query);
             if (selectClause == null) {
                 log.warn("No se pudo extraer SELECT de la query");
                 return crearAnalisisVacio();
             }
+
 
             // 2. Extraer campos individuales del SELECT
             List<CampoAnalizado> campos = parsearCamposSelect(selectClause);

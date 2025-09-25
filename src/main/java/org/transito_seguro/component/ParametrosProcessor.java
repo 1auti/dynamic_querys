@@ -76,19 +76,14 @@ public class ParametrosProcessor {
         params.addValue("concesiones", convertirListaEnterosAArrayPostgreSQL(filtros.getConcesiones()), Types.OTHER);
     }
 
-    private void mapearPaginacionInteligente(ParametrosFiltrosDTO filtros, MapSqlParameterSource params){
-
-        Integer limite = filtros.getLimite();
+    private void mapearPaginacionInteligente(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
+        // Siempre mapear los parámetros - si no están en el SQL, simplemente se ignoran
+        Integer limite = filtros.getLimiteEfectivo();
         Integer offset = filtros.calcularOffset();
 
-        params.addValue("limite",null,Types.INTEGER);
-
-        if(limite != null && limite > 0){
-            params.addValue("offset",offset,Types.BOOLEAN);
-        }else{
-            params.addValue("offset",false,Types.BOOLEAN);
-        }
-
+        params.addValue("aplicarPaginacion",!filtros.esConsolidado(),Types.BOOLEAN);
+        params.addValue("limite", limite, Types.INTEGER);
+        params.addValue("offset", offset, Types.INTEGER);
     }
 
     // =================== MAPEO DE EQUIPOS CORREGIDO ===================
