@@ -1,4 +1,4 @@
-package org.transito_seguro.model;
+package org.transito_seguro.enums;
 
 public enum TipoConsolidacion {
     AGREGACION,        // Sumar valores numéricos

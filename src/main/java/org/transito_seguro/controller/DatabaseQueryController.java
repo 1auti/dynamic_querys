@@ -11,6 +11,7 @@ import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.dto.QueryStorageDTO;
 import org.transito_seguro.model.QueryStorage;
+import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
 import org.transito_seguro.service.DatabaseQueryService;
 
 import javax.validation.Valid;
@@ -334,7 +335,7 @@ public class DatabaseQueryController {
 
             if (valido) {
                 // Analizar consolidación
-                QueryAnalyzer.AnalisisConsolidacion analisis =
+                AnalisisConsolidacion analisis =
                         queryAnalyzer.analizarParaConsolidacion(sql);
 
                 validacion.put("consolidable", analisis.isEsConsolidado());

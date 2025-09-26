@@ -2,6 +2,9 @@ package org.transito_seguro.component;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opencsv.CSVWriter;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -23,6 +26,8 @@ public class StreamingFormatoConverter {
     /**
      * Contexto para mantener estado durante procesamiento streaming
      */
+    @Getter
+    @AllArgsConstructor
     public static class StreamingContext {
         private final String formato;
         private final OutputStream outputStream;
@@ -43,17 +48,11 @@ public class StreamingFormatoConverter {
         private boolean jsonPrimerRegistro = true;
         private PrintWriter jsonWriter;
 
-        public StreamingContext(String formato, OutputStream outputStream) {
-            this.formato = formato.toLowerCase();
+        private StreamingContext(String formato, OutputStream outputStream) {
+            this.formato = formato;
             this.outputStream = outputStream;
-            this.coutingOutputStream = coutingOutputStream;
         }
 
-        // Getters
-        public String getFormato() { return formato; }
-        public OutputStream getOutputStream() { return outputStream; }
-        public int getTotalRegistros() { return totalRegistros.get(); }
-        public long getBytesEscritos() { return bytesEscritos.get(); }
     }
 
     /**

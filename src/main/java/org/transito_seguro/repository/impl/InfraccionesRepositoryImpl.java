@@ -1,8 +1,10 @@
 package org.transito_seguro.repository.impl;
 
 import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.transito_seguro.component.DynamicBuilderQuery;
 import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.enums.Consultas;
@@ -31,7 +33,13 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
 
     private final ParametrosProcessor parametrosProcessor;
 
-    // NUEVO: Repositorio para queries en BD
+    private  DynamicBuilderQuery builderQuery;
+
+    /**
+     *   Setter para inyectar QueryStorageRepository después de la construcción
+     */
+
+    @Setter
     private QueryStorageRepository queryStorageRepository;
 
     /**
@@ -47,25 +55,18 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         log.debug("Inicializado InfraccionesRepositoryImpl para provincia: {}", provincia);
     }
 
-    /**
-     * NUEVO: Setter para inyectar QueryStorageRepository después de la construcción
-     */
-    public void setQueryStorageRepository(QueryStorageRepository queryStorageRepository) {
-        this.queryStorageRepository = queryStorageRepository;
-    }
-
     @Override
     public List<Map<String, Object>> ejecutarQueryConFiltros(String nombreQuery, ParametrosFiltrosDTO filtros) {
         log.debug("Ejecutando query '{}' en provincia: {}", nombreQuery, provincia);
 
         try {
-            // 1. NUEVO: Intentar cargar desde BD primero
+            // 1. Intentar cargar desde BD primero
             String querySQL = cargarQueryDesdeBaseDatosOArchivo(nombreQuery);
 
-            // 2. Procesar la query con filtros dinámicos
+            // 3. Procesar la query con filtros dinámicos
             ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(querySQL, filtros);
 
-            // 3. Ejecutar
+            // 4. Ejecutar
             List<Map<String, Object>> resultados = jdbcTemplate.queryForList(
                     resultado.getQueryModificada(),
                     resultado.getParametros()

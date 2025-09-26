@@ -1,98 +1,22 @@
 package org.transito_seguro.component;
 
-
-import lombok.AllArgsConstructor;
-import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.transito_seguro.enums.TipoCampo;
+import org.transito_seguro.model.CampoAnalizado;
+import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
 
 import java.util.*;
 import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+
+
+import static org.transito_seguro.enums.TipoCampo.determinarTipoCampo;
+import static org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion.crearAnalisisVacio;
+import static org.transito_seguro.utils.RegexUtils.*;
 
 @Slf4j
 @Component
 public class QueryAnalyzer {
-
-    @Getter
-    @AllArgsConstructor
-    public static class AnalisisConsolidacion{
-        private final List<String> camposAgrupacion; // Para GROUP BY en consolidacion
-        private final List<String> camposNumericos; // para SUM por consolidacion
-        private final List<String> camposTiempo; // para agrupacion temporal ( fecha inico & fecha fin )
-        private final List<String> camposUbicacion; // provincia,contexto,municipio
-        private final Map<String, TipoCampo> tipoPorCampo;
-        private final boolean esConsolidado; // Si la query puede ser consolidada
-    }
-
-    @AllArgsConstructor
-    private static class CampoAnalizado {
-        final String expresionOriginal;
-        final String expresionLimpia;
-        final String nombreFinal;
-        final TipoCampo tipo;
-        final boolean esAgregacion;
-        final boolean esCalculado;
-    }
-
-    // Metodo auxillar para crear el mapa con categorias
-    private static Map<String, TipoCampo> createCategorizedMap(TipoCampo categoria, String... keys) {
-        // 1. Recolecta las claves en un mapa mutable estándar.
-        Map<String, TipoCampo> mutableMap = Stream.of(keys)
-                .collect(Collectors.toMap(
-                        key -> key,      // La clave es la propia cadena
-                        key -> categoria // El valor es siempre la categoría pasada como argumento
-                ));
-
-        // 2. Devuelve una vista inmutable de ese mapa.
-        return Collections.unmodifiableMap(mutableMap);
-    }
-
-
-    public static final Map<String, TipoCampo> CAMPOS_UBICACION = createCategorizedMap(
-            TipoCampo.UBICACION,
-            "provincia", "municipio", "contexto", "lugar", "partido", "localidad"
-    );
-
-    public static final Map<String, TipoCampo> CAMPOS_CATEGORIZACION = createCategorizedMap(
-            TipoCampo.CATEGORIZACION,
-            "tipo_infraccion", "serie_equipo", "descripcion", "estado", "tipo_documento", "vehiculo"
-    );
-
-    public static final Map<String, TipoCampo> CAMPOS_TIEMPO = createCategorizedMap(
-            TipoCampo.TIEMPO,
-            "fecha", "fecha_reporte", "fecha_emision", "fecha_alta", "fecha_titularidad",
-            "ultima_modificacion", "fecha_constatacion", "mes_exportacion"
-    );
-
-    public static final Map<String, TipoCampo> CAMPOS_NUMERICOS_CONOCIDOS = createCategorizedMap(
-            TipoCampo.NUMERICO_SUMA,
-            "total", "cantidad", "vehiculos", "motos", "formato_no_valido", "counter",
-            "luz_roja", "senda", "total_sin_email", "velocidad_radar_fijo",
-            "pre_aprobada", "filtrada_municipio", "sin_datos", "prescrita", "filtrada",
-            "aprobada", "pdf_generado", "total_eventos"
-    );
-
-    // Patrones regex para análisis SQL
-    private static final Pattern SELECT_PATTERN =
-            Pattern.compile("SELECT\\s+(.+?)\\s+FROM", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-
-    private static final Pattern CAMPO_AS_PATTERN =
-            Pattern.compile("(.+?)\\s+AS\\s+[\"']?([^,\"'\\s]+)[\"']?", Pattern.CASE_INSENSITIVE);
-
-    private static final Pattern SUM_PATTERN =
-            Pattern.compile("SUM\\s*\\([^)]+\\)", Pattern.CASE_INSENSITIVE);
-
-    private static final Pattern COUNT_PATTERN =
-            Pattern.compile("COUNT\\s*\\([^)]+\\)", Pattern.CASE_INSENSITIVE);
-
-    private static final Pattern CASE_WHEN_PATTERN =
-            Pattern.compile("CASE\\s+WHEN.+?END", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-
 
 
     //============================ ANALISIS DE CONSOLIDACION ================================================//
@@ -184,54 +108,7 @@ public class QueryAnalyzer {
         return new CampoAnalizado(expresion, expresionLimpia, nombreFinal, tipo, esAgregacion, esCalculado);
     }
 
-    /**
-     * Determina el tipo de campo basado en patrones conocidos del sistema
-     */
-    private TipoCampo determinarTipoCampo(String expresion, String nombreFinal) {
-        // 1. Por nombre conocido (más confiable)
-        if (CAMPOS_UBICACION.containsKey(nombreFinal)) {
-            return TipoCampo.UBICACION;
-        }
 
-        if (CAMPOS_CATEGORIZACION.containsKey(nombreFinal)) {
-            return TipoCampo.CATEGORIZACION;
-        }
-
-        if (CAMPOS_TIEMPO.containsKey(nombreFinal) || nombreFinal.contains("fecha")) {
-            return TipoCampo.TIEMPO;
-        }
-
-        if (CAMPOS_NUMERICOS_CONOCIDOS.containsKey(nombreFinal)) {
-            return TipoCampo.NUMERICO_SUMA;
-        }
-
-        // 2. Por expresión SQL
-        if (SUM_PATTERN.matcher(expresion).find()) {
-            return TipoCampo.NUMERICO_SUMA;
-        }
-
-        if (COUNT_PATTERN.matcher(expresion).find()) {
-            return TipoCampo.NUMERICO_COUNT;
-        }
-
-        if (CASE_WHEN_PATTERN.matcher(expresion).find()) {
-            return TipoCampo.CALCULADO;
-        }
-
-        // 3. Por patrones de nombre
-        if (nombreFinal.contains("total") || nombreFinal.contains("cantidad") ||
-                nombreFinal.contains("counter") || nombreFinal.endsWith("_count")) {
-            return TipoCampo.NUMERICO_SUMA;
-        }
-
-        if (nombreFinal.contains("dominio") || nombreFinal.contains("documento") ||
-                nombreFinal.contains("cuit") || nombreFinal.contains("nro_")) {
-            return TipoCampo.IDENTIFICADOR;
-        }
-
-        // 4. Default para campos de detalle
-        return TipoCampo.DETALLE;
-    }
 
     /**
      * Clasifica campos para estrategia de consolidación
@@ -334,85 +211,6 @@ public class QueryAnalyzer {
 
         return campos;
     }
-
-    private boolean esExpresionAgregacion(String expresion) {
-        return SUM_PATTERN.matcher(expresion).find() ||
-                COUNT_PATTERN.matcher(expresion).find() ||
-                expresion.toUpperCase().contains("AVG(") ||
-                expresion.toUpperCase().contains("MAX(") ||
-                expresion.toUpperCase().contains("MIN(");
-    }
-
-    private boolean esExpresionCalculada(String expresion) {
-        return CASE_WHEN_PATTERN.matcher(expresion).find() ||
-                expresion.contains("COALESCE(") ||
-                expresion.contains("TO_CHAR(") ||
-                expresion.contains("CONCAT(");
-    }
-
-    private AnalisisConsolidacion crearAnalisisVacio() {
-        return new AnalisisConsolidacion(
-                Collections.emptyList(),
-                Collections.emptyList(),
-                Collections.emptyList(),
-                Collections.emptyList(),
-                Collections.emptyMap(),
-                false
-        );
-    }
-
-    /**
-     * Genera configuración de consolidación automática basada en la query
-     */
-    public List<String> generarConfiguracionConsolidacion(String query, String estrategia) {
-        AnalisisConsolidacion analisis = analizarParaConsolidacion(query);
-
-        if (!analisis.esConsolidado) {
-            log.warn("Query no es consolidable, retornando configuración vacía");
-            return Collections.emptyList();
-        }
-
-        List<String> configuracion = new ArrayList<>();
-
-        switch (estrategia.toLowerCase()) {
-            case "provincia":
-                configuracion.addAll(analisis.camposUbicacion);
-                break;
-
-            case "completa":
-                configuracion.addAll(analisis.camposAgrupacion);
-                break;
-
-            case "temporal":
-                configuracion.addAll(analisis.camposTiempo);
-                configuracion.addAll(analisis.camposUbicacion);
-                break;
-
-            default:
-                // Estrategia inteligente: ubicación + categorización principal
-                configuracion.addAll(analisis.camposUbicacion);
-                // Agregar máximo 2 campos de categorización más importantes
-                analisis.camposAgrupacion.stream()
-                        .filter(campo -> !analisis.camposUbicacion.contains(campo))
-                        .filter(campo -> !analisis.camposTiempo.contains(campo))
-                        .limit(2)
-                        .forEach(configuracion::add);
-        }
-
-        log.info("Configuración generada para estrategia '{}': {}", estrategia, configuracion);
-        return configuracion;
-    }
-
-    /**
-     * Valida si una query específica puede ser consolidada
-     */
-    public boolean puedeSerConsolidada(String query) {
-        return analizarParaConsolidacion(query).esConsolidado;
-    }
-
-
-
-
 
 
 }

@@ -6,11 +6,14 @@ import org.springframework.stereotype.Service;
 import org.transito_seguro.component.QueryAnalyzer;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.factory.RepositoryFactory;
+import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 import org.transito_seguro.utils.NormalizadorProvincias;
 
 import java.util.*;
 import java.util.stream.Collectors;
+
+import static org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion.crearAnalisisVacio;
 
 /**
  * Servicio especializado en consolidación automática de datos multi-provincia.
@@ -76,7 +79,7 @@ public class ConsolidacionService {
                 repositories.size(), nombreQuery, filtros.getConsolidacionSeguro());
 
         // 1. Obtener análisis de consolidación desde QueryRegistry
-        QueryAnalyzer.AnalisisConsolidacion analisis = obtenerAnalisisConsolidacion(nombreQuery);
+        AnalisisConsolidacion analisis = obtenerAnalisisConsolidacion(nombreQuery);
 
         if (!analisis.isEsConsolidado()) {
             log.warn("Query '{}' NO es consolidable según Registry - retornando datos sin consolidar", nombreQuery);
@@ -127,7 +130,7 @@ public class ConsolidacionService {
      */
     public boolean puedeSerConsolidada(String nombreQuery) {
         try {
-            QueryAnalyzer.AnalisisConsolidacion analisis =
+            AnalisisConsolidacion analisis =
                     queryRegistryService.obtenerAnalisisConsolidacion(nombreQuery);
 
             boolean consolidable = analisis.isEsConsolidado();
@@ -166,20 +169,14 @@ public class ConsolidacionService {
      * @param nombreQuery Código de la query
      * @return QueryAnalyzer.AnalisisConsolidacion Análisis con metadata de consolidación
      */
-    private QueryAnalyzer.AnalisisConsolidacion obtenerAnalisisConsolidacion(String nombreQuery) {
+    private AnalisisConsolidacion obtenerAnalisisConsolidacion(String nombreQuery) {
         try {
             return queryRegistryService.obtenerAnalisisConsolidacion(nombreQuery);
         } catch (Exception e) {
             log.error("Error obteniendo análisis para query '{}': {}", nombreQuery, e.getMessage());
             // Retornar análisis vacío como fallback
-            return new QueryAnalyzer.AnalisisConsolidacion(
-                    Collections.emptyList(),
-                    Collections.emptyList(),
-                    Collections.emptyList(),
-                    Collections.emptyList(),
-                    Collections.emptyMap(),
-                    false
-            );
+            return crearAnalisisVacio();
+
         }
     }
 
@@ -189,7 +186,7 @@ public class ConsolidacionService {
      * @param nombreQuery Código de la query
      * @param analisis Análisis obtenido del Registry
      */
-    private void logAnalisisConsolidacion(String nombreQuery, QueryAnalyzer.AnalisisConsolidacion analisis) {
+    private void logAnalisisConsolidacion(String nombreQuery, AnalisisConsolidacion analisis) {
         log.info("Query '{}' es CONSOLIDABLE según Registry:", nombreQuery);
         log.info("   Campos Ubicación: {}", analisis.getCamposUbicacion());
         log.info("  ️ Campos Agrupación: {}", analisis.getCamposAgrupacion());
@@ -208,7 +205,7 @@ public class ConsolidacionService {
     private List<Map<String, Object>> procesarConsolidacion(
             List<Map<String, Object>> datos,
             ParametrosFiltrosDTO filtros,
-            QueryAnalyzer.AnalisisConsolidacion analisis) {
+            AnalisisConsolidacion analisis) {
 
         // Determinar estrategia de consolidación
         List<String> camposAgrupacion = determinarCamposAgrupacion(filtros, analisis);
@@ -229,7 +226,7 @@ public class ConsolidacionService {
      * @return List<String> Campos de agrupación finales validados
      */
     private List<String> determinarCamposAgrupacion(ParametrosFiltrosDTO filtros,
-                                                    QueryAnalyzer.AnalisisConsolidacion analisis) {
+                                                    AnalisisConsolidacion analisis) {
 
         List<String> camposAgrupacion = new ArrayList<>();
         List<String> preferenciasUsuario = filtros.getConsolidacionSeguro();
@@ -285,7 +282,7 @@ public class ConsolidacionService {
      * @return List<String> Campos numéricos identificados
      */
     private List<String> determinarCamposNumericos(List<Map<String, Object>> datos,
-                                                   QueryAnalyzer.AnalisisConsolidacion analisis) {
+                                                   AnalisisConsolidacion analisis) {
 
         Set<String> camposNumericos = new HashSet<>();
 

@@ -67,6 +67,9 @@ public class InfraccionesService {
     @Autowired
     private ParametrosProcessor parametrosProcessor;
 
+    @Autowired
+    private DynamicBuilderQuery builderQuery;
+
     // =============== CONFIGURACIÓN ===============
 
     @Value("${app.limits.max-records-sync:1000}")
@@ -437,11 +440,14 @@ public class InfraccionesService {
             String provincia = repo.getProvincia();
 
             try {
-                // Procesar parámetros con el SQL de BD
-                ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
-                        queryStorage.getSqlQuery(), filtros);
 
-                // Ejecutar query SQL de BD
+                String sqlDinamico = queryStorage.getSqlQuery();
+
+                // 2. Procesar parámetros con el SQL de BD
+                ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
+                        sqlDinamico, filtros);
+
+                // 3. Ejecutar query SQL de BD
                 List<Map<String, Object>> datosProvider = repo.getNamedParameterJdbcTemplate().queryForList(
                         resultado.getQueryModificada(),
                         resultado.getParametros()
@@ -559,11 +565,14 @@ public class InfraccionesService {
                     try {
                         String provincia = repo.getProvincia();
 
-                        // Procesar parámetros con SQL de BD
-                        ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
-                                queryStorage.getSqlQuery(), consulta.getParametrosFiltros());
+                        // 1. Construir SQL Dinamico
+                        String sqlDinamico = queryStorage.getSqlQuery();
 
-                        // Ejecutar query
+                        // 2. Procesar parámetros con SQL de BD
+                        ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
+                                sqlDinamico, consulta.getParametrosFiltros());
+
+                        // 3. Ejecutar query
                         List<Map<String, Object>> datos = repo.getNamedParameterJdbcTemplate().queryForList(
                                 resultado.getQueryModificada(),
                                 resultado.getParametros()

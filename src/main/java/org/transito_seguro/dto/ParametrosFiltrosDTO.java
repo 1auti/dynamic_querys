@@ -116,13 +116,6 @@ public class ParametrosFiltrosDTO {
         return this;
     }
 
-    /**
-     * Método para establecer offset explícito
-     */
-    public ParametrosFiltrosDTO conOffset(int nuevoOffset) {
-        this.offset = nuevoOffset;
-        return this;
-    }
 
     /**
      * Información de debug para logs
@@ -151,13 +144,30 @@ public class ParametrosFiltrosDTO {
         return true;
     }
 
-    /**
-     * Normaliza los parámetros para evitar conflictos
-     */
-    public ParametrosFiltrosDTO normalizar() {
-        return this.toBuilder()
-                .limite(getLimiteEfectivo())    // Unificar en 'limite'
-                .offset(calcularOffset())       // Calcular offset explícito
-                .build();
+   public static boolean tieneParametrosFecha(ParametrosFiltrosDTO filtros) {
+        return filtros.getFechaInicio() != null ||
+                filtros.getFechaFin() != null ||
+                filtros.getFechaEspecifica() != null;
+    }
+
+    public static boolean tieneParametrosUbicacion(ParametrosFiltrosDTO filtros) {
+        return (filtros.getProvincias() != null && !filtros.getProvincias().isEmpty()) ||
+                (filtros.getMunicipios() != null && !filtros.getMunicipios().isEmpty());
+    }
+
+    public static boolean tieneParametrosEstado(ParametrosFiltrosDTO filtros) {
+        return filtros.getExportadoSacit() != null ||
+                filtros.getTieneEmail() != null ||
+                (filtros.getEstadosInfracciones() != null && !filtros.getEstadosInfracciones().isEmpty());
+    }
+
+    public static boolean esParametroFechaBasico(String parametro) {
+        String param = parametro.toLowerCase();
+        return param.equals("fecha") ||
+                param.equals("fechaespecifica") ||
+                param.equals("fechainicio") ||
+                param.equals("fechafin") ||
+                param.equals("fecha_alta") ||
+                param.equals("fecha_reporte");
     }
 }

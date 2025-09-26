@@ -7,12 +7,13 @@ import org.springframework.transaction.annotation.Transactional;
 import org.transito_seguro.component.FormatoConverter;
 import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.component.QueryAnalyzer;
-import org.transito_seguro.component.QueryPaginacionProcessor;
+import org.transito_seguro.component.DynamicBuilderQuery;
 import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.dto.QueryStorageDTO;
 import org.transito_seguro.enums.EstadoQuery;
 import org.transito_seguro.model.QueryStorage;
+import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
 import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 
@@ -37,7 +38,7 @@ public class DatabaseQueryService {
     private QueryAnalyzer queryAnalyzer;
 
     @Autowired
-    private QueryPaginacionProcessor paginacionProcessor;
+    private DynamicBuilderQuery builderQuery;
 
     @Autowired
     private ConsolidacionService consolidacionService;
@@ -50,7 +51,6 @@ public class DatabaseQueryService {
 
     @Autowired
     private ParametrosProcessor parametrosProcessor;
-
 
 
     // =============== GESTIÓN DE QUERIES ===============
@@ -71,17 +71,17 @@ public class DatabaseQueryService {
             throw new IllegalArgumentException("Ya existe una query con código: " + dto.getCodigo());
         }
 
-        // Analizar query automáticamente
-        QueryAnalyzer.AnalisisConsolidacion analisis = queryAnalyzer.analizarParaConsolidacion(dto.getSqlQuery());
+        String sql = builderQuery.construirSqlInteligente(dto.getSqlQuery());
 
-        String sqlConPaginacion = paginacionProcessor.agregarPaginacion(dto.getSqlQuery(), dto.getEsConsolidable());
 
-        // Crear entidad
+        AnalisisConsolidacion analisis = queryAnalyzer.analizarParaConsolidacion(sql);
+
+        // Los filtros dinámicos se agregan solo al ejecutar
         QueryStorage query = QueryStorage.builder()
                 .codigo(dto.getCodigo())
                 .nombre(dto.getNombre())
                 .descripcion(dto.getDescripcion())
-                .sqlQuery(sqlConPaginacion)
+                .sqlQuery(dto.getSqlQuery())  // ✅ SQL ORIGINAL
                 .categoria(dto.getCategoria() != null ? dto.getCategoria() : "GENERAL")
                 .esConsolidable(analisis.isEsConsolidado())
                 .timeoutSegundos(dto.getTimeoutSegundos())
@@ -112,11 +112,35 @@ public class DatabaseQueryService {
         }
 
         QueryStorage guardada = queryRepository.save(query);
-        log.info("Query '{}' guardada exitosamente - ID: {}, Consolidable: {}",
-                guardada.getCodigo(), guardada.getId(), guardada.getEsConsolidable());
+
+        log.info("Query '{}' guardada exitosamente - ID: {}, Consolidable: {}, Campos detectados: {}",
+                guardada.getCodigo(), guardada.getId(), guardada.getEsConsolidable(),
+                analisis.getTipoPorCampo().size());
 
         return guardada;
     }
+
+    // Agregamos la paginacion filtros dinamicos
+//    private String preprocesarSqlParaGuardar(String sqlOriginal) {
+//        log.info("Pre-procesando SQL para almacenamiento dinámico");
+//
+//        validarSqlQuery(sqlOriginal);
+//
+//        // 1. Analizar estructura del SQL usando DynamicBuilderQuery
+//        DynamicBuilderQuery.AnalisisSQL analisis = builderQuery.analizarSql(sqlOriginal);
+//
+//        // 2. Agregar filtros dinámicos según campos detectados
+//        String sqlConFiltros = agregarFiltrosDinamicosAlSql(sqlOriginal, analisis);
+//
+//        // 3. Agregar paginación dinámica
+//        String sqlFinal = agregarPaginacionDinamica(sqlConFiltros);
+//
+//        log.info("✅ SQL pre-procesado: {} → {} caracteres",
+//                sqlOriginal.length(), sqlFinal.length());
+//        log.debug("SQL resultante:\n{}", sqlFinal);
+//
+//        return sqlFinal;
+//    }
 
     /**
      * ✏ Actualizar query existente
@@ -141,7 +165,7 @@ public class DatabaseQueryService {
             query.setVersion(query.getVersion() + 1);
 
             // Re-análisis automático
-            QueryAnalyzer.AnalisisConsolidacion analisis = queryAnalyzer.analizarParaConsolidacion(dto.getSqlQuery());
+            AnalisisConsolidacion analisis = queryAnalyzer.analizarParaConsolidacion(dto.getSqlQuery());
             query.setEsConsolidable(analisis.isEsConsolidado());
 
             if (analisis.isEsConsolidado()) {
@@ -797,7 +821,7 @@ public class DatabaseQueryService {
                     String sql = org.transito_seguro.utils.SqlUtils.cargarQuery(consulta.getArchivoQuery());
 
                     // Analizar automáticamente
-                    QueryAnalyzer.AnalisisConsolidacion analisis =
+                    AnalisisConsolidacion analisis =
                             queryAnalyzer.analizarParaConsolidacion(sql);
 
 

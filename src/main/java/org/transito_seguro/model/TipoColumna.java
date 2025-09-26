@@ -20,6 +20,4 @@ public class TipoColumna {
     private Set<Object> valoresUnicos = new HashSet<>();
     private int totalRegistros = 0;
     private Pattern patron = null; // Para detectar patrones como dominios, fechas, etc.
-
-
 }

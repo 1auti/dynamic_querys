@@ -1,4 +1,4 @@
-package org.transito_seguro.model;
+package org.transito_seguro.model.consolidacion.consolidacionGeografica;
 
 import java.util.Optional;
 
