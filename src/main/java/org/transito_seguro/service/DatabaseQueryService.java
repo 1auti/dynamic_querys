@@ -81,7 +81,7 @@ public class DatabaseQueryService {
                 .codigo(dto.getCodigo())
                 .nombre(dto.getNombre())
                 .descripcion(dto.getDescripcion())
-                .sqlQuery(dto.getSqlQuery())  // ✅ SQL ORIGINAL
+                .sqlQuery(sql)
                 .categoria(dto.getCategoria() != null ? dto.getCategoria() : "GENERAL")
                 .esConsolidable(analisis.isEsConsolidado())
                 .timeoutSegundos(dto.getTimeoutSegundos())
