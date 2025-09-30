@@ -326,36 +326,38 @@ public class InfraccionesService {
 
         ParametrosFiltrosDTO filtros = consulta.getParametrosFiltros();
 
-        // Verificar si requiere consolidación
+        // Verificar consolidación
         boolean esConsolidado = filtros != null &&
                 filtros.esConsolidado() &&
                 queryStorage.getEsConsolidable();
 
-        // CORREGIDO: Lógica mejorada para detectar cuándo usar lotes
+        // Detectar si necesita lotes
         boolean usarLotes = false;
         if (filtros != null) {
-            // Usar lotes si:
             boolean todasLasBDS = Boolean.TRUE.equals(filtros.getUsarTodasLasBDS());
             int limiteEfectivo = filtros.getLimiteEfectivo();
             int numRepositorios = repositories.size();
 
-            usarLotes = todasLasBDS ||                          // Todas las BDS
-                    limiteEfectivo > 25000 ||                // Límite alto
-                    numRepositorios >= 4 ||                  // Muchas provincias
-                    limiteEfectivo == Integer.MAX_VALUE;     // Sin límite
+            usarLotes = todasLasBDS ||
+                    limiteEfectivo > 25000 ||
+                    numRepositorios >= 4 ||
+                    limiteEfectivo == Integer.MAX_VALUE;
 
             log.info("Análisis para lotes - TodasBDS: {}, Límite: {}, Repos: {}, Usar lotes: {}",
                     todasLasBDS, limiteEfectivo, numRepositorios, usarLotes);
         }
 
-        if (esConsolidado) {
-            log.info("🔄 Modo CONSOLIDADO para query BD: {}", queryStorage.getCodigo());
-            return ejecutarConsolidacionConQueryStorage(queryStorage, repositories, consulta);
+        // ✅ NUEVA LÓGICA: Priorizar lotes sobre secuencialidad
+        if (esConsolidado && usarLotes) {
+            log.info("📦🔄 Modo CONSOLIDADO + LOTES para query: {}", queryStorage.getCodigo());
+            return ejecutarConsolidacionConLotes(queryStorage, repositories, consulta);
+        }
+        else if (esConsolidado) {
+            log.info("🔄 Modo CONSOLIDADO secuencial para query: {}", queryStorage.getCodigo());
+            return ejecutarConsolidacionSecuencial(queryStorage, repositories, consulta);
         }
         else if (usarLotes) {
-            log.info("📦 Modo LOTES para query: {} (repos: {}, límite: {})",
-                    queryStorage.getCodigo(), repositories.size(),
-                    filtros != null ? filtros.getLimiteEfectivo() : "null");
+            log.info("📦 Modo LOTES (sin consolidación) para query: {}", queryStorage.getCodigo());
             return ejecutarConLotes(queryStorage, repositories, consulta);
         }
         else {
@@ -384,6 +386,54 @@ public class InfraccionesService {
     }
 
     /**
+     * Ejecuta consolidación usando BatchProcessor para eficiencia
+     * Combina el procesamiento por lotes con consolidación final
+     */
+    private Object ejecutarConsolidacionConLotes(QueryStorage queryStorage,
+                                                 List<InfraccionesRepositoryImpl> repositories,
+                                                 ConsultaQueryDTO consulta) {
+        log.info("🚀 Iniciando consolidación optimizada con BatchProcessor");
+
+        ParametrosFiltrosDTO filtros = consulta.getParametrosFiltros();
+        final List<Map<String, Object>> todosLosDatos = new ArrayList<>();
+
+
+        // ✅ PASO 1: Usar BatchProcessor para recopilar datos eficientemente
+        batchProcessor.procesarEnLotes(
+                repositories,
+                filtros,
+                queryStorage.getCodigo(),
+                lote -> {
+                    synchronized (todosLosDatos) {
+                        todosLosDatos.addAll(lote);
+                    }
+                }
+        );
+        List <Map<String,Object>> todosLasBaseDatos = todosLosDatos;
+
+        log.info("📊 BatchProcessor recopiló {} registros totales", todosLosDatos.size());
+
+        if (todosLasBaseDatos.isEmpty()) {
+            return formatoConverter.convertir(Collections.emptyList(),
+                    consulta.getFormato() != null ? consulta.getFormato() : "json");
+        }
+
+        // ✅ PASO 2: Normalizar provincias
+        todosLasBaseDatos = normalizarProvinciasEnDatos(todosLosDatos);
+
+        // ✅ PASO 3: Consolidar con metadata de BD
+        List<Map<String, Object>> datosConsolidados = consolidarConMetadataDeBaseDatos(
+                todosLosDatos, filtros, queryStorage);
+
+        log.info("✅ Consolidación con lotes completada: {} registros → {} grupos",
+                todosLosDatos.size(), datosConsolidados.size());
+
+        // ✅ PASO 4: Convertir a formato solicitado
+        String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
+        return formatoConverter.convertir(datosConsolidados, formato);
+    }
+
+    /**
      * Ejecuta consolidación usando metadata de QueryStorage.
      *
      * @param queryStorage Query con metadata de consolidación
@@ -393,7 +443,7 @@ public class InfraccionesService {
      * @throws ValidationException si hay errores de validación
      * @throws RuntimeException si hay errores durante la consolidación
      */
-    private Object ejecutarConsolidacionConQueryStorage(QueryStorage queryStorage,
+    private Object ejecutarConsolidacionSecuencial(QueryStorage queryStorage,
                                                         List<InfraccionesRepositoryImpl> repositories,
                                                         ConsultaQueryDTO consulta) throws ValidationException {
 
@@ -625,10 +675,21 @@ public class InfraccionesService {
 
             final StreamingFormatoConverter.StreamingContext finalContext = context;
 
-            // Procesar cada provincia secuencialmente
-            for (InfraccionesRepositoryImpl repo : repositories) {
-                procesarProvinciaParaArchivo(repo, consulta, nombreQuery, finalContext, true);
-            }
+            batchProcessor.procesarEnLotes(
+                    repositories,
+                    consulta.getParametrosFiltros(),
+                    nombreQuery,
+                    lote -> {
+                        try {
+                            if (lote != null && !lote.isEmpty()) {
+                                streamingConverter.procesarLoteStreaming(finalContext, lote);
+                            }
+                        } catch (Exception e) {
+                            log.error("Error procesando lote en descarga consolidada: {}", e.getMessage());
+                            throw new RuntimeException("Error procesando lote para archivo", e);
+                        }
+                    }
+            );
 
             streamingConverter.finalizarStreaming(context);
 
@@ -652,6 +713,9 @@ public class InfraccionesService {
      * @return ResponseEntity<byte[]> Archivo con headers HTTP
      * @throws RuntimeException si hay errores durante la generación
      */
+    /**
+     * Genera archivo normal usando procesamiento por lotes.
+     */
     private ResponseEntity<byte[]> generarArchivoNormal(List<InfraccionesRepositoryImpl> repositories,
                                                         ConsultaQueryDTO consulta, String nombreQuery, String formato) {
 
@@ -667,20 +731,44 @@ public class InfraccionesService {
 
             final StreamingFormatoConverter.StreamingContext finalContext = context;
 
-            batchProcessor.procesarEnLotes(
-                    repositories,
-                    consulta.getParametrosFiltros(),
-                    nombreQuery,
-                    lote -> {
-                        try {
-                            if (lote != null && !lote.isEmpty()) {
-                                streamingConverter.procesarLoteStreaming(finalContext, lote);
+            // ✅ CAMBIO AQUÍ: Detectar Excel y forzar SECUENCIAL
+            if (esFormatoExcel(formato)) {
+                log.info("Formato Excel detectado, forzando procesamiento SECUENCIAL");
+
+                batchProcessor.procesarEnLotesFormaSecuencial(
+                        repositories,
+                        consulta.getParametrosFiltros(),
+                        nombreQuery,
+                        lote -> {
+                            try {
+                                if (lote != null && !lote.isEmpty()) {
+                                    streamingConverter.procesarLoteStreaming(finalContext, lote);
+                                }
+                            } catch (Exception e) {
+                                throw new RuntimeException("Error procesando lote para archivo", e);
                             }
-                        } catch (Exception e) {
-                            throw new RuntimeException("Error procesando lote para archivo", e);
                         }
-                    }
-            );
+                );
+
+            } else {
+                log.info("Formato {} detectado, usando procesamiento automático", formato);
+
+                // Para CSV, JSON, etc. - procesamiento automático (puede ser paralelo)
+                batchProcessor.procesarEnLotes(
+                        repositories,
+                        consulta.getParametrosFiltros(),
+                        nombreQuery,
+                        lote -> {
+                            try {
+                                if (lote != null && !lote.isEmpty()) {
+                                    streamingConverter.procesarLoteStreaming(finalContext, lote);
+                                }
+                            } catch (Exception e) {
+                                throw new RuntimeException("Error procesando lote para archivo", e);
+                            }
+                        }
+                );
+            }
 
             streamingConverter.finalizarStreaming(context);
 
@@ -692,6 +780,18 @@ public class InfraccionesService {
             limpiarContextoStreaming(context);
             throw new RuntimeException("Error generando archivo", e);
         }
+    }
+
+    /**
+     * Verifica si el formato es Excel
+     */
+    private boolean esFormatoExcel(String formato) {
+        if (formato == null) return false;
+
+        String formatoLower = formato.toLowerCase();
+        return formatoLower.equals("excel") ||
+                formatoLower.equals("xlsx") ||
+                formatoLower.equals("xls");
     }
 
     /**
@@ -722,7 +822,7 @@ public class InfraccionesService {
                 datosProvider.forEach(registro -> {
                     registro.put("provincia", provincia);
                     if (esConsolidado) {
-                        registro.put("fuente_consolidacion", true);
+//                        registro.put("fuente_consolidacion", true);
                     }
                 });
 

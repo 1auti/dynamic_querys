@@ -8,8 +8,11 @@ import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.enums.EstrategiaProcessing;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 
+import java.io.BufferedWriter;
+import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
@@ -44,11 +47,22 @@ public class BatchProcessor {
     @Value("${app.batch.massive-threshold-per-province:200000}")
     private int massiveThresholdPerProvince;
 
-    @Value("${app.batch.max-parallel-provinces:3}")
+    @Value("${app.batch.max-parallel-provinces:6}")
     private int maxParallelProvinces;
 
     // Sirve para crear tareas en paralelo sin tener que crear y destruir hilos manualmente
     private final Executor parallelExecutor = Executors.newFixedThreadPool(6);
+    private Consumer<List<Map<String, Object>>> procesadorLoteGlobal;
+    private BufferedWriter archivoSalida;
+    private Queue<Map<String, Object>> colaResultados = new ConcurrentLinkedQueue<>();
+
+    /**
+     * Método para configurar el procesador antes de ejecutar
+     */
+    public void configurarProcesadorInmediato(Consumer<List<Map<String, Object>>> procesador) {
+        this.procesadorLoteGlobal = procesador;
+    }
+
 
 
     // ============= CLASE AUXILLAR ===============================
@@ -88,7 +102,7 @@ public class BatchProcessor {
 
         switch (estrategia){
             case PARALELO:
-                procesarParaleloCompleto(repositories,filtros,nombreQuery,procesarLotes);
+                procesarParaleloCompletoConStreaming(repositories,filtros,nombreQuery,procesarLotes);
                 break;
             case HIBRIDO:
                 procesarHibridoControlado(repositories,filtros,nombreQuery,procesarLotes,estimacionDataset);
@@ -162,6 +176,38 @@ public class BatchProcessor {
 
         // CRITERIO 3: Dataset intermedio → HÍBRIDO
         return EstrategiaProcessing.HIBRIDO;
+    }
+
+    /**
+     * PARALELO COMPLETO CON STREAMING - No acumula datos en memoria
+     */
+    private void procesarParaleloCompletoConStreaming(List<InfraccionesRepositoryImpl> repositories,
+                                                      ParametrosFiltrosDTO filtros,
+                                                      String nombreQuery,
+                                                      Consumer<List<Map<String, Object>>> procesadorLote) {
+
+        log.info("🚀 Ejecutando PARALELO COMPLETO CON STREAMING");
+        long startTime = System.currentTimeMillis();
+
+        // Configurar el procesador global para procesarLoteInmediato()
+        this.procesadorLoteGlobal = procesadorLote;
+
+        // Cambio crítico: usar runAsync en lugar de supplyAsync
+        List<CompletableFuture<Void>> futures = repositories.stream()
+                .map(repo -> CompletableFuture.runAsync(() -> {
+                    // Llama al método que ya tienes modificado
+                    ejecutarProvinciaCompleta(repo, filtros, nombreQuery);
+                }, parallelExecutor))
+                .collect(Collectors.toList());
+
+        // Esperar que todas las provincias terminen
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        // Procesar registros restantes
+        finalizarProcesamiento();
+
+        long duration = System.currentTimeMillis() - startTime;
+        log.info("✅ PARALELO COMPLETO CON STREAMING finalizado en {} ms", duration);
     }
 
     /**
@@ -282,8 +328,26 @@ public class BatchProcessor {
             boolean hayMasDatos = true;
             int procesadosEnProvincia = 0;
 
-            while (hayMasDatos && !esMemoriaCritica()) {
+            // ✅ CAMBIO CRÍTICO: Eliminar !esMemoriaCritica() de la condición
+            while (hayMasDatos) {
                 try {
+                    // ✅ NUEVO: Manejo inteligente de memoria crítica
+                    if (esMemoriaCritica()) {
+                        log.warn("Memoria crítica detectada ({}%) - Reduciendo batch size y limpiando",
+                                obtenerPorcentajeMemoriaUsada());
+
+                        // Reducir batch size sobre la marcha
+                        batchSize = Math.max(500, batchSize / 2);
+
+                        // Limpieza agresiva
+                        limpiarMemoriaAgresiva();
+
+                        // Verificar si mejoró
+                        if (esMemoriaCritica()) {
+                            log.warn("Memoria sigue crítica, pero continuando con batch pequeño: {}", batchSize);
+                        }
+                    }
+
                     // Verificar memoria ANTES de procesar
                     if (esMemoriaAlta()) {
                         log.warn("Memoria alta detectada antes de procesar lote. Provincia: {}, Offset: {}",
@@ -291,7 +355,7 @@ public class BatchProcessor {
                         pausaInteligente();
                     }
 
-                    // Crear filtros específicos para este lote
+                    // Crear filtros específicos para este lote (usando batchSize actualizado)
                     ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(filtros, batchSize, offset);
 
                     // Ejecutar consulta para este lote
@@ -358,17 +422,51 @@ public class BatchProcessor {
                 }
             }
 
-            // Verificación post-provincia
-            if (esMemoriaCritica()) {
-                log.warn("Memoria crítica tras completar provincia: {}. Esperando liberación...", provincia);
-                esperarLiberacionMemoria();
-            }
-
-            log.info("Completada provincia {}: {} registros procesados, memoria final: {}%",
+            // ✅ NUEVO: Limpieza agresiva OBLIGATORIA entre provincias
+            log.info("Completada provincia {}: {} registros procesados, memoria: {}%",
                     provincia, procesadosEnProvincia, obtenerPorcentajeMemoriaUsada());
 
-            // Limpieza entre provincias
+            // Limpieza FORZADA entre provincias
+            // Reemplazar desde línea 409 hasta 428:
             if (repositorioActual < totalRepositorios) {
+                log.info("Ejecutando limpieza COMPLETA entre provincias {}/{}...",
+                        repositorioActual, totalRepositorios);
+
+                double memoriaAntes = obtenerPorcentajeMemoriaUsada();
+
+                // 1. Limpieza de memoria super agresiva
+                for (int i = 0; i < 5; i++) {  // Era 3, ahora 5
+                    System.gc();
+                    System.runFinalization();
+                    try {
+                        Thread.sleep(1500);  // Era 1000ms, ahora 1500ms
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+
+                // 2. Limpieza específica de BD
+                limpiarConexionesBD();
+
+                // 3. Verificar si la memoria mejoró
+                double memoriaDespues = obtenerPorcentajeMemoriaUsada();
+                double memoriaLiberada = memoriaAntes - memoriaDespues;
+
+                log.info("Limpieza entre provincias completada. Memoria liberada: {:.1f}%, Memoria actual: {:.1f}%",
+                        memoriaLiberada, memoriaDespues);
+
+                // 4. Si la memoria sigue alta, pausa más larga
+                if (memoriaDespues > 80.0) {
+                    log.warn("Memoria sigue alta ({}%), aplicando pausa extendida", memoriaDespues);
+                    try {
+                        Thread.sleep(3000);  // 3 segundos de pausa extendida
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+
+                // 5. Pausa normal entre provincias
                 pausaEntreProvincia();
             }
         }
@@ -384,15 +482,18 @@ public class BatchProcessor {
                                                                 ParametrosFiltrosDTO filtros,
                                                                 String nombreQuery) {
         String provincia = repo.getProvincia();
-        List<Map<String, Object>> todosLosDatos = new ArrayList<>();
+
+        // ¡CAMBIO CRÍTICO! No acumular, procesar por lotes
+        List<Map<String, Object>> loteActual = new ArrayList<>();
 
         try {
             int offset = 0;
             boolean hayMasDatos = true;
+            int maxLoteMemoria = 1000; // Máximo en memoria
 
             while (hayMasDatos) {
                 ParametrosFiltrosDTO filtrosLote = filtros.toBuilder()
-                        .limite(defaultBatchSize)
+                        .limite(maxLoteMemoria)  // Lotes pequeños
                         .offset(offset)
                         .build();
 
@@ -401,25 +502,71 @@ public class BatchProcessor {
                 if (lote == null || lote.isEmpty()) {
                     hayMasDatos = false;
                 } else {
-                    // Agregar provincia a cada registro
+                    // Procesar INMEDIATAMENTE, no acumular
                     lote.forEach(registro -> registro.put("provincia", provincia));
-                    todosLosDatos.addAll(lote);
-                    offset += defaultBatchSize;
 
-                    if (lote.size() < defaultBatchSize) {
+                    // PROCESAR AHORA (no acumular)
+                    procesarLoteInmediato(lote);
+
+                    offset += maxLoteMemoria;
+                    if (lote.size() < maxLoteMemoria) {
                         hayMasDatos = false;
                     }
+
+                    // Limpiar memoria
+                    lote.clear();
                 }
             }
 
-            log.info("✅ Provincia {} recopilada: {} registros", provincia, todosLosDatos.size());
-            return todosLosDatos;
+            return Collections.emptyList(); // No retornar datos acumulados
 
         } catch (Exception e) {
             log.error("❌ Error ejecutando provincia {}: {}", provincia, e.getMessage());
             return Collections.emptyList();
         }
     }
+
+    private void procesarLoteInmediato(List<Map<String, Object>> lote) {
+        if (lote == null || lote.isEmpty()) {
+            return;
+        }
+
+        try {
+            log.debug("Procesando lote inmediato de {} registros", lote.size());
+
+            // Opción 1: Si tienes un Consumer configurado globalmente
+            if (this.procesadorLoteGlobal != null) {
+                this.procesadorLoteGlobal.accept(lote);
+                return;
+            }
+
+            // Opción 2: Escribir directamente a archivo (si está configurado)
+            if (this.archivoSalida != null) {
+                escribirLoteAArchivo(lote);
+                return;
+            }
+
+            // Opción 3: Almacenar temporalmente en cola thread-safe
+            if (this.colaResultados != null) {
+                this.colaResultados.addAll(lote);
+
+                // Si la cola está llena, procesar un chunk
+                if (this.colaResultados.size() >= this.chunkSize) {
+                    procesarColaResultados();
+                }
+                return;
+            }
+
+            // Fallback: Log de advertencia
+            log.warn("procesarLoteInmediato llamado pero no hay procesador configurado. {} registros perdidos",
+                    lote.size());
+
+        } catch (Exception e) {
+            log.error("Error en procesarLoteInmediato: {}", e.getMessage(), e);
+            throw new RuntimeException("Fallo en procesamiento inmediato", e);
+        }
+    }
+
 
 
 
@@ -561,21 +708,35 @@ public class BatchProcessor {
     /**
      * Limpieza agresiva de memoria para situaciones críticas
      */
+    /**
+     * Limpieza agresiva de memoria para situaciones críticas
+     */
     private void limpiarMemoriaAgresiva() {
-        log.warn("Ejecutando limpieza agresiva de memoria...");
+        log.warn("Ejecutando limpieza SUPER agresiva de memoria...");
 
-        // Múltiples pasadas de GC
-        for (int i = 0; i < 3; i++) {
+        long memoriaAntes = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+
+        // Múltiples pasadas más agresivas
+        for (int i = 0; i < 5; i++) {  // Era 3, ahora 5
             System.gc();
+            System.runFinalization();
             try {
-                Thread.sleep(200);
+                Thread.sleep(800);  // Era 200ms, ahora 800ms
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
             }
         }
 
-        log.warn("Limpieza agresiva completada. Memoria actual: {}%", obtenerPorcentajeMemoriaUsada());
+        // Limpieza final más agresiva
+        System.gc();
+        Thread.yield();
+
+        long memoriaDespues = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+        long memoriaLiberada = memoriaAntes - memoriaDespues;
+
+        log.warn("Limpieza agresiva completada. Liberados: {}MB, Memoria actual: {}%",
+                memoriaLiberada / 1024 / 1024, obtenerPorcentajeMemoriaUsada());
     }
 
     /**
@@ -722,6 +883,145 @@ public class BatchProcessor {
         return filtrosLote;
     }
 
+    /**
+     * Escribe lote directamente al archivo CSV
+     */
+    private void escribirLoteAArchivo(List<Map<String, Object>> lote) throws IOException {
+        if (archivoSalida == null) {
+            throw new IllegalStateException("Archivo de salida no configurado");
+        }
+
+        for (Map<String, Object> registro : lote) {
+            StringBuilder linea = new StringBuilder();
+            boolean first = true;
+
+            // Escribir valores separados por comas
+            for (Object valor : registro.values()) {
+                if (!first) linea.append(",");
+
+                String valorStr = valor != null ? valor.toString() : "";
+                // Escapar comillas y comas
+                if (valorStr.contains("\"") || valorStr.contains(",")) {
+                    valorStr = "\"" + valorStr.replace("\"", "\"\"") + "\"";
+                }
+                linea.append(valorStr);
+                first = false;
+            }
+
+            archivoSalida.write(linea.toString());
+            archivoSalida.newLine();
+        }
+
+        archivoSalida.flush(); // Forzar escritura
+    }
+
+    /**
+     * Procesa la cola de resultados cuando está llena
+     */
+    private void procesarColaResultados() {
+        List<Map<String, Object>> loteParaProcesar = new ArrayList<>();
+
+        // Extraer elementos de la cola
+        for (int i = 0; i < chunkSize && !colaResultados.isEmpty(); i++) {
+            Map<String, Object> registro = colaResultados.poll();
+            if (registro != null) {
+                loteParaProcesar.add(registro);
+            }
+        }
+
+        if (!loteParaProcesar.isEmpty() && procesadorLoteGlobal != null) {
+            procesadorLoteGlobal.accept(loteParaProcesar);
+        }
+    }
+
+    /**
+     * Método para finalizar y procesar registros restantes
+     */
+    public void finalizarProcesamiento() {
+        try {
+            // Procesar registros restantes en cola
+            if (!colaResultados.isEmpty()) {
+                List<Map<String, Object>> restantes = new ArrayList<>(colaResultados);
+                colaResultados.clear();
+                if (procesadorLoteGlobal != null) {
+                    procesadorLoteGlobal.accept(restantes);
+                }
+            }
+
+            // Cerrar archivo si existe
+            if (archivoSalida != null) {
+                archivoSalida.close();
+                archivoSalida = null;
+            }
+
+        } catch (Exception e) {
+            log.error("Error finalizando procesamiento: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Versión modificada de ejecutarProvinciaCompleta() que usa procesamiento inmediato
+     */
+    private List<Map<String, Object>> ejecutarProvinciaCompletaConStreaming(InfraccionesRepositoryImpl repo,
+                                                                            ParametrosFiltrosDTO filtros,
+                                                                            String nombreQuery) {
+        String provincia = repo.getProvincia();
+
+        try {
+            int offset = 0;
+            boolean hayMasDatos = true;
+            int maxLoteMemoria = 1000; // Mantener lotes pequeños
+            int totalProcesados = 0;
+
+            while (hayMasDatos) {
+                // Verificar memoria antes de procesar
+                if (esMemoriaCritica()) {
+                    log.warn("Memoria crítica en provincia {}, pausando...", provincia);
+                    esperarLiberacionMemoria();
+                }
+
+                ParametrosFiltrosDTO filtrosLote = filtros.toBuilder()
+                        .limite(maxLoteMemoria)
+                        .offset(offset)
+                        .build();
+
+                List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
+
+                if (lote == null || lote.isEmpty()) {
+                    hayMasDatos = false;
+                } else {
+                    // Agregar provincia a cada registro
+                    lote.forEach(registro -> registro.put("provincia", provincia));
+
+                    // PROCESAR INMEDIATAMENTE (no acumular)
+                    procesarLoteInmediato(lote);
+
+                    totalProcesados += lote.size();
+                    offset += maxLoteMemoria;
+
+                    if (lote.size() < maxLoteMemoria) {
+                        hayMasDatos = false;
+                    }
+
+                    // Limpiar memoria inmediatamente
+                    lote.clear();
+                    lote = null;
+
+                    // Log de progreso cada 10 lotes
+                    if ((offset / maxLoteMemoria) % 10 == 0) {
+                        log.debug("Provincia {}: {} registros procesados", provincia, totalProcesados);
+                    }
+                }
+            }
+
+            log.info("✅ Provincia {} completada: {} registros procesados", provincia, totalProcesados);
+            return Collections.emptyList(); // No retornar datos acumulados
+
+        } catch (Exception e) {
+            log.error("❌ Error ejecutando provincia {}: {}", provincia, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
 
     /**
      * Fuerza limpieza de memoria
@@ -741,5 +1041,24 @@ public class BatchProcessor {
         }
     }
 
+    /**
+     * Limpieza específica de conexiones de base de datos
+     */
+    private void limpiarConexionesBD() {
+        try {
+            log.debug("Ejecutando limpieza de conexiones BD...");
+
+            // Forzar limpieza de statement cache y metadatos
+            System.runFinalization();
+
+            // Pausa para permitir que las conexiones se liberen
+            Thread.sleep(500);
+
+            log.debug("Limpieza de conexiones BD completada");
+
+        } catch (Exception e) {
+            log.warn("Error en limpieza de conexiones BD: {}", e.getMessage());
+        }
+    }
 
 }

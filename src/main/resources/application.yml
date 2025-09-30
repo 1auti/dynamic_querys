@@ -197,7 +197,7 @@ app:
     max-records-display: 10000      # Máximo para endpoints de consulta (Postman-friendly)
     max-concurrent-queries: 10      # Máximo de consultas concurrentes
   batch:
-      size: 5000
+      size: 10000
       parallel-threshold-per-province: 50000    # <50K → Paralelo completo
       parallel-threshold-total: 300000          # <300K → Paralelo completo
       massive-threshold-per-province: 200000    # >200K → Secuencial
