@@ -634,12 +634,41 @@ public class DynamicBuilderQuery {
     private String agregarPaginacion(String sql) {
         String sqlUpper = sql.toUpperCase();
 
-        if (!sqlUpper.contains("LIMIT")) {
-            sql += "\nLIMIT COALESCE(:limite::INTEGER, 1000)";
-        }
+        // ✅ NUEVO: Detectar si hay Keyset params
+        boolean tieneKeyset = sql.contains(":lastId");
 
-        if (!sqlUpper.contains("OFFSET")) {
-            sql += "\nOFFSET COALESCE(:offset::INTEGER, 0)";
+        if (tieneKeyset) {
+            // 🚀 KEYSET PAGINATION - agregar WHERE con lastKey
+            log.debug("Aplicando Keyset Pagination");
+
+            // Buscar WHERE o agregar uno nuevo
+            if (!sqlUpper.contains("WHERE")) {
+                sql = sql.replaceFirst("(?i)GROUP BY",
+                        "WHERE (:lastId::INTEGER IS NULL OR " +
+                                "(e.id, pc.serie_equipo, pc.lugar) > " +
+                                "(:lastId::INTEGER, :lastSerieEquipo::TEXT, :lastLugar::TEXT))\n" +
+                                "GROUP BY");
+            } else {
+                sql = sql.replaceFirst("(?i)GROUP BY",
+                        "AND (:lastId::INTEGER IS NULL OR " +
+                                "(e.id, pc.serie_equipo, pc.lugar) > " +
+                                "(:lastId::INTEGER, :lastSerieEquipo::TEXT, :lastLugar::TEXT))\n" +
+                                "GROUP BY");
+            }
+
+            // Solo LIMIT, sin OFFSET
+            if (!sqlUpper.contains("LIMIT")) {
+                sql += "\nLIMIT COALESCE(:limite::INTEGER, 1000)";
+            }
+
+        } else {
+            // 📊 OFFSET TRADICIONAL
+            if (!sqlUpper.contains("LIMIT")) {
+                sql += "\nLIMIT COALESCE(:limite::INTEGER, 1000)";
+            }
+            if (!sqlUpper.contains("OFFSET")) {
+                sql += "\nOFFSET COALESCE(:offset::INTEGER, 0)";
+            }
         }
 
         return sql;

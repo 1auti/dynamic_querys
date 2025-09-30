@@ -72,6 +72,10 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
                     resultado.getParametros()
             );
 
+            log.info("🔧 PARÁMETROS REALES PASADOS A JDBC:");
+            for (String paramName : resultado.getParametros().getParameterNames()) {
+                log.info("   {}: {}", paramName, resultado.getParametros().getValue(paramName));
+            }
             log.debug("Query '{}' completada. Resultados: {} registros", nombreQuery, resultados.size());
             return resultados;
 

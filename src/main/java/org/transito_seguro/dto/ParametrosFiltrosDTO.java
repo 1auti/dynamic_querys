@@ -18,6 +18,9 @@ public class ParametrosFiltrosDTO {
 
     private String tipoDocumento;
     private Integer limite, pagina;
+    private Integer lastId;
+    private String lastSerieEquipo;
+    private String lastLugar;
     private Date fechaInicio, fechaFin, fechaEspecifica;
     private List<String> provincias, municipios, lugares, partido,
             baseDatos, patronesEquipos, tipoVehiculo, filtrarPorTipoEquipo, seriesEquiposExactas;

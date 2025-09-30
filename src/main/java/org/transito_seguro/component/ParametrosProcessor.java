@@ -43,7 +43,6 @@ public class ParametrosProcessor {
         mapearParametrosInfracciones(filtros, parametros);
         mapearParametrosDominios(filtros, parametros);
         mapearParametrosAdicionalesSeguro(filtros, parametros);
-        mapearPaginacionSeguro(filtros, parametros);
         mapearPaginacionInteligente(filtros,parametros);
 
         log.debug("Query procesada con tipos seguros. Parámetros mapeados: {}", parametros.getParameterNames().length);
@@ -82,8 +81,10 @@ public class ParametrosProcessor {
         Integer offset = filtros.calcularOffset();
 
         params.addValue("aplicarPaginacion",!filtros.esConsolidado(),Types.BOOLEAN);
-        params.addValue("limite", limite, Types.INTEGER);
-        params.addValue("offset", offset, Types.INTEGER);
+        params.addValue("limite", limite > 0 ? limite : 1000, Types.INTEGER);
+        params.addValue("offset", offset >= 0 ? offset : 0, Types.INTEGER);
+
+        log.debug("📊 Paginación mapeada - Límite: {}, Offset: {}", limite, offset);
     }
 
     // =================== MAPEO DE EQUIPOS CORREGIDO ===================

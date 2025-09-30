@@ -11,10 +11,7 @@ import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -55,6 +52,7 @@ public class BatchProcessor {
     private Consumer<List<Map<String, Object>>> procesadorLoteGlobal;
     private BufferedWriter archivoSalida;
     private Queue<Map<String, Object>> colaResultados = new ConcurrentLinkedQueue<>();
+    private final Map<String, Object[]> lastKeyPerProvince = new ConcurrentHashMap<>();
 
     /**
      * Método para configurar el procesador antes de ejecutar
@@ -324,6 +322,8 @@ public class BatchProcessor {
             String provincia = repo.getProvincia();
             log.info("Procesando provincia {}/{}: {}", repositorioActual, totalRepositorios, provincia);
 
+            lastKeyPerProvince.remove(provincia);
+
             int offset = 0;
             boolean hayMasDatos = true;
             int procesadosEnProvincia = 0;
@@ -356,7 +356,7 @@ public class BatchProcessor {
                     }
 
                     // Crear filtros específicos para este lote (usando batchSize actualizado)
-                    ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(filtros, batchSize, offset);
+                    ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(filtros, batchSize, offset,provincia);
 
                     // Ejecutar consulta para este lote
                     List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
@@ -368,6 +368,18 @@ public class BatchProcessor {
                     }
 
                     int tamanoLoteActual = lote.size();
+
+                    // ✅ GUARDAR última clave vista (ANTES de procesar)
+                    if (!lote.isEmpty()) {
+                        Map<String, Object> ultimoRegistro = lote.get(lote.size() - 1);
+                        Object[] lastKey = new Object[] {
+                                ultimoRegistro.get("id"),
+                                ultimoRegistro.get("serie_equipo"),
+                                ultimoRegistro.get("lugar")
+                        };
+                        lastKeyPerProvince.put(provincia, lastKey);
+                    }
+
 
                     // Agregar información de provincia a cada registro EN CHUNKS para evitar overhead
                     procesarProvinciaEnChunks(lote, provincia);
@@ -466,10 +478,12 @@ public class BatchProcessor {
                     }
                 }
 
+                lastKeyPerProvince.remove(provincia);
                 // 5. Pausa normal entre provincias
                 pausaEntreProvincia();
             }
         }
+
 
         log.info("Procesamiento en lotes completado. Total procesados: {}, memoria final: {}%",
                 totalProcesados, obtenerPorcentajeMemoriaUsada());
@@ -478,34 +492,53 @@ public class BatchProcessor {
     /**
      * 🏭 Ejecutar provincia completa (para estrategias paralelas)
      */
-    private List<Map<String, Object>> ejecutarProvinciaCompleta(InfraccionesRepositoryImpl repo,
-                                                                ParametrosFiltrosDTO filtros,
-                                                                String nombreQuery) {
-        String provincia = repo.getProvincia();
+    private List<Map<String, Object>> ejecutarProvinciaCompleta(
+            InfraccionesRepositoryImpl repo,
+            ParametrosFiltrosDTO filtros,
+            String nombreQuery) {
 
-        // ¡CAMBIO CRÍTICO! No acumular, procesar por lotes
-        List<Map<String, Object>> loteActual = new ArrayList<>();
+        String provincia = repo.getProvincia();
 
         try {
             int offset = 0;
             boolean hayMasDatos = true;
-            int maxLoteMemoria = 1000; // Máximo en memoria
+            int maxLoteMemoria = 1000;
+
+            // ✅ Limpiar estado previo de esta provincia
+            lastKeyPerProvince.remove(provincia);
 
             while (hayMasDatos) {
-                ParametrosFiltrosDTO filtrosLote = filtros.toBuilder()
-                        .limite(maxLoteMemoria)  // Lotes pequeños
-                        .offset(offset)
-                        .build();
+                // ✅ CAMBIO: Pasar provincia para Keyset
+                ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(
+                        filtros, maxLoteMemoria, offset);  // ← AQUÍ
+
+                log.debug("🔄 {} - Ejecutando lote: limite={}, offset={}, calcularOffset={}",
+                        provincia,
+                        filtrosLote.getLimite(),
+                        filtrosLote.getOffset(),
+                        filtrosLote.calcularOffset());
 
                 List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
 
                 if (lote == null || lote.isEmpty()) {
                     hayMasDatos = false;
                 } else {
-                    // Procesar INMEDIATAMENTE, no acumular
-                    lote.forEach(registro -> registro.put("provincia", provincia));
+                    // ✅ GUARDAR última clave vista (ANTES de procesar)
+                    if (!lote.isEmpty()) {
+                        Map<String, Object> ultimoRegistro = lote.get(lote.size() - 1);
+                        Object[] lastKey = new Object[] {
+                                ultimoRegistro.get("id"),
+                                ultimoRegistro.get("serie_equipo"),
+                                ultimoRegistro.get("lugar")
+                        };
+                        lastKeyPerProvince.put(provincia, lastKey);
 
-                    // PROCESAR AHORA (no acumular)
+                        log.trace("Guardada lastKey para {}: {}",
+                                provincia, Arrays.toString(lastKey));
+                    }
+
+                    // Procesar INMEDIATAMENTE
+                    lote.forEach(registro -> registro.put("provincia", provincia));
                     procesarLoteInmediato(lote);
 
                     offset += maxLoteMemoria;
@@ -513,15 +546,18 @@ public class BatchProcessor {
                         hayMasDatos = false;
                     }
 
-                    // Limpiar memoria
                     lote.clear();
                 }
             }
 
-            return Collections.emptyList(); // No retornar datos acumulados
+            // ✅ Limpiar estado al terminar
+            lastKeyPerProvince.remove(provincia);
+
+            return Collections.emptyList();
 
         } catch (Exception e) {
             log.error("❌ Error ejecutando provincia {}: {}", provincia, e.getMessage());
+            lastKeyPerProvince.remove(provincia); // Limpiar en caso de error
             return Collections.emptyList();
         }
     }
@@ -566,12 +602,6 @@ public class BatchProcessor {
             throw new RuntimeException("Fallo en procesamiento inmediato", e);
         }
     }
-
-
-
-
-
-
 
     /**
      * Procesa el lote en chunks con liberación inmediata de memoria
@@ -860,28 +890,115 @@ public class BatchProcessor {
     /**
      * Crea filtros para lote usando el DTO actualizado
      */
-    private ParametrosFiltrosDTO crearFiltrosParaLote(ParametrosFiltrosDTO filtrosOriginales,
-                                                      int batchSize, int offset) {
+    /**
+     * Crea filtros para lote con soporte de Keyset Pagination
+     * OPTIMIZADO: Evita OFFSET lento usando lastKey cuando es posible
+     */
+    private ParametrosFiltrosDTO crearFiltrosParaLote(
+            ParametrosFiltrosDTO filtrosOriginales,
+            int batchSize,
+            int offset,
+            String provincia) {
 
-        log.debug("Creando filtros - batchSize: {}, offset: {}, original: {}",
-                batchSize, offset, filtrosOriginales.getInfoPaginacion());
+        log.debug("Creando filtros - provincia: {}, batchSize: {}, offset: {}, original: {}",
+                provincia, batchSize, offset, filtrosOriginales.getInfoPaginacion());
 
+        boolean usarKeyset = offset > 0 && lastKeyPerProvince.containsKey(provincia);
+
+        if (usarKeyset) {
+            Object[] lastKey = lastKeyPerProvince.get(provincia);
+
+            log.debug("Usando Keyset Pagination - lastKey: {}", Arrays.toString(lastKey));
+
+            // ✅ CAST SEGURO con validación
+            Integer lastIdValue = null;
+            String lastSerieValue = null;
+            String lastLugarValue = null;
+
+            try {
+                if (lastKey.length > 0 && lastKey[0] != null) {
+                    lastIdValue = (Integer) lastKey[0];  // Cast explícito
+                }
+                if (lastKey.length > 1 && lastKey[1] != null) {
+                    lastSerieValue = (String) lastKey[1];
+                }
+                if (lastKey.length > 2 && lastKey[2] != null) {
+                    lastLugarValue = (String) lastKey[2];
+                }
+            } catch (ClassCastException e) {
+                log.error("Error casting lastKey para provincia {}: {}. Fallback a OFFSET",
+                        provincia, e.getMessage());
+                // Fallback a OFFSET si hay problema con el cast
+                return crearFiltrosParaLote(filtrosOriginales, batchSize, offset);
+            }
+
+            ParametrosFiltrosDTO filtrosLote = filtrosOriginales.toBuilder()
+                    .limite(batchSize)
+                    .offset(null)
+                    .pagina(null)
+                    .tamanoPagina(null)
+                    .lastId(lastIdValue)              // ✅ Ya es Integer
+                    .lastSerieEquipo(lastSerieValue)  // ✅ Ya es String
+                    .lastLugar(lastLugarValue)        // ✅ Ya es String
+                    .build();
+
+            log.debug("Filtros Keyset creados: lastId={}, lastSerie={}",
+                    lastIdValue, lastSerieValue);
+
+            return filtrosLote;
+
+        } else {
+            // OFFSET TRADICIONAL
+            log.debug("Usando OFFSET tradicional: {}", offset);
+
+            ParametrosFiltrosDTO filtrosLote = filtrosOriginales.toBuilder()
+                    .limite(batchSize)
+                    .offset(offset)
+                    .pagina(null)
+                    .tamanoPagina(null)
+                    .lastId(null)
+                    .lastSerieEquipo(null)
+                    .lastLugar(null)
+                    .build();
+
+            if (!filtrosLote.validarPaginacion()) {
+                log.warn("Filtros de lote inválidos: {}", filtrosLote.getInfoPaginacion());
+            }
+
+            log.debug("Filtros OFFSET creados: {}", filtrosLote.getInfoPaginacion());
+            return filtrosLote;
+        }
+    }
+
+
+    /**
+     * Versión sin provincia (fallback a OFFSET tradicional)
+     */
+    private ParametrosFiltrosDTO crearFiltrosParaLote(
+            ParametrosFiltrosDTO filtrosOriginales,
+            int batchSize,
+            int offset) {
+
+        log.debug("Creando filtros SIN provincia - batchSize: {}, offset: {}", batchSize, offset);
+
+        // Sin provincia = siempre OFFSET tradicional
         ParametrosFiltrosDTO filtrosLote = filtrosOriginales.toBuilder()
-                .limite(batchSize)           // Establecer límite explícito
-                .offset(offset)              // Establecer offset explícito
-                .pagina(null)                // Limpiar página para evitar conflictos
-                .tamanoPagina(null)          // Limpiar tamaño página
+                .limite(batchSize)
+                .offset(offset)
+                .pagina(null)
+                .tamanoPagina(null)
+                .lastId(null)              // Limpiar Keyset
+                .lastSerieEquipo(null)
+                .lastLugar(null)
                 .build();
 
-        // Validar que se creó correctamente
         if (!filtrosLote.validarPaginacion()) {
             log.warn("Filtros de lote inválidos: {}", filtrosLote.getInfoPaginacion());
         }
 
-        log.debug("Filtros de lote creados: {}", filtrosLote.getInfoPaginacion());
-
         return filtrosLote;
     }
+
 
     /**
      * Escribe lote directamente al archivo CSV
@@ -984,6 +1101,12 @@ public class BatchProcessor {
                         .limite(maxLoteMemoria)
                         .offset(offset)
                         .build();
+
+                log.debug("🔄 {} - Ejecutando lote: limite={}, offset={}, calcularOffset={}",
+                        provincia,
+                        filtrosLote.getLimite(),
+                        filtrosLote.getOffset(),
+                        filtrosLote.calcularOffset());
 
                 List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
 
