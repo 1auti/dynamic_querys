@@ -504,26 +504,24 @@ public class BatchProcessor {
             boolean hayMasDatos = true;
             int maxLoteMemoria = 1000;
 
-            // ✅ Limpiar estado previo de esta provincia
             lastKeyPerProvince.remove(provincia);
 
             while (hayMasDatos) {
-                // ✅ CAMBIO: Pasar provincia para Keyset
+                // CORRECCIÓN: Agregar provincia como 4to parámetro
                 ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(
-                        filtros, maxLoteMemoria, offset);  // ← AQUÍ
+                        filtros, maxLoteMemoria, offset, provincia);
 
-                log.debug("🔄 {} - Ejecutando lote: limite={}, offset={}, calcularOffset={}",
+                log.debug("🔄 {} - Ejecutando lote: limite={}, offset={}, lastId={}",
                         provincia,
                         filtrosLote.getLimite(),
                         filtrosLote.getOffset(),
-                        filtrosLote.calcularOffset());
+                        filtrosLote.getLastId());
 
                 List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
 
                 if (lote == null || lote.isEmpty()) {
                     hayMasDatos = false;
                 } else {
-                    // ✅ GUARDAR última clave vista (ANTES de procesar)
                     if (!lote.isEmpty()) {
                         Map<String, Object> ultimoRegistro = lote.get(lote.size() - 1);
                         Object[] lastKey = new Object[] {
@@ -532,12 +530,8 @@ public class BatchProcessor {
                                 ultimoRegistro.get("lugar")
                         };
                         lastKeyPerProvince.put(provincia, lastKey);
-
-                        log.trace("Guardada lastKey para {}: {}",
-                                provincia, Arrays.toString(lastKey));
                     }
 
-                    // Procesar INMEDIATAMENTE
                     lote.forEach(registro -> registro.put("provincia", provincia));
                     procesarLoteInmediato(lote);
 
@@ -550,14 +544,12 @@ public class BatchProcessor {
                 }
             }
 
-            // ✅ Limpiar estado al terminar
             lastKeyPerProvince.remove(provincia);
-
             return Collections.emptyList();
 
         } catch (Exception e) {
-            log.error("❌ Error ejecutando provincia {}: {}", provincia, e.getMessage());
-            lastKeyPerProvince.remove(provincia); // Limpiar en caso de error
+            log.error("Error ejecutando provincia {}: {}", provincia, e.getMessage());
+            lastKeyPerProvince.remove(provincia);
             return Collections.emptyList();
         }
     }
@@ -900,73 +892,38 @@ public class BatchProcessor {
             int offset,
             String provincia) {
 
-        log.debug("Creando filtros - provincia: {}, batchSize: {}, offset: {}, original: {}",
-                provincia, batchSize, offset, filtrosOriginales.getInfoPaginacion());
-
         boolean usarKeyset = offset > 0 && lastKeyPerProvince.containsKey(provincia);
 
         if (usarKeyset) {
+            // 🔑 KEYSET PAGINATION
             Object[] lastKey = lastKeyPerProvince.get(provincia);
 
-            log.debug("Usando Keyset Pagination - lastKey: {}", Arrays.toString(lastKey));
+            log.debug("🔑 Keyset para {}: id={}, serie={}, lugar={}",
+                    provincia, lastKey[0], lastKey[1], lastKey[2]);
 
-            // ✅ CAST SEGURO con validación
-            Integer lastIdValue = null;
-            String lastSerieValue = null;
-            String lastLugarValue = null;
-
-            try {
-                if (lastKey.length > 0 && lastKey[0] != null) {
-                    lastIdValue = (Integer) lastKey[0];  // Cast explícito
-                }
-                if (lastKey.length > 1 && lastKey[1] != null) {
-                    lastSerieValue = (String) lastKey[1];
-                }
-                if (lastKey.length > 2 && lastKey[2] != null) {
-                    lastLugarValue = (String) lastKey[2];
-                }
-            } catch (ClassCastException e) {
-                log.error("Error casting lastKey para provincia {}: {}. Fallback a OFFSET",
-                        provincia, e.getMessage());
-                // Fallback a OFFSET si hay problema con el cast
-                return crearFiltrosParaLote(filtrosOriginales, batchSize, offset);
-            }
-
-            ParametrosFiltrosDTO filtrosLote = filtrosOriginales.toBuilder()
+            return filtrosOriginales.toBuilder()
                     .limite(batchSize)
-                    .offset(null)
+                    .offset(null)          // ❌ NO usar offset
                     .pagina(null)
                     .tamanoPagina(null)
-                    .lastId(lastIdValue)              // ✅ Ya es Integer
-                    .lastSerieEquipo(lastSerieValue)  // ✅ Ya es String
-                    .lastLugar(lastLugarValue)        // ✅ Ya es String
+                    .lastId((Integer) lastKey[0])
+                    .lastSerieEquipo((String) lastKey[1])
+                    .lastLugar((String) lastKey[2])
                     .build();
 
-            log.debug("Filtros Keyset creados: lastId={}, lastSerie={}",
-                    lastIdValue, lastSerieValue);
-
-            return filtrosLote;
-
         } else {
-            // OFFSET TRADICIONAL
-            log.debug("Usando OFFSET tradicional: {}", offset);
+            // 📍 PRIMERA PÁGINA (sin Keyset aún)
+            log.debug("📍 Primera página para {}: limite={}", provincia, batchSize);
 
-            ParametrosFiltrosDTO filtrosLote = filtrosOriginales.toBuilder()
+            return filtrosOriginales.toBuilder()
                     .limite(batchSize)
-                    .offset(offset)
+                    .offset(null)          // ❌ NO usar offset ni en primera página
                     .pagina(null)
                     .tamanoPagina(null)
-                    .lastId(null)
+                    .lastId(null)          // NULL = primera página
                     .lastSerieEquipo(null)
                     .lastLugar(null)
                     .build();
-
-            if (!filtrosLote.validarPaginacion()) {
-                log.warn("Filtros de lote inválidos: {}", filtrosLote.getInfoPaginacion());
-            }
-
-            log.debug("Filtros OFFSET creados: {}", filtrosLote.getInfoPaginacion());
-            return filtrosLote;
         }
     }
 

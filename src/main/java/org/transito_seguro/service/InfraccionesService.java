@@ -17,15 +17,16 @@ import org.transito_seguro.factory.RepositoryFactory;
 
 import javax.annotation.PreDestroy;
 import javax.xml.bind.ValidationException;
-import java.io.BufferedOutputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileOutputStream;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -242,13 +243,15 @@ public class InfraccionesService {
         List<InfraccionesRepositoryImpl> repositories = determinarRepositories(consulta.getParametrosFiltros());
         String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
 
-        // Decisión automática: archivo consolidado vs normal
+        // Archivos consolidados SIEMPRE usan CSV (optimizado para grandes volúmenes)
         if (consulta.getParametrosFiltros() != null && consulta.getParametrosFiltros().esConsolidado()) {
-            log.info("Generando archivo consolidado para {} provincias", repositories.size());
-            return generarArchivoConsolidado(repositories, consulta, nombreQuery, formato);
+            log.info("Generando archivo consolidado CSV para {} provincias (formato original: {} ignorado)",
+                    repositories.size(), formato);
+            return generarArchivoConsolidadoCSV(repositories, consulta, nombreQuery);
         }
 
-        log.info("Generando archivo normal para {} repositorios", repositories.size());
+        // Archivos normales respetan el formato solicitado
+        log.info("Generando archivo normal para {} repositorios, formato: {}", repositories.size(), formato);
         return generarArchivoNormal(repositories, consulta, nombreQuery, formato);
     }
 
@@ -656,51 +659,94 @@ public class InfraccionesService {
      * @param repositories Lista de repositorios
      * @param consulta Parámetros de consulta
      * @param nombreQuery Nombre de la query
-     * @param formato Formato del archivo (csv, excel, json)
      * @return ResponseEntity<byte[]> Archivo con headers HTTP
      * @throws RuntimeException si hay errores durante la generación
      */
-    private ResponseEntity<byte[]> generarArchivoConsolidado(List<InfraccionesRepositoryImpl> repositories,
-                                                             ConsultaQueryDTO consulta, String nombreQuery, String formato) {
+    private ResponseEntity<byte[]> generarArchivoConsolidadoCSV(
+            List<InfraccionesRepositoryImpl> repositories,
+            ConsultaQueryDTO consulta,
+            String nombreQuery) {
 
-        StreamingFormatoConverter.StreamingContext context = null;
+        try {
+            Path tempFile = Files.createTempFile("consolidado_", ".csv");
 
-        try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+            try (BufferedWriter writer = Files.newBufferedWriter(tempFile, StandardCharsets.UTF_8)) {
 
-            context = streamingConverter.inicializarStreaming(formato, outputStream);
+                // Lock para escritura sincronizada (rápido en CSV)
+                final Object writeLock = new Object();
+                final AtomicBoolean headerEscrito = new AtomicBoolean(false);
+                final AtomicLong registrosEscritos = new AtomicLong(0);
 
-            if (context == null) {
-                throw new RuntimeException("No se pudo inicializar streaming para archivo consolidado");
+                Consumer<List<Map<String, Object>>> procesador = lote -> {
+                    if (lote == null || lote.isEmpty()) return;
+
+                    try {
+                        StringBuilder buffer = new StringBuilder(lote.size() * 100);
+
+                        synchronized(writeLock) {
+                            // Escribir header solo una vez
+                            if (!headerEscrito.get() && !lote.isEmpty()) {
+                                buffer.append(String.join(",", lote.get(0).keySet()))
+                                        .append("\n");
+                                headerEscrito.set(true);
+                            }
+
+                            // Escribir filas
+                            for (Map<String, Object> registro : lote) {
+                                buffer.append(registro.values().stream()
+                                                .map(v -> v != null ? escaparCSV(v.toString()) : "")
+                                                .collect(Collectors.joining(",")))
+                                        .append("\n");
+                            }
+
+                            writer.write(buffer.toString());
+                            registrosEscritos.addAndGet(lote.size());
+                        }
+
+                    } catch (IOException e) {
+                        throw new RuntimeException("Error escribiendo CSV", e);
+                    }
+                };
+
+                long inicio = System.currentTimeMillis();
+
+                batchProcessor.configurarProcesadorInmediato(procesador);
+                batchProcessor.procesarEnLotes(
+                        repositories,
+                        consulta.getParametrosFiltros(),
+                        nombreQuery,
+                        procesador
+                );
+
+                long duracion = System.currentTimeMillis() - inicio;
+                log.info("CSV completado: {} registros en {}ms ({}k reg/s)",
+                        registrosEscritos.get(),
+                        duracion,
+                        registrosEscritos.get() / duracion);
             }
 
-            final StreamingFormatoConverter.StreamingContext finalContext = context;
+            // Leer archivo completo
+            byte[] contenido = Files.readAllBytes(tempFile);
+            Files.delete(tempFile);
 
-            batchProcessor.procesarEnLotes(
-                    repositories,
-                    consulta.getParametrosFiltros(),
-                    nombreQuery,
-                    lote -> {
-                        try {
-                            if (lote != null && !lote.isEmpty()) {
-                                streamingConverter.procesarLoteStreaming(finalContext, lote);
-                            }
-                        } catch (Exception e) {
-                            log.error("Error procesando lote en descarga consolidada: {}", e.getMessage());
-                            throw new RuntimeException("Error procesando lote para archivo", e);
-                        }
-                    }
+            return construirRespuestaArchivo(
+                    contenido,
+                    generarNombreArchivoConsolidado("csv"),
+                    "csv",
+                    repositories.size()
             );
 
-            streamingConverter.finalizarStreaming(context);
-
-            return construirRespuestaArchivo(outputStream.toByteArray(),
-                    generarNombreArchivoConsolidado(formato), formato, repositories.size());
-
         } catch (Exception e) {
-            log.error("Error generando archivo consolidado: {}", e.getMessage(), e);
-            limpiarContextoStreaming(context);
-            throw new RuntimeException("Error generando archivo consolidado", e);
+            log.error("Error generando CSV: {}", e.getMessage(), e);
+            throw new RuntimeException("Error generando CSV", e);
         }
+    }
+
+    private String escaparCSV(String valor) {
+        if (valor.contains(",") || valor.contains("\"") || valor.contains("\n")) {
+            return "\"" + valor.replace("\"", "\"\"") + "\"";
+        }
+        return valor;
     }
 
     /**

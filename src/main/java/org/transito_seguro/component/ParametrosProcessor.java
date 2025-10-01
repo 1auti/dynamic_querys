@@ -36,16 +36,19 @@ public class ParametrosProcessor {
         MapSqlParameterSource parametros = new MapSqlParameterSource();
         Map<String, Object> metadata = new HashMap<>();
 
-        // Mapear TODOS los parámetros con tipos específicos seguros para PostgreSQL
+        // Mapear TODOS los parámetros
         mapearParametroFechasSeguro(filtros, parametros);
         mapearParametrosUbicacion(filtros, parametros);
         mapearParametrosEquipos(filtros, parametros);
         mapearParametrosInfracciones(filtros, parametros);
         mapearParametrosDominios(filtros, parametros);
         mapearParametrosAdicionalesSeguro(filtros, parametros);
-        mapearPaginacionInteligente(filtros,parametros);
 
-        log.debug("Query procesada con tipos seguros. Parámetros mapeados: {}", parametros.getParameterNames().length);
+        // ✅ CRÍTICO: Mapear Keyset Y paginación
+        mapearParametrosKeyset(parametros, filtros);
+        mapearPaginacionKeyset(parametros, filtros);
+
+        log.debug("Query procesada con Keyset. Parámetros: {}", parametros.getParameterNames().length);
 
         return new QueryResult(queryOriginal, parametros, metadata);
     }
@@ -75,17 +78,27 @@ public class ParametrosProcessor {
         params.addValue("concesiones", convertirListaEnterosAArrayPostgreSQL(filtros.getConcesiones()), Types.OTHER);
     }
 
-    private void mapearPaginacionInteligente(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        // Siempre mapear los parámetros - si no están en el SQL, simplemente se ignoran
-        Integer limite = filtros.getLimiteEfectivo();
-        Integer offset = filtros.calcularOffset();
+    private void mapearPaginacion(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
+        if (filtros == null) {
+            params.addValue("limite", 1000, Types.INTEGER);
+            params.addValue("offset", 0, Types.INTEGER);
+            return;
+        }
 
-        params.addValue("aplicarPaginacion",!filtros.esConsolidado(),Types.BOOLEAN);
-        params.addValue("limite", limite > 0 ? limite : 1000, Types.INTEGER);
-        params.addValue("offset", offset >= 0 ? offset : 0, Types.INTEGER);
-
-        log.debug("📊 Paginación mapeada - Límite: {}, Offset: {}", limite, offset);
+        // Si tiene Keyset, no usar OFFSET
+        if (filtros.getLastId() != null) {
+            params.addValue("limite", filtros.getLimite(), Types.INTEGER);
+            params.addValue("offset", null, Types.INTEGER); // Ignorar OFFSET
+            log.debug("Paginación Keyset: limite={}", filtros.getLimite());
+        } else {
+            // Paginación OFFSET normal
+            params.addValue("limite", filtros.getLimite(), Types.INTEGER);
+            params.addValue("offset", filtros.getOffset(), Types.INTEGER);
+            log.debug("Paginación OFFSET: limite={}, offset={}",
+                    filtros.getLimite(), filtros.getOffset());
+        }
     }
+
 
     // =================== MAPEO DE EQUIPOS CORREGIDO ===================
 
@@ -152,6 +165,40 @@ public class ParametrosProcessor {
         params.addValue("offset", offset >= 0 ? offset : 0, Types.INTEGER);
     }
 
+    private void mapearParametrosKeyset(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
+        if (filtros == null) {
+            params.addValue("lastId", null, Types.INTEGER);
+            params.addValue("lastSerieEquipo", null, Types.VARCHAR);
+            params.addValue("lastLugar", null, Types.VARCHAR);
+            return;
+        }
+
+        // Mapear con tipos explícitos
+        params.addValue("lastId", filtros.getLastId(), Types.INTEGER);
+        params.addValue("lastSerieEquipo", filtros.getLastSerieEquipo(), Types.VARCHAR);
+        params.addValue("lastLugar", filtros.getLastLugar(), Types.VARCHAR);
+
+        if (filtros.getLastId() != null) {
+            log.debug("🔑 Keyset activo: lastId={}, lastSerie={}, lastLugar={}",
+                    filtros.getLastId(), filtros.getLastSerieEquipo(), filtros.getLastLugar());
+        }
+    }
+
+    /**
+     * ✅ NUEVO: Paginación sin OFFSET cuando hay Keyset
+     */
+    private void mapearPaginacionKeyset(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
+        if (filtros == null) {
+            params.addValue("limite", 1000, Types.INTEGER);
+            return;
+        }
+
+        // Solo LIMIT, nunca OFFSET con Keyset
+        int limite = filtros.getLimiteEfectivo();
+        params.addValue("limite", limite > 0 ? limite : 1000, Types.INTEGER);
+
+        log.debug("📊 Paginación: limite={} (sin OFFSET)", limite);
+    }
     // =================== MÉTODOS UTILITARIOS CORREGIDOS ===================
 
     /**
