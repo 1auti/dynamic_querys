@@ -68,6 +68,13 @@ public class DynamicBuilderQuery {
     // =============== PREPARACIÓN KEYSET ===============
 
     private String prepararQueryParaKeyset(String sql) {
+        // NUEVO: Detectar si es una query de consolidación
+        if (esQueryDeConsolidacion(sql)) {
+            log.debug("Query de consolidación detectada - omitiendo lógica de Keyset");
+            return sql; // No agregar i.id ni lógica de Keyset
+        }
+
+        // Lógica original para queries normales
         if (!tieneIdEnSelect(sql)) {
             sql = agregarIdAlSelect(sql);
         }
@@ -77,6 +84,20 @@ public class DynamicBuilderQuery {
         }
 
         return sql;
+    }
+
+    // NUEVO MÉTODO
+    private boolean esQueryDeConsolidacion(String sql) {
+        String upper = sql.toUpperCase();
+
+        // Detectar si tiene GROUP BY y funciones de agregación
+        boolean tieneGroupBy = upper.contains("GROUP BY");
+        boolean tieneFuncionAgregada = Pattern.compile(
+                "\\b(COUNT|SUM|AVG|MIN|MAX)\\s*\\(",
+                Pattern.CASE_INSENSITIVE
+        ).matcher(sql).find();
+
+        return tieneGroupBy && tieneFuncionAgregada;
     }
 
     private boolean tieneIdEnSelect(String sql) {
@@ -143,6 +164,15 @@ public class DynamicBuilderQuery {
     // =============== KEYSET PAGINATION ===============
 
     private String agregarKeysetPagination(String sql) {
+
+        if (esQueryDeConsolidacion(sql)) {
+            // Solo agregar LIMIT si no existe
+            if (!sql.toUpperCase().contains("LIMIT")) {
+                sql += "\nLIMIT COALESCE(:limite::INTEGER, 1000)";
+            }
+            return sql;
+        }
+
         sql = agregarCondicionKeyset(sql);
 
         if (!sql.toUpperCase().contains("ORDER BY")) {

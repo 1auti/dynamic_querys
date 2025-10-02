@@ -210,13 +210,31 @@ app:
 # Configuración de logging
 logging:
   level:
-    org.transito_seguro: DEBUG
-    org.springframework.jdbc: DEBUG
-    org.hibernate.SQL: ${HIBERNATE_SQL_LOG:INFO}    # Solo en desarrollo
-    org.hibernate.type: ${HIBERNATE_TYPE_LOG:WARN}  # Solo en desarrollo
+    # Nivel general - reducir ruido
+    org.transito_seguro: INFO
+
+    # BatchProcessor - logs detallados de progreso
+    org.transito_seguro.component.BatchProcessor: INFO
+
+    # Otros componentes - reducir ruido
+    org.transito_seguro.repository.impl.InfraccionesRepositoryImpl: INFO
+    org.transito_seguro.component.ParametrosProcessor: INFO
+    org.transito_seguro.component.StreamingFormatoConverter: INFO
+
+    # Spring JDBC - solo errores
+    org.springframework.jdbc: WARN
+    org.springframework.jdbc.core.JdbcTemplate: WARN
+    org.springframework.jdbc.datasource: WARN
+
+    # Hibernate
+    org.hibernate.SQL: ${HIBERNATE_SQL_LOG:INFO}
+    org.hibernate.type: ${HIBERNATE_TYPE_LOG:WARN}
+
+    # Otros
     com.zaxxer.hikari: INFO
     org.postgresql: WARN
     org.h2: INFO
+
   pattern:
     console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
 
@@ -259,9 +277,9 @@ app:
 
 logging:
   level:
-    org.transito_seguro: DEBUG
-    org.hibernate.SQL: DEBUG
-    org.hibernate.type: DEBUG
+    org.transito_seguro: INFO
+    org.hibernate.SQL: INFO
+    org.hibernate.type: INFO
     org.hibernate.type.descriptor.sql.BasicBinder: TRACE
 
 ---

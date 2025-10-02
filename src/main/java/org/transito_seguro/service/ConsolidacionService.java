@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
+import org.transito_seguro.enums.PeriodoTemporal;
 import org.transito_seguro.factory.RepositoryFactory;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
@@ -55,12 +56,7 @@ public class ConsolidacionService {
         INTELIGENTE_MIXTA        // Combina ambas estrategias
     }
 
-    public enum TipoAgrupacion {
-        GEOGRAFICA,     // provincia, municipio, lugar
-        TEMPORAL,       // fecha, mes, año
-        CATEGORICA,     // descripcion, estado, tipo
-        NUMERICA        // campos de conteo/suma
-    }
+
 
     // =============== API PRINCIPAL MEJORADA ===============
 
@@ -80,14 +76,14 @@ public class ConsolidacionService {
             ParametrosFiltrosDTO filtros) {
 
         log.info("=== CONSOLIDACIÓN MEJORADA INICIADA ===");
-        log.info("Provincias: {}, Query: {}, Consolidación solicitada: {}",
+        log.info("Provincias: {}, Query: {}, Consolidación: {}",
                 repositories.size(), nombreQuery, filtros.getConsolidacionSeguro());
 
-        // 1. Determinar estrategia de consolidación basada en solicitud del usuario
+        // 1. Determinar estrategia base
         EstrategiaConsolidacion estrategia = determinarEstrategia(filtros);
         log.info("Estrategia seleccionada: {}", estrategia);
 
-        // 2. Obtener análisis de consolidación (metadata del Registry)
+        // 2. Obtener análisis de consolidación
         AnalisisConsolidacion analisis = obtenerAnalisisConsolidacion(nombreQuery);
 
         // 3. Recopilar datos de todas las provincias
@@ -97,12 +93,22 @@ public class ConsolidacionService {
             return Collections.emptyList();
         }
 
-        // 4. Normalizar provincias para consistencia
+        // 4. Normalizar provincias
         todosLosDatos = normalizarProvinciasEnDatos(todosLosDatos);
 
-        // 5. NUEVA LÓGICA: Aplicar consolidación según estrategia determinada
-        List<Map<String, Object>> datosConsolidados = aplicarEstrategiaConsolidacion(
-                todosLosDatos, filtros, analisis, estrategia);
+        // 5. ⭐ NUEVO: Detectar y aplicar consolidación temporal si se solicita
+        PeriodoTemporal periodoTemporal = detectarPeriodoTemporal(filtros);
+
+        List<Map<String, Object>> datosConsolidados;
+
+        if (periodoTemporal != null) {
+            log.info("📅 Consolidación TEMPORAL detectada: {}", periodoTemporal.getDescripcion());
+            datosConsolidados = aplicarConsolidacionTemporal(
+                    todosLosDatos, periodoTemporal, filtros, analisis);
+        } else {
+            datosConsolidados = aplicarEstrategiaConsolidacion(
+                    todosLosDatos, filtros, analisis, estrategia);
+        }
 
         // 6. Aplicar límites finales
         List<Map<String, Object>> resultado = aplicarLimites(datosConsolidados, filtros);
@@ -387,6 +393,319 @@ public class ConsolidacionService {
                 datos.size(), resultado.size());
 
         return resultado;
+    }
+
+    /**
+     * 📅 Aplica consolidación temporal según el período solicitado
+     */
+    private List<Map<String, Object>> aplicarConsolidacionTemporal(
+            List<Map<String, Object>> datos,
+            PeriodoTemporal periodo,
+            ParametrosFiltrosDTO filtros,
+            AnalisisConsolidacion analisis) {
+
+        log.info("📅 Iniciando consolidación temporal por {}", periodo.getDescripcion());
+
+        // PASO 1: Preprocesar datos agregando campos temporales
+        datos = preprocesarCamposTemporales(datos, periodo);
+
+        // PASO 2: Construir lista de campos de agrupación
+        List<String> camposAgrupacion = construirCamposAgrupacionTemporal(
+                datos, periodo, filtros);
+
+        // PASO 3: Detectar campos numéricos para consolidación
+        List<String> camposNumericos = detectarCamposNumericosDinamicos(datos);
+
+        log.info("Agrupación temporal: {}, Campos numéricos: {}",
+                camposAgrupacion, camposNumericos);
+
+        // PASO 4: Consolidar
+        List<Map<String, Object>> resultado = consolidarPorCamposOrdenados(
+                datos, camposAgrupacion, camposNumericos);
+
+        // PASO 5: Ordenar por período (más reciente primero)
+        resultado = ordenarPorPeriodoTemporal(resultado, camposAgrupacion.get(0));
+
+        log.info("✅ Consolidación temporal completada: {} períodos únicos", resultado.size());
+
+        return resultado;
+    }
+
+    /**
+     * 🏗️ Construye la lista de campos de agrupación para consolidación temporal
+     */
+    private List<String> construirCamposAgrupacionTemporal(
+            List<Map<String, Object>> datos,
+            PeriodoTemporal periodo,
+            ParametrosFiltrosDTO filtros) {
+
+        List<String> camposAgrupacion = new ArrayList<>();
+        Set<String> camposDisponibles = datos.isEmpty() ?
+                Collections.emptySet() : datos.get(0).keySet();
+
+        // PASO 1: Agregar campo temporal según el período
+        switch (periodo) {
+            case MES:
+                if (camposDisponibles.contains("mes_anio")) {
+                    camposAgrupacion.add("mes_anio");
+                }
+                break;
+
+            case ANIO:
+                if (camposDisponibles.contains("fecha_anio")) {
+                    camposAgrupacion.add("fecha_anio");
+                }
+                break;
+
+            case DIA:
+                // Buscar primera columna de fecha disponible
+                Set<String> columnasFecha = detectarColumnasFecha(camposDisponibles);
+                if (!columnasFecha.isEmpty()) {
+                    camposAgrupacion.add(columnasFecha.iterator().next());
+                }
+                break;
+        }
+
+        // PASO 2: Agregar otros campos solicitados por el usuario (excluir el temporal)
+        List<String> camposUsuario = filtros.getConsolidacionSeguro();
+        for (String campo : camposUsuario) {
+            String campoNormalizado = campo.toLowerCase().trim();
+
+            // Saltar indicadores temporales ya procesados
+            if (campoNormalizado.equals("mes") ||
+                    campoNormalizado.equals("anio") ||
+                    campoNormalizado.equals("año") ||
+                    campoNormalizado.equals("dia") ||
+                    campoNormalizado.equals("día")) {
+                continue;
+            }
+
+            // Agregar si existe y no está duplicado
+            if (camposDisponibles.contains(campo) && !camposAgrupacion.contains(campo)) {
+                camposAgrupacion.add(campo);
+            }
+        }
+
+        // PASO 3: Si no hay otros campos, agregar ubicación geográfica por defecto
+        if (camposAgrupacion.size() == 1) { // Solo tiene el campo temporal
+            agregarCamposUbicacionSiNecesario(camposAgrupacion, camposDisponibles);
+        }
+
+        return camposAgrupacion;
+    }
+
+    /**
+     * 🔧 Preprocesa datos agregando campos temporales derivados
+     */
+    private List<Map<String, Object>> preprocesarCamposTemporales(
+            List<Map<String, Object>> datos,
+            PeriodoTemporal periodo) {
+
+        if (datos.isEmpty()) {
+            return datos;
+        }
+
+        log.info("🔧 Preprocesando {} registros para período: {}",
+                datos.size(), periodo.getDescripcion());
+
+        // Detectar columnas de fecha
+        Set<String> columnasFecha = detectarColumnasFecha(datos.get(0).keySet());
+
+        if (columnasFecha.isEmpty()) {
+            log.warn("No se encontraron columnas de fecha para preprocesar");
+            return datos;
+        }
+
+        log.debug("Columnas de fecha detectadas: {}", columnasFecha);
+
+        // Procesar cada registro
+        int procesados = 0;
+        for (Map<String, Object> registro : datos) {
+            for (String columnaFecha : columnasFecha) {
+                Object valorFecha = registro.get(columnaFecha);
+
+                if (valorFecha != null) {
+                    procesarCampoFecha(registro, valorFecha, periodo);
+                    procesados++;
+                    break; // Usar solo la primera fecha encontrada
+                }
+            }
+        }
+
+        log.info("✅ Campos temporales agregados a {} registros", procesados);
+        return datos;
+    }
+
+    /**
+     * 📆 Procesa un campo de fecha y agrega campos derivados
+     */
+    private void procesarCampoFecha(Map<String, Object> registro,
+                                    Object valorFecha,
+                                    PeriodoTemporal periodo) {
+        switch (periodo) {
+            case MES:
+                String mesAnio = extraerMesAnio(valorFecha);
+                if (mesAnio != null) {
+                    registro.put("mes_anio", mesAnio);
+                    registro.put("fecha_mes", extraerMes(valorFecha));
+                }
+                break;
+
+            case ANIO:
+                Integer anio = extraerAnio(valorFecha);
+                if (anio != null) {
+                    registro.put("fecha_anio", anio);
+                }
+                break;
+
+            case DIA:
+                // La fecha original ya existe, no requiere procesamiento
+                break;
+        }
+    }
+
+    /**
+     * 🔍 Detecta columnas que contienen fechas
+     */
+    private Set<String> detectarColumnasFecha(Set<String> columnas) {
+        return columnas.stream()
+                .filter(col -> {
+                    String colLower = col.toLowerCase();
+                    return colLower.contains("fecha") ||
+                            colLower.contains("date") ||
+                            colLower.endsWith("_at") ||
+                            colLower.contains("timestamp");
+                })
+                .collect(Collectors.toSet());
+    }
+
+    /**
+     * 📆 Extrae mes-año en formato "YYYY-MM"
+     */
+    private String extraerMesAnio(Object fecha) {
+        try {
+            if (fecha instanceof java.sql.Date) {
+                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM");
+                return sdf.format((java.sql.Date) fecha);
+            }
+
+            if (fecha instanceof java.sql.Timestamp) {
+                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM");
+                return sdf.format((java.sql.Timestamp) fecha);
+            }
+
+            if (fecha instanceof java.util.Date) {
+                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM");
+                return sdf.format((java.util.Date) fecha);
+            }
+
+            if (fecha instanceof String) {
+                String strFecha = fecha.toString().trim();
+
+                // Formato ISO: "2025-01-15" o "2025-01-15 10:30:00"
+                if (strFecha.matches("\\d{4}-\\d{2}-\\d{2}.*")) {
+                    return strFecha.substring(0, 7); // "2025-01"
+                }
+
+                // Formato español: "15/01/2025"
+                if (strFecha.matches("\\d{2}/\\d{2}/\\d{4}.*")) {
+                    String anio = strFecha.substring(6, 10);
+                    String mes = strFecha.substring(3, 5);
+                    return anio + "-" + mes; // "2025-01"
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Error extrayendo mes-año de: {}", fecha, e);
+        }
+        return null;
+    }
+
+    /**
+     * 📆 Extrae mes (1-12)
+     */
+    private Integer extraerMes(Object fecha) {
+        try {
+            if (fecha instanceof java.sql.Date ||
+                    fecha instanceof java.sql.Timestamp ||
+                    fecha instanceof java.util.Date) {
+
+                java.util.Calendar cal = java.util.Calendar.getInstance();
+                cal.setTime((java.util.Date) fecha);
+                return cal.get(java.util.Calendar.MONTH) + 1; // 0-based
+            }
+
+            if (fecha instanceof String) {
+                String strFecha = fecha.toString().trim();
+
+                // ISO: "2025-01-15"
+                if (strFecha.matches("\\d{4}-\\d{2}-\\d{2}.*")) {
+                    return Integer.parseInt(strFecha.substring(5, 7));
+                }
+
+                // Español: "15/01/2025"
+                if (strFecha.matches("\\d{2}/\\d{2}/\\d{4}.*")) {
+                    return Integer.parseInt(strFecha.substring(3, 5));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Error extrayendo mes de: {}", fecha, e);
+        }
+        return null;
+    }
+
+    /**
+     * 📆 Extrae año
+     */
+    private Integer extraerAnio(Object fecha) {
+        try {
+            if (fecha instanceof java.sql.Date ||
+                    fecha instanceof java.sql.Timestamp ||
+                    fecha instanceof java.util.Date) {
+
+                java.util.Calendar cal = java.util.Calendar.getInstance();
+                cal.setTime((java.util.Date) fecha);
+                return cal.get(java.util.Calendar.YEAR);
+            }
+
+            if (fecha instanceof String) {
+                String strFecha = fecha.toString().trim();
+
+                // ISO: "2025-01-15"
+                if (strFecha.matches("\\d{4}-\\d{2}-\\d{2}.*")) {
+                    return Integer.parseInt(strFecha.substring(0, 4));
+                }
+
+                // Español: "15/01/2025"
+                if (strFecha.matches("\\d{2}/\\d{2}/\\d{4}.*")) {
+                    return Integer.parseInt(strFecha.substring(6, 10));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Error extrayendo año de: {}", fecha, e);
+        }
+        return null;
+    }
+
+    /**
+     * 📊 Ordena resultados por período temporal (más reciente primero)
+     */
+    private List<Map<String, Object>> ordenarPorPeriodoTemporal(
+            List<Map<String, Object>> datos,
+            String campoTemporal) {
+
+        datos.sort((a, b) -> {
+            Object valorA = a.get(campoTemporal);
+            Object valorB = b.get(campoTemporal);
+
+            if (valorA == null && valorB == null) return 0;
+            if (valorA == null) return 1;
+            if (valorB == null) return -1;
+
+            // Orden DESCENDENTE (más reciente primero)
+            return valorB.toString().compareTo(valorA.toString());
+        });
+
+        return datos;
     }
 
     /**
@@ -698,5 +1017,40 @@ public class ConsolidacionService {
             List<String> camposNumericos) {
 
         return consolidarPorCamposOrdenados(datos, camposAgrupacion, camposNumericos);
+    }
+
+    /**
+     * Detectar si se solicita consolidacion temporal
+     * */
+    private PeriodoTemporal detectarPeriodoTemporal(ParametrosFiltrosDTO filtros){
+        List<String> camposUsuario = filtros.getConsolidacionSeguro();
+
+        for (String campo : camposUsuario) {
+            String campoNormalizado = campo.toLowerCase().trim();
+
+            // Detectar MES
+            if (campoNormalizado.equals("mes") ||
+                    campoNormalizado.equals("mes_anio") ||
+                    campoNormalizado.contains("mensual")) {
+                return PeriodoTemporal.MES;
+            }
+
+            // Detectar AÑO
+            if (campoNormalizado.equals("anio") ||
+                    campoNormalizado.equals("año") ||
+                    campoNormalizado.equals("fecha_anio") ||
+                    campoNormalizado.contains("anual")) {
+                return PeriodoTemporal.ANIO;
+            }
+
+            // Detectar DÍA (explícito)
+            if (campoNormalizado.equals("dia") ||
+                    campoNormalizado.equals("día") ||
+                    campoNormalizado.equals("diario")) {
+                return PeriodoTemporal.DIA;
+            }
+        }
+
+        return null; // No se detectó consolidación temporal
     }
 }
