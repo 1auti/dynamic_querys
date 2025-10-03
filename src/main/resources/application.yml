@@ -10,20 +10,18 @@ provincia:
 
 # =============== CONFIGURACIÓN DE BASES DE DATOS ===============
 spring:
-  # === BASE DE DATOS PRINCIPAL H2 (Para QueryMetadata) ===
   datasource:
-    # DataSource PRIMARIO - H2 para metadata de queries
     jdbc-url: ${H2_URL:jdbc:h2:file:./data/query_metadata}
     username: ${H2_USERNAME:sa}
     password: ${H2_PASSWORD:}
     driver-class-name: org.h2.Driver
     hikari:
+      pool-name: "H2-QueryMetadata-Pool"
       maximum-pool-size: 10
       minimum-idle: 2
       connection-timeout: 10000
       idle-timeout: 600000
       max-lifetime: 1800000
-      pool-name: "H2-QueryMetadata-Pool"
 
   # === CONFIGURACIÓN JPA/H2 ===
   jpa:
@@ -32,12 +30,15 @@ spring:
     show-sql: ${SHOW_SQL:false}           # Solo en desarrollo
     properties:
       hibernate:
+        jdbc:
+          batch_size: 100           # Para batch inserts
+          fetch_size: 1000          # Para streaming de resultados
+          order_inserts: true         # CRÍTICO para batching
+          order_updates: true
         dialect: org.hibernate.dialect.H2Dialect
         format_sql: true
         use_sql_comments: true
     database-platform: org.hibernate.dialect.H2Dialect
-
-
 
   # === CONSOLA H2 (Para debugging) ===
   h2:
@@ -59,87 +60,152 @@ spring:
     deserialization:
       fail-on-unknown-properties: false
 
-# =============== CONFIGURACIÓN POSTGRESQL (DATASOURCES SECUNDARIOS) ===============
+# =============== POSTGRESQL DATASOURCES ===============
 postgresql:
   datasources:
     pba:
-      jdbc-url: ${PBA_URL:jdbc:postgresql://localhost:5432/pba_db}
+      jdbc-url: ${PBA_URL:jdbc:postgresql://localhost:5432/pba_db?reWriteBatchedInserts=true&tcpKeepAlive=true}
       username: ${PBA_USERNAME:postgres}
       password: ${PBA_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
       hikari:
-        maximum-pool-size: 3
-        minimum-idle: 1
-        connection-timeout: 20000
-        idle-timeout: 300000
-        max-lifetime: 1200000
-        leak-detection-threshold: 60000
         pool-name: "PostgreSQL-PBA-Pool"
+        maximum-pool-size: 8
+        minimum-idle: 8
+        connection-timeout: 30000
+        idle-timeout: 1200000
+        max-lifetime: 1680000
+        keepalive-time: 300000
+        leak-detection-threshold: 600000
+        auto-commit: false
+        register-mbeans: true
+        connection-init-sql: "SET statement_timeout = '30min'; SET work_mem = '64MB'"
+        data-source-properties:
+          tcpKeepAlive: true
+          cachePrepStmts: true
+          prepStmtCacheSize: 250
+          prepStmtCacheSqlLimit: 2048
+          useServerPrepStmts: true
+
     mda:
-      jdbc-url: ${MDA_URL:jdbc:postgresql://localhost:5432/mda_db}
+      jdbc-url: ${MDA_URL:jdbc:postgresql://localhost:5432/mda_db?reWriteBatchedInserts=true&tcpKeepAlive=true}
       username: ${MDA_USERNAME:postgres}
       password: ${MDA_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
       hikari:
-        maximum-pool-size: 3
-        minimum-idle: 1
-        connection-timeout: 20000
-        idle-timeout: 300000
-        max-lifetime: 1200000
-        leak-detection-threshold: 60000
         pool-name: "PostgreSQL-MDA-Pool"
+        maximum-pool-size: 5
+        minimum-idle: 5
+        connection-timeout: 30000
+        idle-timeout: 1200000
+        max-lifetime: 1680000
+        keepalive-time: 300000
+        leak-detection-threshold: 600000
+        auto-commit: false
+        register-mbeans: true
+        connection-init-sql: "SET statement_timeout = '30min'; SET work_mem = '64MB'"
+        data-source-properties:
+          tcpKeepAlive: true
+          cachePrepStmts: true
+          prepStmtCacheSize: 250
+          prepStmtCacheSqlLimit: 2048
+          useServerPrepStmts: true
+
     santa-rosa:
-      jdbc-url: ${SANTA_ROSA_URL:jdbc:postgresql://localhost:5432/santa_rosa_db}
+      jdbc-url: ${SANTA_ROSA_URL:jdbc:postgresql://localhost:5432/santa_rosa_db?reWriteBatchedInserts=true&tcpKeepAlive=true}
       username: ${SANTA_ROSA_USERNAME:postgres}
       password: ${SANTA_ROSA_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
       hikari:
-        maximum-pool-size: 3
-        minimum-idle: 1
-        connection-timeout: 20000
-        idle-timeout: 300000
-        max-lifetime: 1200000
-        leak-detection-threshold: 60000
         pool-name: "PostgreSQL-SantaRosa-Pool"
+        maximum-pool-size: 5
+        minimum-idle: 5
+        connection-timeout: 30000
+        idle-timeout: 1200000
+        max-lifetime: 1680000
+        keepalive-time: 300000
+        leak-detection-threshold: 600000
+        auto-commit: false
+        register-mbeans: true
+        connection-init-sql: "SET statement_timeout = '30min'; SET work_mem = '64MB'"
+        data-source-properties:
+          tcpKeepAlive: true
+          cachePrepStmts: true
+          prepStmtCacheSize: 250
+          prepStmtCacheSqlLimit: 2048
+          useServerPrepStmts: true
+
     chaco:
-      jdbc-url: ${CHACO_URL:jdbc:postgresql://localhost:5432/chaco_db}
+      jdbc-url: ${CHACO_URL:jdbc:postgresql://localhost:5432/chaco_db?reWriteBatchedInserts=true&tcpKeepAlive=true}
       username: ${CHACO_USERNAME:postgres}
       password: ${CHACO_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
       hikari:
-        maximum-pool-size: 3
-        minimum-idle: 1
-        connection-timeout: 20000
-        idle-timeout: 300000
-        max-lifetime: 1200000
-        leak-detection-threshold: 60000
         pool-name: "PostgreSQL-Chaco-Pool"
+        maximum-pool-size: 5
+        minimum-idle: 5
+        connection-timeout: 30000
+        idle-timeout: 1200000
+        max-lifetime: 1680000
+        keepalive-time: 300000
+        leak-detection-threshold: 600000
+        auto-commit: false
+        register-mbeans: true
+        connection-init-sql: "SET statement_timeout = '30min'; SET work_mem = '64MB'"
+        data-source-properties:
+          tcpKeepAlive: true
+          cachePrepStmts: true
+          prepStmtCacheSize: 250
+          prepStmtCacheSqlLimit: 2048
+          useServerPrepStmts: true
+
     entre-rios:
-      jdbc-url: ${ENTRE_RIOS_URL:jdbc:postgresql://localhost:5432/entre_rios_db}
+      jdbc-url: ${ENTRE_RIOS_URL:jdbc:postgresql://localhost:5432/entre_rios_db?reWriteBatchedInserts=true&tcpKeepAlive=true}
       username: ${ENTRE_RIOS_USERNAME:postgres}
       password: ${ENTRE_RIOS_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
       hikari:
-        maximum-pool-size: 3
-        minimum-idle: 1
-        connection-timeout: 20000
-        idle-timeout: 300000
-        max-lifetime: 1200000
-        leak-detection-threshold: 60000
         pool-name: "PostgreSQL-EntreRios-Pool"
+        maximum-pool-size: 5
+        minimum-idle: 5
+        connection-timeout: 30000
+        idle-timeout: 1200000
+        max-lifetime: 1680000
+        keepalive-time: 300000
+        leak-detection-threshold: 600000
+        auto-commit: false
+        register-mbeans: true
+        connection-init-sql: "SET statement_timeout = '30min'; SET work_mem = '64MB'"
+        data-source-properties:
+          tcpKeepAlive: true
+          cachePrepStmts: true
+          prepStmtCacheSize: 250
+          prepStmtCacheSqlLimit: 2048
+          useServerPrepStmts: true
+
     formosa:
-      jdbc-url: ${FORMOSA_URL:jdbc:postgresql://localhost:5432/formosa_db}
+      jdbc-url: ${FORMOSA_URL:jdbc:postgresql://localhost:5432/formosa_db?reWriteBatchedInserts=true&tcpKeepAlive=true}
       username: ${FORMOSA_USERNAME:postgres}
       password: ${FORMOSA_PASSWORD:password}
       driver-class-name: org.postgresql.Driver
       hikari:
-        maximum-pool-size: 3
-        minimum-idle: 1
-        connection-timeout: 20000
-        idle-timeout: 300000
-        max-lifetime: 1200000
-        leak-detection-threshold: 60000
         pool-name: "PostgreSQL-Formosa-Pool"
+        maximum-pool-size: 5
+        minimum-idle: 5
+        connection-timeout: 30000
+        idle-timeout: 1200000
+        max-lifetime: 1680000
+        keepalive-time: 300000
+        leak-detection-threshold: 600000
+        auto-commit: false
+        register-mbeans: true
+        connection-init-sql: "SET statement_timeout = '30min'; SET work_mem = '64MB'"
+        data-source-properties:
+          tcpKeepAlive: true
+          cachePrepStmts: true
+          prepStmtCacheSize: 250
+          prepStmtCacheSqlLimit: 2048
+          useServerPrepStmts: true
 
 # Configuración del servidor
 server:
@@ -196,12 +262,13 @@ app:
     max-records-total: 100000       # Máximo absoluto de registros
     max-records-display: 10000      # Máximo para endpoints de consulta (Postman-friendly)
     max-concurrent-queries: 10      # Máximo de consultas concurrentes
+
   batch:
-      size: 10000
-      parallel-threshold-per-province: 50000    # <50K → Paralelo completo
-      parallel-threshold-total: 300000          # <300K → Paralelo completo
-      massive-threshold-per-province: 200000    # >200K → Secuencial
-      max-parallel-provinces: 3                 # Para modo híbrido
+    size: 10000
+    parallel-threshold-per-province: 50000    # <50K → Paralelo completo
+    parallel-threshold-total: 300000          # <300K → Paralelo completo
+    massive-threshold-per-province: 200000    # >200K → Secuencial
+    max-parallel-provinces: 6                 # Para modo híbrido
 
   # Configuración para threads asíncronos
   async:
@@ -217,9 +284,9 @@ logging:
     org.transito_seguro.component.BatchProcessor: INFO
 
     # Otros componentes - reducir ruido
-    org.transito_seguro.repository.impl.InfraccionesRepositoryImpl: INFO
-    org.transito_seguro.component.ParametrosProcessor: INFO
-    org.transito_seguro.component.StreamingFormatoConverter: INFO
+    org.transito_seguro.repository.impl.InfraccionesRepositoryImpl: DEBUG
+    org.transito_seguro.component.ParametrosProcessor: DEBUG
+    org.transito_seguro.component.StreamingFormatoConverter: DEBUG
 
     # Spring JDBC - solo errores
     org.springframework.jdbc: WARN
@@ -277,18 +344,20 @@ app:
 
 logging:
   level:
-    org.transito_seguro: INFO
-    org.hibernate.SQL: INFO
-    org.hibernate.type: INFO
+    org.transito_seguro: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type: DEBUG
     org.hibernate.type.descriptor.sql.BasicBinder: TRACE
 
 ---
 spring:
-  profiles: production
+  config:
+    activate:
+      on-profile: production
 
   datasource:
     # En producción, usar H2 embebido más robusto
-    url: jdbc:h2:file:/opt/app/data/query_metadata;DB_CLOSE_ON_EXIT=FALSE;AUTO_SERVER=FALSE
+    jdbc-url: jdbc:h2:file:/opt/app/data/query_metadata;DB_CLOSE_ON_EXIT=FALSE;AUTO_SERVER=FALSE
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5
@@ -313,11 +382,13 @@ logging:
 
 ---
 spring:
-  profiles: testing
+  config:
+    activate:
+      on-profile: testing
 
   datasource:
     # H2 en memoria para tests
-    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    jdbc-url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
 
   jpa:
     hibernate:
@@ -326,6 +397,6 @@ spring:
 
 app:
   query-registry:
-    auto-analyze-on-startup: true  # No auto-analizar en tests
-    scan-on-startup: true          # No escanear en tests
+    auto-analyze-on-startup: false  # No auto-analizar en tests
+    scan-on-startup: false          # No escanear en tests
     upload-enabled: false           # No uploads en tests

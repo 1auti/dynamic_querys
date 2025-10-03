@@ -1,6 +1,6 @@
 package org.transito_seguro.component;
 
-import lombok.AllArgsConstructor;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,9 +28,6 @@ public class BatchProcessor {
     @Value("${app.batch.size:5000}")
     private int defaultBatchSize;
 
-    @Value("${app.batch.chunk-size:250}")
-    private int chunkSize;
-
     @Value("${app.batch.memory-critical-threshold:0.85}")
     private double memoryCriticalThreshold;
 
@@ -49,25 +46,20 @@ public class BatchProcessor {
     @Value("${app.batch.thread-pool-size:6}")
     private int threadPoolSize;
 
-    private ExecutorService parallelExecutor;
-
-    // Cola con límite para evitar crecimiento descontrolado
-    private final BlockingQueue<Map<String, Object>> colaResultados = new LinkedBlockingQueue<>(10000);
-
-    private final Map<String, Object[]> lastKeyPerProvince = new ConcurrentHashMap<>();
-    private final AtomicInteger totalRepositoriosProcesados = new AtomicInteger(0);
-    private final AtomicInteger totalRegistrosGlobales = new AtomicInteger(0);
-    private final Map<String, Integer> contadoresPorProvincia = new ConcurrentHashMap<>();
-    private final AtomicLong ultimoHeartbeat = new AtomicLong(0);
-
-    private static final long HEARTBEAT_INTERVAL_MS = 30000;
-    private long tiempoInicioGlobal;
-
     @Autowired
     private QueryStorageRepository queryStorageRepository;
 
-    // Cache para queries consolidables
+    private ExecutorService parallelExecutor;
+    private final Map<String, Object[]> lastKeyPerProvince = new ConcurrentHashMap<>();
+    private final AtomicInteger totalRegistrosGlobales = new AtomicInteger(0);
+    private final Map<String, Integer> contadoresPorProvincia = new ConcurrentHashMap<>();
+    private final AtomicLong ultimoHeartbeat = new AtomicLong(0);
     private final Map<String, Boolean> cacheQueryConsolidable = new ConcurrentHashMap<>();
+
+    private static final long HEARTBEAT_INTERVAL_MS = 30000;
+    private static final int SAMPLE_SIZE = 50;
+    private static final int ESTIMATION_MULTIPLIER = 100;
+    private long tiempoInicioGlobal;
 
     @Autowired
     public void init() {
@@ -89,9 +81,6 @@ public class BatchProcessor {
             try {
                 if (!parallelExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
                     parallelExecutor.shutdownNow();
-                    if (!parallelExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
-                        log.error("ExecutorService no se pudo cerrar");
-                    }
                 }
             } catch (InterruptedException e) {
                 parallelExecutor.shutdownNow();
@@ -99,57 +88,77 @@ public class BatchProcessor {
             }
         }
         cacheQueryConsolidable.clear();
-        log.info("BatchProcessor cerrado");
     }
 
-    @AllArgsConstructor
     private static class EstimacionDataset {
         final int totalEstimado;
         final double promedioPorProvincia;
         final int maximoPorProvincia;
+
+        EstimacionDataset(int total, double promedio, int maximo) {
+            this.totalEstimado = total;
+            this.promedioPorProvincia = promedio;
+            this.maximoPorProvincia = maximo;
+        }
     }
 
-    @AllArgsConstructor
     private static class ContextoProcesamiento {
         final Consumer<List<Map<String, Object>>> procesador;
         final BufferedWriter archivo;
-        final boolean usarCola;
+        private final ConcurrentLinkedQueue<Map<String, Object>> resultadosParciales = new ConcurrentLinkedQueue<>();
+        private final ObjectMapper mapper = new ObjectMapper();
+
+        ContextoProcesamiento(Consumer<List<Map<String, Object>>> procesador, BufferedWriter archivo) {
+            this.procesador = procesador;
+            this.archivo = archivo;
+        }
+
+        void agregarResultados(List<Map<String, Object>> resultados) {
+            resultadosParciales.addAll(resultados);
+        }
+
+        synchronized void procesarTodosResultados() {
+            if (resultadosParciales.isEmpty()) return;
+
+            List<Map<String, Object>> todosResultados = new ArrayList<>(resultadosParciales);
+            resultadosParciales.clear();
+
+            if (procesador != null) {
+                procesador.accept(todosResultados);
+            } else if (archivo != null) {
+                escribirArchivo(todosResultados);
+            }
+        }
+
+        private void escribirArchivo(List<Map<String, Object>> resultados) {
+            try {
+                for (Map<String, Object> resultado : resultados) {
+                    archivo.write(mapper.writeValueAsString(resultado));
+                    archivo.newLine();
+                }
+                archivo.flush();
+            } catch (IOException e) {
+                throw new RuntimeException("Error escribiendo archivo", e);
+            }
+        }
     }
 
     public void procesarEnLotes(
             List<InfraccionesRepositoryImpl> repositories,
             ParametrosFiltrosDTO filtros,
             String nombreQuery,
-            Consumer<List<Map<String, Object>>> procesarLotes
-    ) {
-        tiempoInicioGlobal = System.currentTimeMillis();
-        ultimoHeartbeat.set(tiempoInicioGlobal);
-        totalRepositoriosProcesados.set(0);
-        totalRegistrosGlobales.set(0);
-        contadoresPorProvincia.clear();
+            Consumer<List<Map<String, Object>>> procesarLotes) {
 
-        if (log.isInfoEnabled()) {
-            log.info("═══════════════════════════════════════════════════════════");
-            log.info("INICIO DEL PROCESAMIENTO");
-            log.info("   Provincias: {}", repositories.size());
-            log.info("   Query: {}", nombreQuery);
-            log.info("   Memoria: {:.1f}%", obtenerPorcentajeMemoriaUsada());
-            log.info("═══════════════════════════════════════════════════════════");
-        }
+        inicializarProcesamiento();
+        logInicio(repositories.size(), nombreQuery);
 
         EstimacionDataset estimacion = estimarDataset(repositories, filtros, nombreQuery);
-
-        if (log.isInfoEnabled()) {
-            log.info("ESTIMACIÓN:");
-            log.info("   Total: {} registros", estimacion.totalEstimado);
-            log.info("   Promedio: {} reg/prov", (int) estimacion.promedioPorProvincia);
-            log.info("   Máximo: {} registros", estimacion.maximoPorProvincia);
-        }
+        logEstimacion(estimacion);
 
         EstrategiaProcessing estrategia = decidirEstrategia(estimacion);
-        log.info("ESTRATEGIA: {}", estrategia);
+        log.info("Estrategia seleccionada: {}", estrategia);
 
-        ContextoProcesamiento contexto = new ContextoProcesamiento(procesarLotes, null, false);
+        ContextoProcesamiento contexto = new ContextoProcesamiento(procesarLotes, null);
 
         try {
             switch (estrategia) {
@@ -157,7 +166,7 @@ public class BatchProcessor {
                     procesarParalelo(repositories, filtros, nombreQuery, contexto);
                     break;
                 case HIBRIDO:
-                    procesarHibrido(repositories, filtros, nombreQuery, contexto, estimacion);
+                    procesarHibrido(repositories, filtros, nombreQuery, contexto);
                     break;
                 case SECUENCIAL:
                     procesarSecuencial(repositories, filtros, nombreQuery, contexto);
@@ -168,27 +177,44 @@ public class BatchProcessor {
         }
     }
 
+    private void inicializarProcesamiento() {
+        tiempoInicioGlobal = System.currentTimeMillis();
+        ultimoHeartbeat.set(tiempoInicioGlobal);
+        totalRegistrosGlobales.set(0);
+        contadoresPorProvincia.clear();
+    }
+
+    private void logInicio(int numProvincias, String nombreQuery) {
+        if (!log.isInfoEnabled()) return;
+
+        log.info("═══════════════════════════════════════════════════════════");
+        log.info("Inicio procesamiento - Provincias: {} | Query: {} | Memoria: {:.1f}%",
+                numProvincias, nombreQuery, obtenerPorcentajeMemoriaUsada());
+        log.info("═══════════════════════════════════════════════════════════");
+    }
+
+    private void logEstimacion(EstimacionDataset estimacion) {
+        if (!log.isInfoEnabled()) return;
+
+        log.info("Estimación - Total: {} | Promedio: {} reg/prov | Máximo: {}",
+                estimacion.totalEstimado,
+                (int) estimacion.promedioPorProvincia,
+                estimacion.maximoPorProvincia);
+    }
+
     private void imprimirResumenFinal() {
+        if (!log.isInfoEnabled()) return;
+
         long duracionTotal = System.currentTimeMillis() - tiempoInicioGlobal;
         int total = totalRegistrosGlobales.get();
 
-        if (log.isInfoEnabled()) {
-            log.info("═══════════════════════════════════════════════════════════");
-            log.info("PROCESAMIENTO COMPLETADO");
-            log.info("   Duración: {}s", duracionTotal / 1000);
-            log.info("   Total: {} registros", total);
-            log.info("   Velocidad: {} reg/s", total * 1000 / Math.max(duracionTotal, 1));
-            log.info("   Memoria: {:.1f}%", obtenerPorcentajeMemoriaUsada());
-            log.info("═══════════════════════════════════════════════════════════");
-
-            if (!contadoresPorProvincia.isEmpty()) {
-                log.info("POR PROVINCIA:");
-                contadoresPorProvincia.entrySet().stream()
-                        .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
-                        .limit(10)
-                        .forEach(e -> log.info("   {} -> {} registros", e.getKey(), e.getValue()));
-            }
-        }
+        log.info("═══════════════════════════════════════════════════════════");
+        log.info("Completado - Duración: {}s | Total: {} registros | Velocidad: {} reg/s | Memoria: {:.1f}%",
+                duracionTotal / 1000,
+                total,
+                total * 1000 / Math.max(duracionTotal, 1),
+                obtenerPorcentajeMemoriaUsada());
+        log.info("═══════════════════════════════════════════════════════════");
     }
 
     private EstimacionDataset estimarDataset(
@@ -196,39 +222,31 @@ public class BatchProcessor {
             ParametrosFiltrosDTO filtros,
             String nombreQuery) {
 
-        // Usar COUNT(*) si la query lo soporta, sino muestra
         ParametrosFiltrosDTO filtrosPrueba = filtros.toBuilder()
-                .limite(50)
+                .limite(SAMPLE_SIZE)
                 .offset(0)
                 .build();
 
         List<Integer> muestras = repositories.parallelStream()
-                .map(repo -> {
-                    try {
-                        List<Map<String, Object>> muestra = repo.ejecutarQueryConFiltros(nombreQuery, filtrosPrueba);
-                        int size = muestra.size();
-
-                        // Extrapolación más precisa
-                        if (size >= 50) {
-                            // Probablemente hay más, usar múltiplo conservador
-                            return size * 100; // 5000 registros estimados
-                        } else if (size > 0) {
-                            // Multiplicar por factor según tamaño
-                            return size * 50;
-                        }
-                        return 0;
-                    } catch (Exception e) {
-                        log.warn("Error estimando {}: {}", repo.getProvincia(), e.getMessage());
-                        return 1000;
-                    }
-                })
+                .map(repo -> estimarProvincia(repo, nombreQuery, filtrosPrueba))
                 .collect(Collectors.toList());
 
         int totalEstimado = muestras.stream().mapToInt(Integer::intValue).sum();
-        double promedioPorProvincia = repositories.isEmpty() ? 0 : (double) totalEstimado / repositories.size();
-        int maximoPorProvincia = muestras.stream().mapToInt(Integer::intValue).max().orElse(0);
+        double promedio = repositories.isEmpty() ? 0 : (double) totalEstimado / repositories.size();
+        int maximo = muestras.stream().mapToInt(Integer::intValue).max().orElse(0);
 
-        return new EstimacionDataset(totalEstimado, promedioPorProvincia, maximoPorProvincia);
+        return new EstimacionDataset(totalEstimado, promedio, maximo);
+    }
+
+    private int estimarProvincia(InfraccionesRepositoryImpl repo, String nombreQuery, ParametrosFiltrosDTO filtros) {
+        try {
+            List<Map<String, Object>> muestra = repo.ejecutarQueryConFiltros(nombreQuery, filtros);
+            int size = muestra.size();
+            return size >= SAMPLE_SIZE ? size * ESTIMATION_MULTIPLIER : size * (ESTIMATION_MULTIPLIER / 2);
+        } catch (Exception e) {
+            log.warn("Error estimando {}: {}", repo.getProvincia(), e.getMessage());
+            return 1000;
+        }
     }
 
     private EstrategiaProcessing decidirEstrategia(EstimacionDataset estimacion) {
@@ -248,53 +266,45 @@ public class BatchProcessor {
             String nombreQuery,
             ContextoProcesamiento contexto) {
 
-        log.info("Ejecutando PARALELO");
-        long startTime = System.currentTimeMillis();
+        log.info("Ejecutando modo PARALELO");
 
         List<CompletableFuture<Void>> futures = repositories.stream()
-                .map(repo -> CompletableFuture.runAsync(() ->
-                                ejecutarProvinciaCompleta(repo, filtros, nombreQuery, contexto),
+                .map(repo -> CompletableFuture.runAsync(
+                        () -> ejecutarProvincia(repo, filtros, nombreQuery, contexto),
                         parallelExecutor
                 ))
                 .collect(Collectors.toList());
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-        log.info("PARALELO completado en {}ms", System.currentTimeMillis() - startTime);
+        contexto.procesarTodosResultados();
     }
 
     private void procesarHibrido(
             List<InfraccionesRepositoryImpl> repositories,
             ParametrosFiltrosDTO filtros,
             String nombreQuery,
-            ContextoProcesamiento contexto,
-            EstimacionDataset estimacion) {
+            ContextoProcesamiento contexto) {
 
-        log.info("Ejecutando HÍBRIDO con {} provincias paralelas", maxParallelProvinces);
-        long startTime = System.currentTimeMillis();
+        log.info("Ejecutando modo HÍBRIDO");
 
         for (int i = 0; i < repositories.size(); i += maxParallelProvinces) {
             int endIndex = Math.min(i + maxParallelProvinces, repositories.size());
             List<InfraccionesRepositoryImpl> grupo = repositories.subList(i, endIndex);
 
-            log.info("Grupo {}-{} de {}", i + 1, endIndex, repositories.size());
-
             List<CompletableFuture<Void>> futures = grupo.stream()
-                    .map(repo -> CompletableFuture.runAsync(() ->
-                                    ejecutarProvinciaCompleta(repo, filtros, nombreQuery, contexto),
+                    .map(repo -> CompletableFuture.runAsync(
+                            () -> ejecutarProvincia(repo, filtros, nombreQuery, contexto),
                             parallelExecutor
                     ))
                     .collect(Collectors.toList());
 
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            contexto.procesarTodosResultados();
 
-            // Pausa suave entre grupos si hay más
             if (endIndex < repositories.size() && esMemoriaAlta()) {
-                pausaBreveSiNecesario();
+                pausarSiNecesario();
             }
         }
-
-        log.info("HÍBRIDO completado en {}ms", System.currentTimeMillis() - startTime);
     }
 
     private void procesarSecuencial(
@@ -304,24 +314,16 @@ public class BatchProcessor {
             ContextoProcesamiento contexto) {
 
         int batchSize = calcularTamanoLoteOptimo(filtros);
-        int totalRepositorios = repositories.size();
 
-        for (int i = 0; i < totalRepositorios; i++) {
+        for (int i = 0; i < repositories.size(); i++) {
             InfraccionesRepositoryImpl repo = repositories.get(i);
-            String provincia = repo.getProvincia();
 
-            if (log.isInfoEnabled()) {
-                log.info("Provincia [{}/{}]: {} - Memoria: {:.1f}%",
-                        i + 1, totalRepositorios, provincia, obtenerPorcentajeMemoriaUsada());
-            }
+            logHeartbeat(repositories.size());
+            procesarProvinciaSecuencial(repo, filtros, nombreQuery, contexto, batchSize);
+            contexto.procesarTodosResultados();
 
-            logHeartbeatSiCorresponde(totalRepositorios);
-
-            procesarProvinciaSecuencial(repo, filtros, nombreQuery, contexto, batchSize, provincia);
-
-            // Limpieza entre provincias solo si es necesario
-            if (i < totalRepositorios - 1 && esMemoriaAlta()) {
-                pausaBreveSiNecesario();
+            if (i < repositories.size() - 1 && esMemoriaAlta()) {
+                pausarSiNecesario();
             }
         }
     }
@@ -331,75 +333,63 @@ public class BatchProcessor {
             ParametrosFiltrosDTO filtros,
             String nombreQuery,
             ContextoProcesamiento contexto,
-            int batchSize,
-            String provincia) {
+            int batchSize) {
 
+        String provincia = repo.getProvincia();
         lastKeyPerProvince.remove(provincia);
-        int procesadosEnProvincia = 0;
-        int offset = 0;
-        boolean hayMasDatos = true;
 
-        while (hayMasDatos) {
+        int procesados = 0;
+        int offset = 0;
+        boolean continuar = true;
+
+        while (continuar) {
             try {
-                // Ajustar batch size si memoria crítica
                 if (esMemoriaCritica()) {
                     batchSize = Math.max(500, batchSize / 2);
-                    log.warn("Memoria crítica - batch reducido a {}", batchSize);
                 }
 
                 ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(filtros, batchSize, offset, provincia);
                 List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
 
                 if (lote == null || lote.isEmpty()) {
-                    hayMasDatos = false;
                     break;
                 }
 
-                // Guardar lastKey si no está vacío
                 guardarLastKey(lote, provincia);
 
-                // Procesar
-                agregarProvincia(lote, provincia);
-                procesarLote(lote, contexto);
+                List<Map<String, Object>> loteInmutable = crearCopiasInmutables(lote, provincia);
+                contexto.agregarResultados(loteInmutable);
 
-                procesadosEnProvincia += lote.size();
+                procesados += lote.size();
                 offset += batchSize;
-
-                if (lote.size() < batchSize) {
-                    hayMasDatos = false;
-                }
-
-                lote.clear();
+                continuar = lote.size() >= batchSize;
 
             } catch (OutOfMemoryError oom) {
-                log.error("OOM en {}, offset {}", provincia, offset);
-                pausaBreveSiNecesario();
+                log.error("OOM en {}", provincia);
+                pausarSiNecesario();
                 break;
             } catch (Exception e) {
-                log.error("Error en {}, offset {}: {}", provincia, offset, e.getMessage());
+                log.error("Error en {}: {}", provincia, e.getMessage());
                 break;
             }
         }
 
-        contadoresPorProvincia.put(provincia, procesadosEnProvincia);
-        totalRegistrosGlobales.addAndGet(procesadosEnProvincia);
-        totalRepositoriosProcesados.incrementAndGet();
+        actualizarContadores(provincia, procesados);
         lastKeyPerProvince.remove(provincia);
     }
 
-    private void ejecutarProvinciaCompleta(
+    private void ejecutarProvincia(
             InfraccionesRepositoryImpl repo,
             ParametrosFiltrosDTO filtros,
             String nombreQuery,
             ContextoProcesamiento contexto) {
 
         String provincia = repo.getProvincia();
-        boolean queryTieneGroupBy = esQueryConsolidable(nombreQuery);
 
-        if (queryTieneGroupBy) {
-            ejecutarQueryConGroupBy(repo, filtros, nombreQuery, provincia, contexto);
+        if (esQueryConsolidable(nombreQuery)) {
+            ejecutarQueryConsolidable(repo, filtros, nombreQuery, provincia, contexto);
         } else {
-            ejecutarQueryConPaginacion(repo, filtros, nombreQuery, provincia, contexto);
+            ejecutarQueryPaginada(repo, filtros, nombreQuery, provincia, contexto);
         }
     }
 
@@ -407,19 +397,14 @@ public class BatchProcessor {
         return cacheQueryConsolidable.computeIfAbsent(nombreQuery, key -> {
             try {
                 Optional<QueryStorage> qs = queryStorageRepository.findByCodigo(key);
-                if (qs.isPresent()) {
-                    boolean consolidable = qs.get().getEsConsolidable();
-                    log.debug("Query {} consolidable: {}", key, consolidable);
-                    return consolidable;
-                }
+                return qs.map(QueryStorage::getEsConsolidable).orElse(false);
             } catch (Exception e) {
-                log.warn("Error verificando consolidable {}: {}", key, e.getMessage());
+                return false;
             }
-            return false;
         });
     }
 
-    private void ejecutarQueryConGroupBy(
+    private void ejecutarQueryConsolidable(
             InfraccionesRepositoryImpl repo,
             ParametrosFiltrosDTO filtros,
             String nombreQuery,
@@ -427,51 +412,50 @@ public class BatchProcessor {
             ContextoProcesamiento contexto) {
 
         try {
-            ParametrosFiltrosDTO filtrosSinLimite = filtros != null ?
-                    filtros.toBuilder().limite(null).offset(null).build() : null;
+            ParametrosFiltrosDTO filtrosSinLimite = filtros.toBuilder()
+                    .limite(null)
+                    .offset(null)
+                    .build();
 
             List<Map<String, Object>> resultado = repo.ejecutarQueryConFiltros(nombreQuery, filtrosSinLimite);
 
             if (resultado != null && !resultado.isEmpty()) {
-                log.debug("Query GROUP BY retornó {} grupos para {}", resultado.size(), provincia);
-                agregarProvincia(resultado, provincia);
-                procesarLote(resultado, contexto);
-
-                int cantidad = resultado.size();
-                contadoresPorProvincia.put(provincia, cantidad);
-                totalRegistrosGlobales.addAndGet(cantidad);
-                resultado.clear();
+                List<Map<String, Object>> resultadoInmutable = crearCopiasInmutables(resultado, provincia);
+                contexto.agregarResultados(resultadoInmutable);
+                actualizarContadores(provincia, resultado.size());
             }
         } catch (Exception e) {
-            log.error("Error GROUP BY {} en {}: {}", nombreQuery, provincia, e.getMessage());
+            log.error("Error en query consolidable {} para {}: {}", nombreQuery, provincia, e.getMessage());
         }
     }
 
-    private void ejecutarQueryConPaginacion(
+    private void ejecutarQueryPaginada(
             InfraccionesRepositoryImpl repo,
             ParametrosFiltrosDTO filtros,
             String nombreQuery,
             String provincia,
             ContextoProcesamiento contexto) {
 
-        try {
-            int offset = 0;
-            int maxLote = 1000;
-            int procesados = 0;
+        String provinciaRepo = repo.getProvincia();
+        lastKeyPerProvince.remove(provinciaRepo);
 
-            lastKeyPerProvince.remove(provincia);
+        int procesados = 0;
+        int offset = 0;
+        int maxLote = 1000;
 
-            while (true) {
-                ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(filtros, maxLote, offset, provincia);
+        while (true) {
+            try {
+                ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(filtros, maxLote, offset, provinciaRepo);
                 List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
 
                 if (lote == null || lote.isEmpty()) {
                     break;
                 }
 
-                guardarLastKey(lote, provincia);
-                agregarProvincia(lote, provincia);
-                procesarLote(lote, contexto);
+                guardarLastKey(lote, provinciaRepo);
+
+                List<Map<String, Object>> loteInmutable = crearCopiasInmutables(lote, provinciaRepo);
+                contexto.agregarResultados(loteInmutable);
 
                 procesados += lote.size();
                 offset += maxLote;
@@ -480,17 +464,32 @@ public class BatchProcessor {
                     break;
                 }
 
-                lote.clear();
+            } catch (Exception e) {
+                log.error("Error en paginación {} para {}: {}", nombreQuery, provinciaRepo, e.getMessage());
+                break;
             }
-
-            contadoresPorProvincia.put(provincia, procesados);
-            totalRegistrosGlobales.addAndGet(procesados);
-            lastKeyPerProvince.remove(provincia);
-
-        } catch (Exception e) {
-            log.error("Error paginación {} en {}: {}", nombreQuery, provincia, e.getMessage());
-            lastKeyPerProvince.remove(provincia);
         }
+
+        actualizarContadores(provinciaRepo, procesados);
+        lastKeyPerProvince.remove(provinciaRepo);
+    }
+
+    private List<Map<String, Object>> crearCopiasInmutables(List<Map<String, Object>> registros, String provincia) {
+        return registros.stream()
+                .map(registro -> {
+                    Map<String, Object> copia = new HashMap<>();
+                    registro.entrySet().stream()
+                            .filter(e -> !"provincia".equals(e.getKey()))
+                            .forEach(e -> copia.put(e.getKey(), e.getValue()));
+                    copia.put("provincia", provincia);
+                    return copia;
+                })
+                .collect(Collectors.toList());
+    }
+
+    private void actualizarContadores(String provincia, int cantidad) {
+        contadoresPorProvincia.put(provincia, cantidad);
+        totalRegistrosGlobales.addAndGet(cantidad);
     }
 
     private void guardarLastKey(List<Map<String, Object>> lote, String provincia) {
@@ -498,124 +497,47 @@ public class BatchProcessor {
 
         try {
             Map<String, Object> ultimo = lote.get(lote.size() - 1);
-
-            // Validar que existan los campos antes de guardar
-            if (ultimo.containsKey("id") &&
-                    ultimo.containsKey("serie_equipo") &&
-                    ultimo.containsKey("lugar")) {
-
-                Object[] lastKey = new Object[]{
+            if (ultimo.containsKey("id") && ultimo.containsKey("serie_equipo") && ultimo.containsKey("lugar")) {
+                lastKeyPerProvince.put(provincia, new Object[]{
                         ultimo.get("id"),
                         ultimo.get("serie_equipo"),
                         ultimo.get("lugar")
-                };
-                lastKeyPerProvince.put(provincia, lastKey);
-            } else {
-                log.debug("Campos para keyset no disponibles en {}", provincia);
+                });
             }
         } catch (Exception e) {
-            log.warn("Error guardando lastKey para {}: {}", provincia, e.getMessage());
+            log.debug("Error guardando lastKey para {}: {}", provincia, e.getMessage());
         }
     }
 
-    private void agregarProvincia(List<Map<String, Object>> lote, String provincia) {
-        for (Map<String, Object> registro : lote) {
-            registro.put("provincia", provincia);
-        }
-    }
-
-    private void procesarLote(List<Map<String, Object>> lote, ContextoProcesamiento contexto) {
-        if (lote == null || lote.isEmpty()) return;
-
-        try {
-            if (contexto.procesador != null) {
-                procesarEnChunks(lote, contexto.procesador);
-            } else if (contexto.archivo != null) {
-                escribirLoteAArchivo(lote, contexto.archivo);
-            } else if (contexto.usarCola) {
-                colaResultados.addAll(lote);
-            }
-        } catch (Exception e) {
-            log.error("Error procesando lote: {}", e.getMessage(), e);
-            throw new RuntimeException("Fallo en procesamiento", e);
-        }
-    }
-
-    private void procesarEnChunks(List<Map<String, Object>> lote, Consumer<List<Map<String, Object>>> procesador) {
-        int currentChunkSize = Math.min(chunkSize, lote.size());
-
-        for (int i = 0; i < lote.size(); i += currentChunkSize) {
-            int endIndex = Math.min(i + currentChunkSize, lote.size());
-            List<Map<String, Object>> chunk = lote.subList(i, endIndex);
-
-            try {
-                procesador.accept(chunk);
-            } catch (Exception e) {
-                log.error("Error procesando chunk: {}", e.getMessage());
-                throw e;
-            }
-        }
-    }
-
-    private void escribirLoteAArchivo(List<Map<String, Object>> lote, BufferedWriter archivo) throws IOException {
-        for (Map<String, Object> registro : lote) {
-            StringBuilder linea = new StringBuilder();
-            boolean first = true;
-
-            for (Object valor : registro.values()) {
-                if (!first) linea.append(",");
-                String valorStr = valor != null ? valor.toString() : "";
-                if (valorStr.contains("\"") || valorStr.contains(",")) {
-                    valorStr = "\"" + valorStr.replace("\"", "\"\"") + "\"";
-                }
-                linea.append(valorStr);
-                first = false;
-            }
-
-            archivo.write(linea.toString());
-            archivo.newLine();
-        }
-        archivo.flush();
-    }
-
-    private void logHeartbeatSiCorresponde(int totalRepositorios) {
+    private void logHeartbeat(int totalRepositorios) {
         long ahora = System.currentTimeMillis();
         long ultimo = ultimoHeartbeat.get();
 
         if (ahora - ultimo > HEARTBEAT_INTERVAL_MS && ultimoHeartbeat.compareAndSet(ultimo, ahora)) {
             long transcurrido = ahora - tiempoInicioGlobal;
-            log.info("HEARTBEAT - {}min {}s | {} registros | Memoria: {:.1f}% | Provincias: {}/{}",
-                    transcurrido / 60000,
-                    (transcurrido / 1000) % 60,
+            log.info("Heartbeat - {}s | {} registros | Memoria: {:.1f}%",
+                    transcurrido / 1000,
                     totalRegistrosGlobales.get(),
-                    obtenerPorcentajeMemoriaUsada(),
-                    totalRepositoriosProcesados.get(),
-                    totalRepositorios);
+                    obtenerPorcentajeMemoriaUsada());
         }
     }
 
     private double obtenerPorcentajeMemoriaUsada() {
         Runtime runtime = Runtime.getRuntime();
-        long memoriaUsada = runtime.totalMemory() - runtime.freeMemory();
-        long memoriaMax = runtime.maxMemory();
-        return (double) memoriaUsada / memoriaMax * 100;
+        return (double) (runtime.totalMemory() - runtime.freeMemory()) / runtime.maxMemory() * 100;
     }
 
     private boolean esMemoriaCritica() {
         Runtime runtime = Runtime.getRuntime();
-        long memoriaUsada = runtime.totalMemory() - runtime.freeMemory();
-        long memoriaMax = runtime.maxMemory();
-        return ((double) memoriaUsada / memoriaMax) > memoryCriticalThreshold;
+        return ((double) (runtime.totalMemory() - runtime.freeMemory()) / runtime.maxMemory()) > memoryCriticalThreshold;
     }
 
     private boolean esMemoriaAlta() {
         Runtime runtime = Runtime.getRuntime();
-        long memoriaUsada = runtime.totalMemory() - runtime.freeMemory();
-        long memoriaMax = runtime.maxMemory();
-        return ((double) memoriaUsada / memoriaMax) > 0.70;
+        return ((double) (runtime.totalMemory() - runtime.freeMemory()) / runtime.maxMemory()) > 0.70;
     }
 
-    private void pausaBreveSiNecesario() {
+    private void pausarSiNecesario() {
         if (esMemoriaAlta()) {
             try {
                 Thread.sleep(50);
@@ -633,23 +555,14 @@ public class BatchProcessor {
 
         Runtime runtime = Runtime.getRuntime();
         long memoriaLibre = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-        long memoriaMax = runtime.maxMemory();
-        double porcentajeLibre = (double) memoriaLibre / memoriaMax;
-
-        int batchSizeOptimo;
+        double porcentajeLibre = (double) memoriaLibre / runtime.maxMemory();
 
         if (porcentajeLibre < 0.20) {
-            batchSizeOptimo = Math.max(1000, batchSizeBase / 4);
+            return Math.max(1000, batchSizeBase / 4);
         } else if (porcentajeLibre < 0.30) {
-            batchSizeOptimo = Math.max(2000, batchSizeBase / 2);
-        } else {
-            batchSizeOptimo = Math.min(batchSizeBase, 10000);
+            return Math.max(2000, batchSizeBase / 2);
         }
-
-        log.debug("Batch size: {} (base: {}, memoria libre: {:.1f}%)",
-                batchSizeOptimo, batchSizeBase, porcentajeLibre * 100);
-
-        return batchSizeOptimo;
+        return Math.min(batchSizeBase, 10000);
     }
 
     private ParametrosFiltrosDTO crearFiltrosParaLote(
@@ -671,16 +584,16 @@ public class BatchProcessor {
                     .lastSerieEquipo((String) lastKey[1])
                     .lastLugar((String) lastKey[2])
                     .build();
-        } else {
-            return filtrosOriginales.toBuilder()
-                    .limite(batchSize)
-                    .offset(null)
-                    .pagina(null)
-                    .tamanoPagina(null)
-                    .lastId(null)
-                    .lastSerieEquipo(null)
-                    .lastLugar(null)
-                    .build();
         }
+
+        return filtrosOriginales.toBuilder()
+                .limite(batchSize)
+                .offset(null)
+                .pagina(null)
+                .tamanoPagina(null)
+                .lastId(null)
+                .lastSerieEquipo(null)
+                .lastLugar(null)
+                .build();
     }
 }

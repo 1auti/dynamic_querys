@@ -7,11 +7,11 @@ export PBA_URL=jdbc:postgresql://192.168.50.122:5432/pba
 export PBA_USERNAME=lcenizo
 export PBA_PASSWORD=Lcenizo2025#
 
-export MDA_URL=jdbc:postgresql://192.168.50.122:5432/lapampa
+export MDA_URL=jdbc:postgresql://192.168.50.122:5432/avellaneda
 export MDA_USERNAME=lcenizo
 export MDA_PASSWORD=Lcenizo2025#
 
-export SANTA_ROSA_URL=jdbc:postgresql://192.168.50.122:5432/avellaneda
+export SANTA_ROSA_URL=jdbc:postgresql://192.168.50.122:5432/lapampa
 export SANTA_ROSA_USERNAME=lcenizo
 export SANTA_ROSA_PASSWORD=Lcenizo2025#
 
