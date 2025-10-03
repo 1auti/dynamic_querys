@@ -458,55 +458,61 @@ public class BatchProcessor {
 
         String provincia = repo.getProvincia();
 
+        // ✅ Verificar si la query tiene GROUP BY desde la BD
         boolean queryTieneGroupBy = false;
-
         try {
             Optional<QueryStorage> qs = queryStorageRepository.findByCodigo(nombreQuery);
             if (qs.isPresent()) {
                 queryTieneGroupBy = qs.get().getEsConsolidable();
+                log.debug("Query {} - esConsolidable: {}", nombreQuery, queryTieneGroupBy);
             }
         } catch (Exception e) {
-            log.warn("No se pudo verificar si query {} tiene GROUP BY: {}", nombreQuery, e.getMessage());
+            log.warn("No se pudo verificar si query {} es consolidable: {}",
+                    nombreQuery, e.getMessage());
         }
 
-        log.info("=== DEBUG CONSOLIDACIÓN ===");
-        log.info("filtros es null? {}", filtros == null);
-        if (filtros != null) {
-            log.info("consolidado field: {}", filtros.getConsolidado());
-            log.info("consolidacion list: {}", filtros.getConsolidacion());
-            log.info("esConsolidado()? {}", filtros.esConsolidado());
-        }
-        log.info("===========================");
-
-        if (filtros != null && filtros.esConsolidado()) {
-            log.info("Query {} es consolidable - ejecutando UNA SOLA VEZ (sin paginación)", nombreQuery);
+        // ✅ Si la query tiene GROUP BY → ejecutar SIN paginación
+        if (queryTieneGroupBy) {
+            log.info("Query {} tiene GROUP BY - ejecutando SIN paginación para provincia {}",
+                    nombreQuery, provincia);
 
             try {
-                List<Map<String, Object>> resultado = repo.ejecutarQueryConFiltros(nombreQuery, filtros);
+                // Remover límite para queries con GROUP BY
+                ParametrosFiltrosDTO filtrosSinLimite = filtros != null ?
+                        filtros.toBuilder()
+                                .limite(null)
+                                .offset(null)
+                                .build() :
+                        null;
+
+                List<Map<String, Object>> resultado =
+                        repo.ejecutarQueryConFiltros(nombreQuery, filtrosSinLimite);
 
                 if (resultado != null && !resultado.isEmpty()) {
-                    log.info("Query consolidable retornó {} grupos para provincia {}",
+                    log.info("Query con GROUP BY retornó {} grupos para provincia {}",
                             resultado.size(), provincia);
 
                     resultado.forEach(registro -> registro.put("provincia", provincia));
                     procesarLoteInmediato(resultado);
 
-                    resultado.clear();
-                    resultado = null;
+                    // Actualizar contadores
+                    int cantidadRegistros = resultado.size();
+                    contadoresPorProvincia.put(provincia, cantidadRegistros);
+                    totalRegistrosGlobales += cantidadRegistros;
 
-                    if (resultado != null && resultado.size() > 5000) {
-                        limpiarMemoria();
-                    }
+                    resultado.clear();
                 }
 
                 return Collections.emptyList();
 
             } catch (Exception e) {
-                log.error("Error ejecutando query consolidable {}: {}", nombreQuery, e.getMessage());
+                log.error("Error ejecutando query con GROUP BY {} en provincia {}: {}",
+                        nombreQuery, provincia, e.getMessage());
                 return Collections.emptyList();
             }
         }
 
+        // ✅ Query normal SIN GROUP BY → usar paginación
         try {
             int offset = 0;
             boolean hayMasDatos = true;
@@ -516,16 +522,20 @@ public class BatchProcessor {
             lastKeyPerProvince.remove(provincia);
 
             while (hayMasDatos) {
-                ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(filtros, maxLoteMemoria, offset, provincia);
+                ParametrosFiltrosDTO filtrosLote =
+                        crearFiltrosParaLote(filtros, maxLoteMemoria, offset, provincia);
 
                 log.debug("🔄 {} - Ejecutando lote: limite={}, offset={}, lastId={}",
-                        provincia, filtrosLote.getLimite(), filtrosLote.getOffset(), filtrosLote.getLastId());
+                        provincia, filtrosLote.getLimite(), filtrosLote.getOffset(),
+                        filtrosLote.getLastId());
 
-                List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
+                List<Map<String, Object>> lote =
+                        repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
 
                 if (lote == null || lote.isEmpty()) {
                     hayMasDatos = false;
                 } else {
+                    // Guardar última key para keyset pagination
                     if (!lote.isEmpty()) {
                         Map<String, Object> ultimoRegistro = lote.get(lote.size() - 1);
                         Object[] lastKey = new Object[]{
