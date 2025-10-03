@@ -58,4 +58,6 @@ public class QueryStorageDTO {
     public boolean deberiaSerConsolidable() {
         return esConsolidable && camposNumericos != null && !camposNumericos.isEmpty();
     }
+
+
 }

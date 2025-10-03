@@ -212,5 +212,47 @@ public class QueryAnalyzer {
         return campos;
     }
 
+    /**
+     * Detecta si una query SQL contiene GROUP BY
+     *
+     * @param sql Query SQL a analizar
+     * @return true si contiene GROUP BY
+     */
+    public static boolean tieneGroupBy(String sql) {
+        if (sql == null || sql.trim().isEmpty()) {
+            return false;
+        }
+
+        // Normalizar
+        String sqlNormalizado = sql
+                .replaceAll("\\s+", " ")
+                .toLowerCase()
+                .trim();
+
+        // Remover comentarios
+        sqlNormalizado = sqlNormalizado
+                .replaceAll("--[^\n]*", "")
+                .replaceAll("/\\*.*?\\*/", "");
+
+        // Buscar GROUP BY como palabra completa
+        return sqlNormalizado.matches(".*\\bgroup\\s+by\\b.*");
+    }
+
+    /**
+     * Analiza una query y determina si es consolidable
+     *
+     * @param sql Query SQL
+     * @return true si es consolidable (tiene GROUP BY o funciones agregadas)
+     */
+    public static boolean esQueryConsolidable(String sql) {
+        if (sql == null || sql.trim().isEmpty()) {
+            return false;
+        }
+
+        return tieneGroupBy(sql);
+    }
+
+
+
 
 }

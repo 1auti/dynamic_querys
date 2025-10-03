@@ -61,6 +61,8 @@ public class DatabaseQueryService {
     public QueryStorage guardarQuery(QueryStorageDTO dto) {
         log.info("Guardando nueva query: {}", dto.getCodigo());
 
+
+
         // Validaciones
         if (!dto.esValida()) {
             throw new IllegalArgumentException("Query no válida: faltan campos obligatorios");
@@ -110,6 +112,8 @@ public class DatabaseQueryService {
         if (dto.getTags() != null) {
             query.setTagsList(dto.getTags());
         }
+
+        query.analizarYMarcarConsolidable();
 
         QueryStorage guardada = queryRepository.save(query);
 

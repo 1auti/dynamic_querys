@@ -121,67 +121,7 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         }
     }
 
-    // =============== MÉTODOS EXISTENTES SIN CAMBIOS ===============
 
-    @Override
-    public List<Map<String, Object>> consultarPersonasJuridicas(ParametrosFiltrosDTO filtro) {
-        log.debug("Consultando personas jurídicas en provincia: {}", provincia);
-        return ejecutarQueryConFiltros("consultar_personas_juridicas.sql", filtro);
-    }
-
-    @Override
-    public List<Map<String, Object>> consultarInfraccionesGenerales(ParametrosFiltrosDTO filtros) {
-        log.debug("Consultando infracciones generales en provincia: {}", provincia);
-        return ejecutarQueryConFiltros(Consultas.INFRACCIONES_GENERAL.getArchivoQuery(), filtros);
-    }
-
-    @Override
-    public List<Map<String, Object>> consultarInfraccionesPorEquipos(ParametrosFiltrosDTO filtros) {
-        log.debug("Consultando infracciones por equipos en provincia: {}", provincia);
-        return ejecutarQueryConFiltros(Consultas.INFRACCIONES_POR_EQUIPOS.getArchivoQuery(), filtros);
-    }
-
-    @Override
-    public List<Map<String, Object>> consultarVehiculosPorMunicipio(ParametrosFiltrosDTO filtros) {
-        log.debug("Consultando vehículos por municipio en provincia: {}", provincia);
-        return ejecutarQueryConFiltros(Consultas.VEHICULOS_POR_MUNICIPIO.getArchivoQuery(), filtros);
-    }
-
-    @Override
-    public List<Map<String, Object>> consultarRadarFijoPorEquipo(ParametrosFiltrosDTO filtros) {
-        log.debug("Consultando radar fijo por equipo en provincia: {}", provincia);
-        return ejecutarQueryConFiltros(Consultas.RADAR_FIJO_POR_EQUIPO.getArchivoQuery(), filtros);
-    }
-
-    @Override
-    public List<Map<String, Object>> consultarSemaforoPorEquipo(ParametrosFiltrosDTO filtros) {
-        log.debug("Consultando semáforo por equipo en provincia: {}", provincia);
-        return ejecutarQueryConFiltros(Consultas.SEMAFORO_POR_EQUIPO.getArchivoQuery(), filtros);
-    }
-
-    @Override
-    public List<Map<String, Object>> consultarSinEmailPorMunicipio(ParametrosFiltrosDTO filtros) {
-        log.debug("Consultando infracciones sin email por municipio en provincia: {}", provincia);
-        return ejecutarQueryConFiltros(Consultas.SIN_EMAIL_POR_MUNICIPIO.getArchivoQuery(), filtros);
-    }
-
-    @Override
-    public List<Map<String, Object>> verificarImagenesRadar(ParametrosFiltrosDTO filtros) {
-        log.debug("Verificando imágenes de radar en provincia: {}", provincia);
-        return ejecutarQueryConFiltros(Consultas.VERIFICAR_IMAGENES_RADAR.getArchivoQuery(), filtros);
-    }
-
-    @Override
-    public List<Map<String, Object>> consultarReporteDetallado(ParametrosFiltrosDTO filtros) {
-        log.debug("Consultando reporte detallado en provincia: {}", provincia);
-        return ejecutarQueryConFiltros(Consultas.INFRACCIONES_DETALLADO.getArchivoQuery(), filtros);
-    }
-
-    @Override
-    public List<Map<String, Object>> consultarCantidadInfraccionesEstado(ParametrosFiltrosDTO filtrosDTO) {
-        log.debug("Consultar reporte de cantidad de infracciones por estado: {}", provincia);
-        return ejecutarQueryConFiltros(Consultas.INFRACCIONES_POR_ESTADO.getArchivoQuery(), filtrosDTO);
-    }
 
     /**
      * Método utilitario para validar la conectividad del repositorio

@@ -4,11 +4,14 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
+import org.transito_seguro.component.QueryAnalyzer;
 import org.transito_seguro.enums.EstadoQuery;
 
 import javax.persistence.*;
 import java.time.LocalDateTime;
 import java.util.List;
+
+import static jdk.nashorn.internal.runtime.regexp.joni.Config.log;
 
 @Entity
 @Table(name = "query_storage", indexes = {
@@ -222,6 +225,15 @@ public class QueryStorage {
         }
         if (this.contadorUsos == null) {
             this.contadorUsos = 0L;
+        }
+    }
+
+    public void analizarYMarcarConsolidable() {
+        if (this.sqlQuery != null) {
+            boolean tieneGroupBy = QueryAnalyzer.tieneGroupBy(this.sqlQuery);
+            if (tieneGroupBy) {
+                this.esConsolidable = true;
+            }
         }
     }
 

@@ -2,10 +2,13 @@ package org.transito_seguro.component;
 
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.enums.EstrategiaProcessing;
+import org.transito_seguro.model.QueryStorage;
+import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 
 import java.io.BufferedWriter;
@@ -59,6 +62,9 @@ public class BatchProcessor {
     private final Map<String, Integer> contadoresPorProvincia = new ConcurrentHashMap<>();
     private long ultimoHeartbeat = 0;
     private static final long HEARTBEAT_INTERVAL_MS = 30000; // 30 segundos
+
+    @Autowired
+    private QueryStorageRepository queryStorageRepository;
 
     public void configurarProcesadorInmediato(Consumer<List<Map<String, Object>>> procesador) {
         this.procesadorLoteGlobal = procesador;
@@ -451,6 +457,17 @@ public class BatchProcessor {
             String nombreQuery) {
 
         String provincia = repo.getProvincia();
+
+        boolean queryTieneGroupBy = false;
+
+        try {
+            Optional<QueryStorage> qs = queryStorageRepository.findByCodigo(nombreQuery);
+            if (qs.isPresent()) {
+                queryTieneGroupBy = qs.get().getEsConsolidable();
+            }
+        } catch (Exception e) {
+            log.warn("No se pudo verificar si query {} tiene GROUP BY: {}", nombreQuery, e.getMessage());
+        }
 
         log.info("=== DEBUG CONSOLIDACIÓN ===");
         log.info("filtros es null? {}", filtros == null);
@@ -925,5 +942,32 @@ public class BatchProcessor {
         } catch (Exception e) {
             log.warn("Error en limpieza de conexiones BD: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Detecta si una query SQL contiene cláusula GROUP BY
+     *
+     * @param sql Query SQL a analizar
+     * @return true si contiene GROUP BY, false en caso contrario
+     */
+    private boolean queryTieneGroupBy(String sql) {
+        if (sql == null || sql.trim().isEmpty()) {
+            return false;
+        }
+
+        // Normalizar: quitar saltos de línea y espacios múltiples
+        String sqlNormalizado = sql
+                .replaceAll("\\s+", " ")  // Reemplazar múltiples espacios por uno solo
+                .toLowerCase()
+                .trim();
+
+        // Remover comentarios SQL de línea (--) y bloque (/* */)
+        sqlNormalizado = sqlNormalizado
+                .replaceAll("--[^\n]*", "")           // Comentarios de línea
+                .replaceAll("/\\*.*?\\*/", "");       // Comentarios de bloque
+
+        // Buscar patrón "group by" como palabra completa
+        // Usar \b para word boundary asegura que no matchee "mygroup_by_field"
+        return sqlNormalizado.matches(".*\\bgroup\\s+by\\b.*");
     }
 }
