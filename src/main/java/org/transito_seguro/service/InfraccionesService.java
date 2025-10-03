@@ -26,6 +26,7 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
@@ -318,34 +319,91 @@ public class InfraccionesService {
                                                  List<InfraccionesRepositoryImpl> repositories,
                                                  ConsultaQueryDTO consulta) {
 
-        log.info("Consolidación con BatchProcessor");
+        log.info("Consolidación progresiva con BatchProcessor");
 
         ParametrosFiltrosDTO filtros = consulta.getParametrosFiltros();
-        List<Map<String, Object>> todosLosDatos = Collections.synchronizedList(new ArrayList<>());
 
+        // Preparar estructura para consolidación thread-safe
+        ConcurrentHashMap<String, Map<String, Object>> gruposConsolidados = new ConcurrentHashMap<>();
+        List<String> camposAgrupacion = determinarCamposAgrupacionDesdeBD(filtros, queryStorage);
+        List<String> camposNumericos = queryStorage.getCamposNumericosList();
+
+        AtomicInteger registrosProcesados = new AtomicInteger(0);
+
+        log.info("Campos agrupación: {}, Campos numéricos: {}", camposAgrupacion, camposNumericos);
+
+        // Procesar y consolidar sobre la marcha
         batchProcessor.procesarEnLotes(
                 repositories,
                 filtros,
                 queryStorage.getCodigo(),
-                todosLosDatos::addAll
+                lote -> {
+                    if (lote == null || lote.isEmpty()) return;
+
+                    // Normalizar y consolidar cada registro del lote
+                    for (Map<String, Object> registro : lote) {
+                        // Normalizar provincia
+                        String provincia = obtenerProvinciaDelRegistro(registro);
+                        String provinciaNorm = org.transito_seguro.utils.NormalizadorProvincias.normalizar(provincia);
+                        registro.put("provincia", provinciaNorm);
+                        registro.put("provincia_origen", provinciaNorm);
+
+                        // Crear clave de grupo
+                        String claveGrupo = crearClaveGrupo(registro, camposAgrupacion);
+
+                        // Consolidar de forma thread-safe
+                        gruposConsolidados.compute(claveGrupo, (key, grupoExistente) -> {
+                            if (grupoExistente == null) {
+                                // Primer registro del grupo
+                                return crearGrupoNuevo(registro, camposAgrupacion, camposNumericos);
+                            } else {
+                                // Sumar al grupo existente
+                                sumarCamposNumericosThreadSafe(grupoExistente, registro, camposNumericos);
+                                return grupoExistente;
+                            }
+                        });
+                    }
+
+                    int procesados = registrosProcesados.addAndGet(lote.size());
+                    if (procesados % 50000 == 0) {
+                        log.debug("Procesados {} registros -> {} grupos consolidados",
+                                procesados, gruposConsolidados.size());
+                    }
+                }
         );
 
-        log.info("BatchProcessor recopiló {} registros", todosLosDatos.size());
+        log.info("BatchProcessor procesó {} registros -> {} grupos consolidados",
+                registrosProcesados.get(), gruposConsolidados.size());
 
-        if (todosLosDatos.isEmpty()) {
+        if (gruposConsolidados.isEmpty()) {
             return formatoConverter.convertir(Collections.emptyList(),
                     consulta.getFormato() != null ? consulta.getFormato() : "json");
         }
 
-        todosLosDatos = normalizarProvinciasEnDatos(todosLosDatos);
-        List<Map<String, Object>> datosConsolidados = consolidarConMetadataDeBaseDatos(
-                todosLosDatos, filtros, queryStorage);
-
-        log.info("Consolidación: {} registros -> {} grupos",
-                todosLosDatos.size(), datosConsolidados.size());
+        List<Map<String, Object>> resultado = new ArrayList<>(gruposConsolidados.values());
+        log.info("Consolidación completada: {} grupos finales", resultado.size());
 
         String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
-        return formatoConverter.convertir(datosConsolidados, formato);
+        return formatoConverter.convertir(resultado, formato);
+    }
+
+    /**
+     * Versión thread-safe de sumarCamposNumericos
+     * No necesita synchronized porque se usa dentro de compute() que ya es atómico
+     */
+    private void sumarCamposNumericosThreadSafe(Map<String, Object> grupo,
+                                                Map<String, Object> registro,
+                                                List<String> camposNumericos) {
+        for (String campo : camposNumericos) {
+            Object valorRegistro = registro.get(campo);
+            if (valorRegistro == null) continue;
+
+            Long valorNumerico = convertirANumero(valorRegistro);
+            if (valorNumerico == null) continue;
+
+            Long valorActual = obtenerValorNumerico(grupo.get(campo));
+            grupo.put(campo, valorActual + valorNumerico);
+        }
     }
 
     private Object ejecutarConsolidacionSecuencial(QueryStorage queryStorage,
