@@ -44,13 +44,6 @@ public class InfraccionesController {
         return procesarConsulta(tipoConsulta, consulta);
     }
 
-    /**
-     * Endpoint legacy para consultar infracciones
-     */
-    @PostMapping("/consultar")
-    public ResponseEntity<?> consultarInfracciones(@Valid @RequestBody ConsultaQueryDTO consulta) {
-        return procesarConsulta("personas-juridicas", consulta);
-    }
 
     /**
      * Endpoint de descarga de archivos
@@ -63,9 +56,7 @@ public class InfraccionesController {
         try {
             log.info("Descarga - Tipo: {}, Consolidado: {}",
                     tipoConsulta, esConsolidado(consulta));
-
             return infraccionesService.descargarConsultaPorTipo(tipoConsulta, consulta);
-
         } catch (IllegalArgumentException e) {
             log.error("Tipo no válido para descarga: {}", e.getMessage());
             return ResponseEntity.badRequest().build();
