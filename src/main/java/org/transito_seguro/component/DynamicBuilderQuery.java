@@ -4,7 +4,9 @@ import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.transito_seguro.enums.TipoFiltroDetectado;
 import org.transito_seguro.exception.ValidationException;
+import org.transito_seguro.model.consolidacion.analisis.AnalisisPaginacion;
 
 import java.util.*;
 import java.util.regex.Matcher;
@@ -15,10 +17,6 @@ import java.util.regex.Pattern;
 public class DynamicBuilderQuery {
 
     private Map<String, String> subconsultasProtegidas;
-
-    public enum TipoFiltroDetectado {
-        FECHA, ESTADO, TIPO_INFRACCION, EXPORTA_SACIT, CONCESION
-    }
 
     @Getter
     @AllArgsConstructor
@@ -49,16 +47,19 @@ public class DynamicBuilderQuery {
         sql = removerTerminadoresTemporalmente(sql);
         sql = protegerSubconsultas(sql);
 
-        // 2. Preparar para Keyset
+        // 2. Determinar estrategia de paginacion
+//        AnalisisPaginacion analisisPaginacion =
+
+        // 3. Preparar para Keyset
         sql = prepararQueryParaKeyset(sql);
 
-        // 3. Analizar y procesar filtros
+        // 4. Analizar y procesar filtros
         AnalisisFiltros analisisFiltros = analizarFiltrosExistentes(sql);
         sql = removerFiltrosHardcodeados(sql, analisisFiltros);
         sql = restaurarSubconsultas(sql);
         sql = agregarFiltrosDinamicos(sql, analisisFiltros);
 
-        // 4. Agregar Keyset + paginación
+        // 5. Agregar Keyset + paginación
         sql = agregarKeysetPagination(sql);
 
         log.debug("SQL construido: {} caracteres", sql.length());

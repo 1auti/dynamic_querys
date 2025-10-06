@@ -16,10 +16,12 @@ public class AnalisisConsolidacion extends BaseConsolidacion {
     private final Map<String, TipoCampo> tipoPorCampo;
     private final boolean esConsolidado; // Si la query puede ser consolidada
 
+
     public AnalisisConsolidacion(List<String> camposAgrupacion, List<String> camposNumericos, List<String> camposTiempo, List<String> camposUbicacion, Map<String, TipoCampo> tipoPorCampo, boolean esConsolidado) {
         super(camposAgrupacion, camposNumericos, camposTiempo, camposUbicacion);
         this.tipoPorCampo = tipoPorCampo;
         this.esConsolidado = esConsolidado;
+        //this.estrategiaPaginacion = estrategiaPaginacion;
     }
 
 
