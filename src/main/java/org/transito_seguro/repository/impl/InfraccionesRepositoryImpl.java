@@ -3,12 +3,15 @@ package org.transito_seguro.repository.impl;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
+import org.transito_seguro.exception.SQLExecutionException;
 import org.transito_seguro.model.QueryStorage;
 import org.transito_seguro.repository.InfraccionesRepository;
 import org.transito_seguro.repository.QueryStorageRepository;
+import org.transito_seguro.utils.SQLExceptionParser;
 import org.transito_seguro.utils.SqlUtils;
 
 import java.sql.ResultSetMetaData;
@@ -52,6 +55,25 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         try {
             String querySQL = cargarQuery(nombreQuery);
             ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(querySQL, filtros);
+
+            try {
+
+            }catch (DataAccessException e){
+                SQLExecutionException executionException = SQLExceptionParser.parse(
+                        e,
+                        querySQL,
+                        nombreQuery,
+                        provincia
+                );
+
+                // Log con sugerencias específicas
+                log.error(SQLExceptionParser.obtenerSugerencias(e, querySQL));
+
+                // Log del error enriquecido
+                log.error("{}", executionException.getMessageDetallado());
+
+                throw executionException;
+            }
 
             List<Map<String, Object>> resultados = jdbcTemplate.query(
                     resultado.getQueryModificada(),

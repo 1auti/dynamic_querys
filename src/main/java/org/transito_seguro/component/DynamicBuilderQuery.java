@@ -11,7 +11,6 @@ import org.transito_seguro.exception.ValidationException;
 import org.transito_seguro.model.CampoKeyset;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisPaginacion;
 
-
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -169,11 +168,13 @@ public class DynamicBuilderQuery {
             String numeros = matcher.group(2);
             String[] nums = numeros.split("\\s*,\\s*");
 
+            // Extraer campos del SELECT para verificar funciones de agregación
+            List<Integer> columnasValidas = filtrarColumnasAgregacion(sql, nums);
+
             // Si agregamos i.id, todos los números se desplazan +1
-            StringBuilder nuevo = new StringBuilder("1");
-            for (String num : nums) {
-                int nuevoNum = Integer.parseInt(num.trim()) + 1;
-                nuevo.append(", ").append(nuevoNum);
+            StringBuilder nuevo = new StringBuilder("1"); // i.id
+            for (Integer numCol : columnasValidas) {
+                nuevo.append(", ").append(numCol + 1); // Desplazar +1
             }
 
             log.debug("GROUP BY ajustado: {} → {}", numeros, nuevo);
@@ -181,6 +182,107 @@ public class DynamicBuilderQuery {
         }
 
         return sql;
+    }
+
+    /**
+     * Filtra columnas del GROUP BY que NO son funciones de agregación
+     */
+    private List<Integer> filtrarColumnasAgregacion(String sql, String[] nums) {
+        List<Integer> columnasValidas = new ArrayList<>();
+
+        // Extraer SELECT clause
+        Pattern selectPattern = Pattern.compile(
+                "SELECT\\s+(DISTINCT\\s+)?(.*?)\\s+FROM",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+        );
+        Matcher selectMatcher = selectPattern.matcher(sql);
+
+        if (!selectMatcher.find()) {
+            // Si no podemos extraer SELECT, asumir que todas son válidas
+            for (String num : nums) {
+                columnasValidas.add(Integer.parseInt(num.trim()));
+            }
+            return columnasValidas;
+        }
+
+        String selectClause = selectMatcher.group(2);
+
+        // Dividir por comas respetando paréntesis
+        List<String> campos = dividirCamposSelect(selectClause);
+
+        // Verificar cada número del GROUP BY
+        for (String num : nums) {
+            int indice = Integer.parseInt(num.trim());
+
+            // Verificar que el índice sea válido (1-based)
+            if (indice > 0 && indice <= campos.size()) {
+                String campo = campos.get(indice - 1); // Convertir a 0-based
+
+                // Verificar si NO es una función de agregación
+                if (!esFuncionAgregacion(campo)) {
+                    columnasValidas.add(indice);
+                } else {
+                    log.debug("Columna {} omitida del GROUP BY (función agregación): {}",
+                            indice, campo.substring(0, Math.min(50, campo.length())));
+                }
+            }
+        }
+
+        return columnasValidas;
+    }
+
+    /**
+     * Verifica si un campo es una función de agregación
+     */
+    private boolean esFuncionAgregacion(String campo) {
+        String upper = campo.trim().toUpperCase();
+
+        // Funciones de agregación comunes
+        String[] funciones = {"COUNT(", "SUM(", "AVG(", "MIN(", "MAX(",
+                "STRING_AGG(", "ARRAY_AGG(", "JSON_AGG("};
+
+        for (String funcion : funciones) {
+            if (upper.startsWith(funcion)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Divide campos del SELECT respetando paréntesis y comillas
+     */
+    private List<String> dividirCamposSelect(String selectClause) {
+        List<String> campos = new ArrayList<>();
+        StringBuilder campoActual = new StringBuilder();
+        int nivelParentesis = 0;
+        boolean enComillas = false;
+        char tipoComilla = 0;
+
+        for (char c : selectClause.toCharArray()) {
+            if (!enComillas && (c == '\'' || c == '"')) {
+                enComillas = true;
+                tipoComilla = c;
+            } else if (enComillas && c == tipoComilla) {
+                enComillas = false;
+            } else if (!enComillas) {
+                if (c == '(') nivelParentesis++;
+                else if (c == ')') nivelParentesis--;
+                else if (c == ',' && nivelParentesis == 0) {
+                    campos.add(campoActual.toString().trim());
+                    campoActual = new StringBuilder();
+                    continue;
+                }
+            }
+            campoActual.append(c);
+        }
+
+        if (campoActual.length() > 0) {
+            campos.add(campoActual.toString().trim());
+        }
+
+        return campos;
     }
 
     // ==================== APLICAR PAGINACIÓN SEGÚN ESTRATEGIA ====================
@@ -260,10 +362,8 @@ public class DynamicBuilderQuery {
         // Agregar ORDER BY
         sql = agregarOrderByKeysetConId(sql, campos, maxCampos);
 
-        // Agregar LIMIT
-        if (!sql.toUpperCase().contains("LIMIT")) {
-            sql += "\nLIMIT COALESCE(:limite::INTEGER, 1000)";
-        }
+        // Agregar LIMIT (verificar que no exista)
+        sql = agregarLimitSiNoExiste(sql);
 
         return sql;
     }
@@ -332,10 +432,8 @@ public class DynamicBuilderQuery {
         // Agregar ORDER BY
         sql = agregarOrderByKeysetCompuesto(sql, campos, maxCampos);
 
-        // Agregar LIMIT
-        if (!sql.toUpperCase().contains("LIMIT")) {
-            sql += "\nLIMIT COALESCE(:limite::INTEGER, 1000)";
-        }
+        // Agregar LIMIT (verificar que no exista)
+        sql = agregarLimitSiNoExiste(sql);
 
         return sql;
     }
@@ -359,9 +457,7 @@ public class DynamicBuilderQuery {
     private String aplicarOffset(String sql) {
         log.debug("Aplicando paginación OFFSET");
 
-        if (!sql.toUpperCase().contains("LIMIT")) {
-            sql += "\nLIMIT COALESCE(:limite::INTEGER, 1000)";
-        }
+        sql = agregarLimitSiNoExiste(sql);
 
         if (!sql.toUpperCase().contains("OFFSET")) {
             sql += "\nOFFSET COALESCE(:offset::INTEGER, 0)";
@@ -375,12 +471,7 @@ public class DynamicBuilderQuery {
      */
     private String aplicarLimitSimple(String sql) {
         log.debug("Aplicando LIMIT simple");
-
-        if (!sql.toUpperCase().contains("LIMIT")) {
-            sql += "\nLIMIT COALESCE(:limite::INTEGER, 1000)";
-        }
-
-        return sql;
+        return agregarLimitSiNoExiste(sql);
     }
 
     /**
@@ -388,12 +479,22 @@ public class DynamicBuilderQuery {
      */
     private String aplicarLimitParaConsolidacion(String sql) {
         log.debug("Aplicando LIMIT para query consolidada");
+        return agregarLimitSiNoExiste(sql);
+    }
 
-        if (!sql.toUpperCase().contains("LIMIT")) {
-            sql += "\nLIMIT COALESCE(:limite::INTEGER, 1000)";
+    /**
+     * Agrega LIMIT solo si no existe ya en el SQL
+     */
+    private String agregarLimitSiNoExiste(String sql) {
+        String upper = sql.toUpperCase();
+
+        // Si ya tiene LIMIT, no agregar otro
+        if (upper.contains("LIMIT")) {
+            log.debug("LIMIT ya existe, no se agrega duplicado");
+            return sql;
         }
 
-        return sql;
+        return sql + "\nLIMIT COALESCE(:limite::INTEGER, 1000)";
     }
 
     // ==================== UTILIDADES DE INSERCIÓN ====================
@@ -505,9 +606,9 @@ public class DynamicBuilderQuery {
 
     private void detectarFiltros(String where, Set<TipoFiltroDetectado> filtros,
                                  Map<TipoFiltroDetectado, String> campos) {
-        // Fecha
+        // Fecha - Detectar comparaciones y BETWEEN
         Matcher m = Pattern.compile(
-                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.[a-zA-Z_]*fecha[a-zA-Z_]*)\\s*(>=|>|<|<=)",
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.[a-zA-Z_]*fecha[a-zA-Z_]*)\\s*(>=|>|<|<=|BETWEEN)",
                 Pattern.CASE_INSENSITIVE
         ).matcher(where);
         if (m.find()) {
@@ -515,9 +616,9 @@ public class DynamicBuilderQuery {
             campos.put(TipoFiltroDetectado.FECHA, m.group(1));
         }
 
-        // Estado
+        // Estado - Detectar IN y NOT IN
         m = Pattern.compile(
-                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_estado)\\s+IN",
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_estado)\\s+(?:NOT\\s+)?IN",
                 Pattern.CASE_INSENSITIVE
         ).matcher(where);
         if (m.find()) {
@@ -525,9 +626,9 @@ public class DynamicBuilderQuery {
             campos.put(TipoFiltroDetectado.ESTADO, m.group(1));
         }
 
-        // Tipo infracción
+        // Tipo infracción - Detectar IN y NOT IN
         m = Pattern.compile(
-                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_tipo_infra)\\s+IN",
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_tipo_infra)\\s+(?:NOT\\s+)?IN",
                 Pattern.CASE_INSENSITIVE
         ).matcher(where);
         if (m.find()) {
@@ -560,15 +661,48 @@ public class DynamicBuilderQuery {
 
         switch (tipo) {
             case FECHA:
-                sql = sql.replaceAll(escapado + "\\s*(>=|>|<|<=|=)\\s*(DATE\\s*)?'[^']*'", "");
-                sql = sql.replaceAll(escapado + "\\s*(>=|>)\\s*TO_DATE\\([^)]+\\)", "");
+                // 1. Remover BETWEEN (debe ir primero porque incluye AND)
+                // Soporta: campo BETWEEN 'fecha1' AND 'fecha2'
+                //          campo BETWEEN DATE 'fecha1' AND DATE 'fecha2'
+                //          campo BETWEEN TO_DATE(...) AND TO_DATE(...)
+                sql = sql.replaceAll(
+                        "(?i)" + escapado + "\\s+BETWEEN\\s+(?:DATE\\s+)?(?:'[^']*'|TO_DATE\\([^)]+\\))\\s+AND\\s+(?:DATE\\s+)?(?:'[^']*'|TO_DATE\\([^)]+\\))",
+                        ""
+                );
+
+                // 2. Remover comparaciones simples con fechas literales
+                // Soporta: campo >= 'fecha', campo > DATE 'fecha', etc.
+                sql = sql.replaceAll(
+                        "(?i)" + escapado + "\\s*(?:>=|>|<=|<|=)\\s*(?:DATE\\s+)?'[^']*'",
+                        ""
+                );
+
+                // 3. Remover comparaciones con TO_DATE
+                sql = sql.replaceAll(
+                        "(?i)" + escapado + "\\s*(?:>=|>|<=|<|=)\\s*TO_DATE\\s*\\([^)]+\\)",
+                        ""
+                );
+
+                // 4. Remover comparaciones con CAST/CONVERT a DATE
+                sql = sql.replaceAll(
+                        "(?i)" + escapado + "\\s*(?:>=|>|<=|<|=)\\s*(?:CAST|CONVERT)\\s*\\([^)]+\\)",
+                        ""
+                );
+
                 break;
+
             case ESTADO:
             case TIPO_INFRACCION:
-                sql = sql.replaceAll(escapado + "\\s+IN\\s*\\([^)]+\\)", "");
+                // Remover IN con lista de valores (incluyendo NOT IN)
+                sql = sql.replaceAll("(?i)" + escapado + "\\s+(?:NOT\\s+)?IN\\s*\\([^)]+\\)", "");
+
+                // Remover comparación con valor único
+                sql = sql.replaceAll("(?i)" + escapado + "\\s*=\\s*\\d+", "");
                 break;
+
             case EXPORTA_SACIT:
-                sql = sql.replaceAll(escapado + "\\s*=\\s*(true|false)", "");
+                // Remover comparación booleana
+                sql = sql.replaceAll("(?i)" + escapado + "\\s*=\\s*(?:true|false|TRUE|FALSE)", "");
                 break;
         }
 
