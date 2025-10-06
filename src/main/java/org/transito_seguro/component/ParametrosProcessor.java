@@ -156,12 +156,18 @@ public class ParametrosProcessor {
     /**
      * NUEVO: Paginación más segura para PostgreSQL
      */
+    // En ParametrosProcessor.java
     private void mapearPaginacionSeguro(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        // Asegurar que limite y offset nunca sean null
-        int limite = filtros.getLimiteEfectivo();
-        int offset = filtros.calcularOffset();
+        Integer limite = filtros.getLimiteEfectivo();
 
-        params.addValue("limite", limite > 0 ? limite : 1000, Types.INTEGER);
+        // Si es null, no aplicar límite
+        if (limite == null) {
+            params.addValue("limite", Integer.MAX_VALUE, Types.INTEGER);
+        } else {
+            params.addValue("limite", limite, Types.INTEGER);
+        }
+
+        int offset = filtros.calcularOffset();
         params.addValue("offset", offset >= 0 ? offset : 0, Types.INTEGER);
     }
 

@@ -56,7 +56,19 @@ public class InfraccionesController {
         try {
             log.info("Descarga - Tipo: {}, Consolidado: {}",
                     tipoConsulta, esConsolidado(consulta));
+
+            if (consulta.getParametrosFiltros() == null) {
+                consulta.setParametrosFiltros(new ParametrosFiltrosDTO());
+            }
+
+            // Establecer sin límite para obtener TODOS los datos
+            consulta.getParametrosFiltros().setLimite(null);
+            consulta.getParametrosFiltros().setUsarTodasLasBDS(true);
+
+            log.info("Descarga configurada SIN LÍMITE para obtener todos los datos");
+
             return infraccionesService.descargarConsultaPorTipo(tipoConsulta, consulta);
+
         } catch (IllegalArgumentException e) {
             log.error("Tipo no válido para descarga: {}", e.getMessage());
             return ResponseEntity.badRequest().build();

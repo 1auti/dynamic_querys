@@ -45,9 +45,8 @@ public class ParametrosFiltrosDTO {
      * VERSIÓN CORREGIDA - Lógica coherente
      */
     public Integer getLimiteEfectivo() {
-        // Si se usa todas las BDS y NO hay límite específico = SIN LÍMITE
-        if (Boolean.TRUE.equals(usarTodasLasBDS) && limite == null && tamanoPagina == null) {
-            return Integer.MAX_VALUE; // Prácticamente sin límite
+        if (limite == null && Boolean.TRUE.equals(usarTodasLasBDS)) {
+            return Integer.MAX_VALUE; // Sin límite para reportes completos
         }
 
         // Prioridad normal: límite explícito del usuario
@@ -62,11 +61,11 @@ public class ParametrosFiltrosDTO {
 
         // Tercero: límite máximo configurado
         if (limiteMaximo != null && limiteMaximo > 0) {
-            return Math.min(limiteMaximo, 50000); // Aumentado a 50K
+            return Math.min(limiteMaximo, 50000);
         }
 
         // Default: más alto si usa todas las BDS, normal si no
-        return Boolean.TRUE.equals(usarTodasLasBDS) ? 50000 : 5000;
+        return Boolean.TRUE.equals(usarTodasLasBDS) ? Integer.MAX_VALUE : 5000;
     }
 
     /**

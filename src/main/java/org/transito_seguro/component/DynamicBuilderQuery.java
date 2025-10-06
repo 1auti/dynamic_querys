@@ -153,10 +153,6 @@ public class DynamicBuilderQuery {
     }
 
     private String ajustarGroupByConId(String sql, boolean tieneId) {
-        if (!tieneId) {
-            return sql; // No ajustar si no agregamos ID
-        }
-
         Pattern pattern = Pattern.compile(
                 "(GROUP\\s+BY\\s+)(\\d+(?:\\s*,\\s*\\d+)*)",
                 Pattern.CASE_INSENSITIVE
@@ -171,10 +167,26 @@ public class DynamicBuilderQuery {
             // Extraer campos del SELECT para verificar funciones de agregación
             List<Integer> columnasValidas = filtrarColumnasAgregacion(sql, nums);
 
-            // Si agregamos i.id, todos los números se desplazan +1
-            StringBuilder nuevo = new StringBuilder("1"); // i.id
-            for (Integer numCol : columnasValidas) {
-                nuevo.append(", ").append(numCol + 1); // Desplazar +1
+            if (columnasValidas.isEmpty()) {
+                log.warn("No hay columnas válidas para GROUP BY después del filtrado");
+                return sql;
+            }
+
+            // Construir nuevo GROUP BY
+            StringBuilder nuevo = new StringBuilder();
+
+            if (tieneId) {
+                // Si agregamos i.id al inicio, desplazar todas las columnas +1
+                nuevo.append("1"); // i.id
+                for (Integer numCol : columnasValidas) {
+                    nuevo.append(", ").append(numCol + 1);
+                }
+            } else {
+                // Si NO agregamos i.id, usar los números originales filtrados
+                nuevo.append(columnasValidas.get(0));
+                for (int i = 1; i < columnasValidas.size(); i++) {
+                    nuevo.append(", ").append(columnasValidas.get(i));
+                }
             }
 
             log.debug("GROUP BY ajustado: {} → {}", numeros, nuevo);
