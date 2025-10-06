@@ -37,4 +37,5 @@ build/
 ### Mac OS ###
 .DS_Store
 
-set_databases.sh
+set_databases*
+
