@@ -1,5 +1,6 @@
 package org.transito_seguro.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -16,6 +17,7 @@ import org.transito_seguro.model.QueryStorage;
 import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 import org.transito_seguro.factory.RepositoryFactory;
+import org.transito_seguro.utils.NormalizadorProvincias;
 
 import javax.annotation.PreDestroy;
 import javax.xml.bind.ValidationException;
@@ -70,6 +72,12 @@ public class InfraccionesService {
 
     @Value("${app.async.thread-pool-size:10}")
     private int threadPoolSize;
+
+    @Value("${consolidacion.umbral.memoria:500000}")
+    private long umbralMemoria;
+
+    @Value("${consolidacion.cache.dir:${java.io.tmpdir}/consolidacion}")
+    private String cacheDir;
 
     private ExecutorService executor;
 
@@ -315,15 +323,37 @@ public class InfraccionesService {
 
     // =============== EJECUCIÓN: CONSOLIDACIÓN ===============
 
-    private Object ejecutarConsolidacionConLotes(QueryStorage queryStorage,
-                                                 List<InfraccionesRepositoryImpl> repositories,
-                                                 ConsultaQueryDTO consulta) {
+    private Object ejecutarConsolidacionConLotes(
+            QueryStorage queryStorage,
+            List<InfraccionesRepositoryImpl> repositories,
+            ConsultaQueryDTO consulta) {
 
         log.info("Consolidación progresiva con BatchProcessor");
+        ParametrosFiltrosDTO filtros = consulta.getParametrosFiltros();
+
+        // PASO 1: Estimar volumen total
+        long totalEstimado = estimarTotalRegistros(repositories, queryStorage.getCodigo(), filtros);
+        log.info("📊 Registros estimados: {}", totalEstimado);
+
+        // PASO 2: Decidir estrategia según volumen
+        if (totalEstimado > umbralMemoria) {
+            log.info("🔄 Volumen grande detectado (>{}), usando archivos temporales", umbralMemoria);
+            return consolidarConArchivosTemporales(queryStorage, repositories, consulta);
+        } else {
+            log.info("✅ Volumen manejable, consolidación en memoria");
+            return consolidarEnMemoriaConBatch(queryStorage, repositories, consulta);
+        }
+    }
+
+
+
+    private Object consolidarEnMemoriaConBatch(
+            QueryStorage queryStorage,
+            List<InfraccionesRepositoryImpl> repositories,
+            ConsultaQueryDTO consulta) {
 
         ParametrosFiltrosDTO filtros = consulta.getParametrosFiltros();
 
-        // Preparar estructura para consolidación thread-safe
         ConcurrentHashMap<String, Map<String, Object>> gruposConsolidados = new ConcurrentHashMap<>();
         List<String> camposAgrupacion = determinarCamposAgrupacionDesdeBD(filtros, queryStorage);
         List<String> camposNumericos = queryStorage.getCamposNumericosList();
@@ -332,7 +362,6 @@ public class InfraccionesService {
 
         log.info("Campos agrupación: {}, Campos numéricos: {}", camposAgrupacion, camposNumericos);
 
-        // Procesar y consolidar sobre la marcha
         batchProcessor.procesarEnLotes(
                 repositories,
                 filtros,
@@ -340,24 +369,16 @@ public class InfraccionesService {
                 lote -> {
                     if (lote == null || lote.isEmpty()) return;
 
-                    // Normalizar y consolidar cada registro del lote
                     for (Map<String, Object> registro : lote) {
-                        // Normalizar provincia
                         String provincia = obtenerProvinciaDelRegistro(registro);
-                        String provinciaNorm = org.transito_seguro.utils.NormalizadorProvincias.normalizar(provincia);
-                        registro.put("provincia", provinciaNorm);
-                        registro.put("provincia_origen", provinciaNorm);
+                        registro.put("provincia", NormalizadorProvincias.normalizar(provincia));
 
-                        // Crear clave de grupo
                         String claveGrupo = crearClaveGrupo(registro, camposAgrupacion);
 
-                        // Consolidar de forma thread-safe
                         gruposConsolidados.compute(claveGrupo, (key, grupoExistente) -> {
                             if (grupoExistente == null) {
-                                // Primer registro del grupo
                                 return crearGrupoNuevo(registro, camposAgrupacion, camposNumericos);
                             } else {
-                                // Sumar al grupo existente
                                 sumarCamposNumericosThreadSafe(grupoExistente, registro, camposNumericos);
                                 return grupoExistente;
                             }
@@ -366,25 +387,212 @@ public class InfraccionesService {
 
                     int procesados = registrosProcesados.addAndGet(lote.size());
                     if (procesados % 50000 == 0) {
-                        log.debug("Procesados {} registros -> {} grupos consolidados",
-                                procesados, gruposConsolidados.size());
+                        log.debug("Procesados {} registros -> {} grupos", procesados, gruposConsolidados.size());
                     }
                 }
         );
 
-        log.info("BatchProcessor procesó {} registros -> {} grupos consolidados",
-                registrosProcesados.get(), gruposConsolidados.size());
-
-        if (gruposConsolidados.isEmpty()) {
-            return formatoConverter.convertir(Collections.emptyList(),
-                    consulta.getFormato() != null ? consulta.getFormato() : "json");
-        }
+        log.info(" Consolidación en memoria: {} grupos", gruposConsolidados.size());
 
         List<Map<String, Object>> resultado = new ArrayList<>(gruposConsolidados.values());
-        log.info("Consolidación completada: {} grupos finales", resultado.size());
-
         String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
         return formatoConverter.convertir(resultado, formato);
+    }
+
+    // NUEVO: Estimar total de registros
+    private long estimarTotalRegistros(
+            List<InfraccionesRepositoryImpl> repositories,
+            String codigoQuery,
+            ParametrosFiltrosDTO filtros) {
+
+        AtomicLong total = new AtomicLong(0);
+
+        repositories.parallelStream().forEach(repo -> {
+            try {
+                String queryOriginal = queryStorageRepository.findByCodigo(codigoQuery)
+                        .map(QueryStorage::getSqlQuery)
+                        .orElse("");
+
+                if (!queryOriginal.isEmpty()) {
+                    String countQuery = "SELECT COUNT(*) as total FROM (" + queryOriginal + ") subquery";
+
+                    ParametrosProcessor.QueryResult resultado =
+                            parametrosProcessor.procesarQuery(countQuery, filtros);
+
+                    List<Map<String, Object>> resultList = repo.getNamedParameterJdbcTemplate()
+                            .queryForList(resultado.getQueryModificada(), resultado.getParametros());
+
+                    if (!resultList.isEmpty()) {
+                        Object countObj = resultList.get(0).get("total");
+                        long count = countObj instanceof Number ?
+                                ((Number) countObj).longValue() : 0;
+                        total.addAndGet(count);
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("Error estimando {}: {}", repo.getProvincia(), e.getMessage());
+            }
+        });
+
+        return total.get();
+    }
+
+    // NUEVO: Consolidación con archivos temporales
+    private Object consolidarConArchivosTemporales(
+            QueryStorage queryStorage,
+            List<InfraccionesRepositoryImpl> repositories,
+            ConsultaQueryDTO consulta) {
+
+        File tempDir = new File(cacheDir);
+        tempDir.mkdirs();
+
+        List<File> archivosProvinciales = new ArrayList<>();
+        ParametrosFiltrosDTO filtros = consulta.getParametrosFiltros();
+
+        try {
+            log.info("🔄 FASE 1: Extracción provincial a archivos temporales");
+
+            for (InfraccionesRepositoryImpl repo : repositories) {
+                String provincia = repo.getProvincia();
+                File archivo = extraerProvinciaAArchivo(repo, queryStorage, filtros, provincia);
+                archivosProvinciales.add(archivo);
+            }
+
+            log.info("🔄 FASE 2: Consolidación desde {} archivos", archivosProvinciales.size());
+
+            List<Map<String, Object>> resultado = consolidarDesdeArchivos(
+                    archivosProvinciales, queryStorage, filtros);
+
+            log.info("✅ Consolidación completada: {} grupos", resultado.size());
+
+            String formato = consulta.getFormato() != null ? consulta.getFormato() : "json";
+            return formatoConverter.convertir(resultado, formato);
+
+        } catch (Exception e) {
+            log.error("Error en consolidación con archivos temporales: {}", e.getMessage(), e);
+            throw new RuntimeException("Error en consolidación masiva", e);
+        } finally {
+            for (File archivo : archivosProvinciales) {
+                try {
+                    if (archivo.exists()) {
+                        archivo.delete();
+                    }
+                } catch (Exception e) {
+                    log.warn("Error eliminando {}: {}", archivo.getName(), e.getMessage());
+                }
+            }
+        }
+    }
+
+    // Extraer provincia a archivo
+    private File extraerProvinciaAArchivo(
+            InfraccionesRepositoryImpl repo,
+            QueryStorage queryStorage,
+            ParametrosFiltrosDTO filtros,
+            String provincia) throws IOException {
+
+        File archivo = new File(cacheDir,
+                provincia + "_" + System.currentTimeMillis() + ".jsonl");
+
+        log.info(" Extrayendo {} → {}", provincia, archivo.getName());
+
+        try (BufferedWriter writer = new BufferedWriter(
+                new FileWriter(archivo), 32768)) {
+
+            AtomicInteger contador = new AtomicInteger(0);
+            ObjectMapper mapper = new ObjectMapper();
+
+            List<InfraccionesRepositoryImpl> soloEstaProvincia = Arrays.asList(repo);
+
+            // Forzar paginación para extracción
+            ParametrosFiltrosDTO filtrosConPaginacion = filtros.toBuilder()
+                    .forzarPaginacion(true)  // ← AGREGAR ESTA LÍNEA
+                    .limite(5000)            // ← Tamaño de lote razonable
+                    .build();
+
+            batchProcessor.procesarEnLotes(
+                    soloEstaProvincia,
+                    filtrosConPaginacion,  // ← Usar filtros modificados
+                    queryStorage.getCodigo(),
+                    lote -> {
+                        try {
+                            for (Map<String, Object> registro : lote) {
+                                registro.put("provincia", NormalizadorProvincias.normalizar(provincia));
+
+                                writer.write(mapper.writeValueAsString(registro));
+                                writer.newLine();
+
+                                int count = contador.incrementAndGet();
+                                if (count % 10000 == 0) {
+                                    log.debug("  {} registros escritos", count);
+                                }
+                            }
+                        } catch (IOException e) {
+                            throw new RuntimeException("Error escribiendo archivo", e);
+                        }
+                    }
+            );
+
+            log.info(" {} completada: {} registros", provincia, contador.get());
+        }
+
+        return archivo;
+    }
+
+    // Consolidar desde archivos
+    private List<Map<String, Object>> consolidarDesdeArchivos(
+            List<File> archivos,
+            QueryStorage queryStorage,
+            ParametrosFiltrosDTO filtros) throws IOException {
+
+        List<String> camposAgrupacion = determinarCamposAgrupacionDesdeBD(filtros, queryStorage);
+        List<String> camposNumericos = queryStorage.getCamposNumericosList();
+
+        Map<String, Map<String, Object>> grupos = new LinkedHashMap<>();
+        ObjectMapper mapper = new ObjectMapper();
+
+        int totalLeidos = 0;
+
+        for (File archivo : archivos) {
+            log.info("📖 Leyendo: {}", archivo.getName());
+
+            try (BufferedReader reader = new BufferedReader(
+                    new FileReader(archivo), 32768)) {
+
+                String linea;
+                int lineasArchivo = 0;
+
+                while ((linea = reader.readLine()) != null) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> registro = mapper.readValue(linea, Map.class);
+
+                    String claveGrupo = crearClaveGrupo(registro, camposAgrupacion);
+
+                    Map<String, Object> grupo = grupos.computeIfAbsent(claveGrupo, k -> {
+                        return crearGrupoNuevo(registro, camposAgrupacion, camposNumericos);
+                    });
+
+                    for (String campo : camposNumericos) {
+                        Object valorRegistro = registro.get(campo);
+                        if (valorRegistro == null) continue;
+
+                        Long valorNumerico = convertirANumero(valorRegistro);
+                        if (valorNumerico == null) continue;
+
+                        Long valorActual = obtenerValorNumerico(grupo.get(campo));
+                        grupo.put(campo, valorActual + valorNumerico);
+                    }
+
+                    lineasArchivo++;
+                }
+
+                totalLeidos += lineasArchivo;
+                log.debug("  {} líneas leídas", lineasArchivo);
+            }
+        }
+
+        log.info(" Total leído: {} registros → {} grupos", totalLeidos, grupos.size());
+        return new ArrayList<>(grupos.values());
     }
 
     /**

@@ -253,6 +253,10 @@ app:
 
   # Configuración de consolidación
   consolidacion:
+    umbral:
+      memoria: 500000 # cantidad de registros antes de usar archivos temporales
+    cache:
+      dir: ${java.io.tmpdir}/consolidacion  # Directorio para archivos temp
     default-strategy: "inteligente"       # inteligente | provincia | completa | temporal
     max-grouping-fields: 5               # Máximo campos de agrupación
     min-numeric-fields: 1                # Mínimo campos numéricos para consolidar

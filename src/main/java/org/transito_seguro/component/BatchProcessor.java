@@ -386,7 +386,10 @@ public class BatchProcessor {
 
         String provincia = repo.getProvincia();
 
-        if (esQueryConsolidable(nombreQuery)) {
+        // Verificar si debe forzar paginación
+        boolean debeUsarPaginacion = Boolean.TRUE.equals(filtros.getForzarPaginacion());
+
+        if (!debeUsarPaginacion && esQueryConsolidable(nombreQuery)) {
             ejecutarQueryConsolidable(repo, filtros, nombreQuery, provincia, contexto);
         } else {
             ejecutarQueryPaginada(repo, filtros, nombreQuery, provincia, contexto);
@@ -497,12 +500,34 @@ public class BatchProcessor {
 
         try {
             Map<String, Object> ultimo = lote.get(lote.size() - 1);
-            if (ultimo.containsKey("id") && ultimo.containsKey("serie_equipo") && ultimo.containsKey("lugar")) {
+
+            // Keyset estándar (queries normales con id)
+            if (ultimo.containsKey("id") && ultimo.get("id") != null) {
                 lastKeyPerProvince.put(provincia, new Object[]{
                         ultimo.get("id"),
                         ultimo.get("serie_equipo"),
                         ultimo.get("lugar")
                 });
+                log.debug("Keyset estándar guardado: id={}", ultimo.get("id"));
+            }
+            // Keyset consolidación (primeros campos disponibles)
+            else {
+                // Tomar los primeros 3 campos del registro
+                List<Object> keyValues = new ArrayList<>();
+                int count = 0;
+
+                for (Map.Entry<String, Object> entry : ultimo.entrySet()) {
+                    if (entry.getValue() != null && count < 3) {
+                        keyValues.add(entry.getValue());
+                        count++;
+                    }
+                }
+
+                if (!keyValues.isEmpty()) {
+                    lastKeyPerProvince.put(provincia, keyValues.toArray());
+                    log.debug("Keyset consolidación guardado: {} campos = {}",
+                            keyValues.size(), keyValues);
+                }
             }
         } catch (Exception e) {
             log.debug("Error guardando lastKey para {}: {}", provincia, e.getMessage());
@@ -575,25 +600,43 @@ public class BatchProcessor {
 
         if (usarKeyset) {
             Object[] lastKey = lastKeyPerProvince.get(provincia);
-            return filtrosOriginales.toBuilder()
-                    .limite(batchSize)
-                    .offset(null)
-                    .pagina(null)
-                    .tamanoPagina(null)
-                    .lastId((Integer) lastKey[0])
-                    .lastSerieEquipo((String) lastKey[1])
-                    .lastLugar((String) lastKey[2])
-                    .build();
+
+            // Detectar tipo de keyset
+            if (lastKey.length >= 1 && lastKey[0] instanceof Integer &&
+                    lastKey.length == 3) {
+                // Keyset estándar (id, serie_equipo, lugar)
+                return filtrosOriginales.toBuilder()
+                        .limite(batchSize)
+                        .offset(null)
+                        .lastId((Integer) lastKey[0])
+                        .lastSerieEquipo((String) lastKey[1])
+                        .lastLugar((String) lastKey[2])
+                        .build();
+            } else {
+                // Keyset consolidación genérico
+                Map<String, Object> keysetMap = new HashMap<>();
+                for (int i = 0; i < Math.min(lastKey.length, 3); i++) {
+                    if (lastKey[i] != null) {
+                        keysetMap.put("campo_" + i, lastKey[i]);
+                    }
+                }
+
+                return filtrosOriginales.toBuilder()
+                        .limite(batchSize)
+                        .offset(null)
+                        .lastKeysetConsolidacion(keysetMap)
+                        .build();
+            }
         }
 
+        // Primera iteración: sin keyset
         return filtrosOriginales.toBuilder()
                 .limite(batchSize)
                 .offset(null)
-                .pagina(null)
-                .tamanoPagina(null)
                 .lastId(null)
                 .lastSerieEquipo(null)
                 .lastLugar(null)
+                .lastKeysetConsolidacion(null)
                 .build();
     }
 }

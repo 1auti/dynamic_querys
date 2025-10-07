@@ -34,6 +34,14 @@ public class ParametrosFiltrosDTO {
     private Integer tamanoPagina;
     private Integer limiteMaximo;
     private Integer offset;
+    private Boolean forzarPaginacion;
+
+    /** Para keyset para la consolidacion
+     * Cuando la query no esta bien formaada para la consolidacion aplicamos estrategias
+     */
+
+    // NUEVO: Keyset consolidación genérico
+    private Map<String, Object> lastKeysetConsolidacion;
 
     // Para casos edge
     private Map<String, Object> filtrosAdicionales;

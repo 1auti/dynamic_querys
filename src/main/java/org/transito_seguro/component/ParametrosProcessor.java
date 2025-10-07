@@ -173,20 +173,51 @@ public class ParametrosProcessor {
 
     private void mapearParametrosKeyset(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
         if (filtros == null) {
+            // Keyset estándar
             params.addValue("lastId", null, Types.INTEGER);
             params.addValue("lastSerieEquipo", null, Types.VARCHAR);
             params.addValue("lastLugar", null, Types.VARCHAR);
+
+            // Keyset consolidación genérico (hasta 3 campos)
+            params.addValue("keyset_campo_0", null, Types.VARCHAR);
+            params.addValue("keyset_campo_1", null, Types.VARCHAR);
+            params.addValue("keyset_campo_2", null, Types.VARCHAR);
             return;
         }
 
-        // Mapear con tipos explícitos
+        // Keyset estándar
         params.addValue("lastId", filtros.getLastId(), Types.INTEGER);
         params.addValue("lastSerieEquipo", filtros.getLastSerieEquipo(), Types.VARCHAR);
         params.addValue("lastLugar", filtros.getLastLugar(), Types.VARCHAR);
 
+        // Keyset consolidación genérico
+        Map<String, Object> keysetCons = filtros.getLastKeysetConsolidacion();
+        if (keysetCons != null && !keysetCons.isEmpty()) {
+            for (int i = 0; i < 3; i++) {
+                String key = "campo_" + i;
+                Object valor = keysetCons.get(key);
+
+                if (valor != null) {
+                    if (valor instanceof Integer) {
+                        params.addValue("keyset_campo_" + i, valor, Types.INTEGER);
+                    } else if (valor instanceof java.sql.Date || valor instanceof java.util.Date) {
+                        params.addValue("keyset_campo_" + i, valor, Types.TIMESTAMP);
+                    } else {
+                        params.addValue("keyset_campo_" + i, valor.toString(), Types.VARCHAR);
+                    }
+                    log.debug("🔑 Keyset consolidación[{}]: {}", i, valor);
+                } else {
+                    params.addValue("keyset_campo_" + i, null, Types.VARCHAR);
+                }
+            }
+        } else {
+            params.addValue("keyset_campo_0", null, Types.VARCHAR);
+            params.addValue("keyset_campo_1", null, Types.VARCHAR);
+            params.addValue("keyset_campo_2", null, Types.VARCHAR);
+        }
+
         if (filtros.getLastId() != null) {
-            log.debug("🔑 Keyset activo: lastId={}, lastSerie={}, lastLugar={}",
-                    filtros.getLastId(), filtros.getLastSerieEquipo(), filtros.getLastLugar());
+            log.debug("🔑 Keyset activo: lastId={}", filtros.getLastId());
         }
     }
 

@@ -1,13 +1,13 @@
 package org.transito_seguro.component;
 
 import lombok.extern.slf4j.Slf4j;
+import org.apache.poi.ss.formula.functions.T;
 import org.springframework.stereotype.Component;
 import org.transito_seguro.enums.EstrategiaPaginacion;
 import org.transito_seguro.enums.TipoDatoKeyset;
 import org.transito_seguro.model.CampoKeyset;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisPaginacion;
 
-import java.lang.reflect.Array;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,13 +30,25 @@ public class PaginationStrategyAnalyzer {
 
         // 1. Si es consolidada (GROUP BY), no paginar
         if (esQueryConsolidada(sql)) {
-            log.info("Query consolidada detectada - Sin paginación keyset");
-            return new AnalisisPaginacion(
-                    EstrategiaPaginacion.SIN_PAGINACION,
-                    false,
-                    Collections.emptyList(),
-                    "Query con GROUP BY no requiere paginación keyset"
-            );
+            List<CampoKeyset> camposGroupBy = extraerCamposGroupBy(sql);
+
+            if (camposGroupBy.size() >= 2) {
+                log.info("Query consolidada con keyset: {} campos GROUP BY", camposGroupBy.size());
+                return new AnalisisPaginacion(
+                        EstrategiaPaginacion.KEY_COMPUESTO,
+                        false,
+                        camposGroupBy,
+                        "Keyset basado en campos GROUP BY"
+                );
+            } else {
+                log.info("Query consolidada sin keyset viable");
+                return new AnalisisPaginacion(
+                        EstrategiaPaginacion.SIN_PAGINACION,
+                        false,
+                        Collections.emptyList(),
+                        "GROUP BY insuficiente para keyset"
+                );
+            }
         }
 
         // 2. Verificar si tiene i.id (ID de infracciones)
@@ -195,6 +207,132 @@ public class PaginationStrategyAnalyzer {
             return Integer.compare(a.getPrioridad(),b.getPrioridad());
         });
         return disponibles.subList(0,Math.min(4,disponibles.size()));
+    }
+
+
+
+    private List<CampoKeyset> extraerCamposGroupBy(String sql) {
+        List<CampoKeyset> campos = new ArrayList<>();
+
+        // Primero intentar GROUP BY con nombres de columnas
+        Pattern patternNombres = Pattern.compile(
+                "GROUP\\s+BY\\s+([a-zA-Z_][a-zA-Z0-9_\\.]*(?:\\s*,\\s*[a-zA-Z_][a-zA-Z0-9_\\.]*)*)",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        Matcher matcherNombres = patternNombres.matcher(sql);
+        if (matcherNombres.find()) {
+            String groupByClause = matcherNombres.group(1).trim();
+            String[] camposArray = groupByClause.split("\\s*,\\s*");
+
+            for (int i = 0; i < Math.min(camposArray.length, 3); i++) {
+                String campo = camposArray[i].trim();
+                if (!campo.isEmpty()) {
+                    TipoDatoKeyset tipo = inferirTipoDato(campo);
+                    campos.add(new CampoKeyset(campo,campo, tipo, i));
+                }
+            }
+
+            log.debug("Campos GROUP BY extraídos (nombres): {}", campos);
+            return campos;
+        }
+
+        // Si es GROUP BY numérico (1,2,3...), extraer campos del SELECT
+        Pattern patternNumerico = Pattern.compile(
+                "GROUP\\s+BY\\s+(\\d+(?:\\s*,\\s*\\d+)*)",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        Matcher matcherNumerico = patternNumerico.matcher(sql);
+        if (matcherNumerico.find()) {
+            String groupByClause = matcherNumerico.group(1).trim();
+            String[] numerosArray = groupByClause.split("\\s*,\\s*");
+
+            // Extraer campos del SELECT
+            List<String> camposSelect = extraerCamposDelSelect(sql);
+
+            for (int i = 0; i < Math.min(numerosArray.length, 3); i++) {
+                int posicion = Integer.parseInt(numerosArray[i].trim()) - 1; // 1-based to 0-based
+
+                if (posicion >= 0 && posicion < camposSelect.size()) {
+                    String campo = camposSelect.get(posicion);
+
+                    // Extraer solo el alias (después de AS)
+                    String alias = extraerAlias(campo);
+
+                    if (!alias.isEmpty()) {
+                        TipoDatoKeyset tipo = inferirTipoDato(alias);
+                        campos.add(new CampoKeyset(alias,campo, tipo, i));
+                    }
+                }
+            }
+
+            log.debug("Campos GROUP BY extraídos (numérico): {}", campos);
+            return campos;
+        }
+
+        return campos;
+    }
+
+    // NUEVO: Extraer campos del SELECT
+    private List<String> extraerCamposDelSelect(String sql) {
+        List<String> campos = new ArrayList<>();
+
+        Pattern selectPattern = Pattern.compile(
+                "SELECT\\s+(.*?)\\s+FROM",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+        );
+
+        Matcher matcher = selectPattern.matcher(sql);
+        if (!matcher.find()) {
+            return campos;
+        }
+
+        String selectClause = matcher.group(1).trim();
+
+        // Dividir por comas (simple, no maneja funciones complejas perfectamente)
+        String[] parts = selectClause.split(",");
+
+        for (String part : parts) {
+            campos.add(part.trim());
+        }
+
+        return campos;
+    }
+
+    // Extraer alias de un campo
+    private String extraerAlias(String campo) {
+        // Buscar "AS alias"
+        Pattern aliasPattern = Pattern.compile(
+                "\\s+AS\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        Matcher matcher = aliasPattern.matcher(campo);
+        if (matcher.find()) {
+            return matcher.group(1).trim();
+        }
+
+        // Si no tiene AS, tomar lo último después del punto
+        if (campo.contains(".")) {
+            String[] parts = campo.split("\\.");
+            return parts[parts.length - 1].trim();
+        }
+
+        // Si no, devolver el campo completo (limpiando espacios)
+        return campo.replaceAll("\\s+", "").trim();
+    }
+
+    private TipoDatoKeyset inferirTipoDato(String campo){
+        String lower = campo.toLowerCase();
+
+        if(lower.contains("fecha") || lower.contains("date")){
+            return TipoDatoKeyset.DATE;
+        } else if (lower.contains("anio") || lower.contains("year")) {
+            return  TipoDatoKeyset.INTEGER;
+        }
+
+        return TipoDatoKeyset.TEXT;
     }
 
 

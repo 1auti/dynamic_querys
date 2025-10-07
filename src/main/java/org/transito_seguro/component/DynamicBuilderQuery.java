@@ -14,6 +14,7 @@ import org.transito_seguro.model.consolidacion.analisis.AnalisisPaginacion;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @Component
 @Slf4j
@@ -312,6 +313,10 @@ public class DynamicBuilderQuery {
             case KEY_COMPUESTO:
                 return aplicarKeysetCompuesto(sql, analisis.getCamposDisponibles());
 
+            // AGREGAR ESTE CASE:
+            case KEYSET_CONSOLIDADO:
+                return aplicarKeysetConsolidacion(sql, analisis.getCamposDisponibles());
+
             case OFFSET:
                 return aplicarOffset(sql);
 
@@ -325,6 +330,63 @@ public class DynamicBuilderQuery {
                 log.warn("Estrategia desconocida, aplicando LIMIT simple");
                 return aplicarLimitSimple(sql);
         }
+    }
+
+    private String aplicarKeysetConsolidacion(String sql, List<CampoKeyset> campos) {
+        if (campos.isEmpty()) {
+            log.warn("Sin campos para keyset consolidación");
+            return aplicarLimitParaConsolidacion(sql);
+        }
+
+        log.info("Aplicando KEYSET_CONSOLIDACION con {} campos: {}",
+                campos.size(),
+                campos.stream().map(CampoKeyset::getNombreCampo).collect(Collectors.toList()));
+
+        // Construir condición WHERE para keyset
+        StringBuilder keysetCondition = new StringBuilder();
+        String primerCampo = campos.get(0).getNombreCampo();
+
+        // Usar nombres de parámetros genéricos: keyset_campo_0, keyset_campo_1, etc.
+        keysetCondition.append("  AND (:keyset_campo_0 IS NULL OR \n");
+        keysetCondition.append("       (").append(primerCampo)
+                .append(" > :keyset_campo_0");
+
+        // Agregar campos adicionales en cascada (hasta 3)
+        for (int i = 1; i < Math.min(campos.size(), 3); i++) {
+            String campo = campos.get(i).getNombreCampo();
+            keysetCondition.append(" OR \n        (");
+
+            // Igualdad en campos anteriores
+            for (int j = 0; j < i; j++) {
+                String campoAnterior = campos.get(j).getNombreCampo();
+                keysetCondition.append(campoAnterior)
+                        .append(" = :keyset_campo_").append(j)
+                        .append(" AND ");
+            }
+
+            // Mayor en campo actual
+            keysetCondition.append(campo)
+                    .append(" > :keyset_campo_").append(i)
+                    .append(")");
+        }
+
+        keysetCondition.append(")\n");
+
+        // Insertar condición ANTES de GROUP BY
+        sql = insertarCondicionKeyset(sql, keysetCondition.toString());
+
+        // Agregar ORDER BY
+        StringBuilder orderBy = new StringBuilder("\nORDER BY ");
+        for (int i = 0; i < Math.min(campos.size(), 3); i++) {
+            if (i > 0) orderBy.append(", ");
+            orderBy.append(campos.get(i).getNombreCampo()).append(" ASC");
+        }
+        sql = insertarOrderBy(sql, orderBy.toString());
+
+        // Agregar LIMIT
+        sql = agregarLimitSiNoExiste(sql);
+
+        return sql;
     }
 
     // ==================== KEYSET CON ID ====================
@@ -551,10 +613,114 @@ public class DynamicBuilderQuery {
 
     private String protegerSubconsultas(String sql) {
         subconsultasProtegidas = new HashMap<>();
-        sql = protegerPatron(sql, "EXISTS\\s*\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)", "EXISTS");
-        sql = protegerPatron(sql, "\\(\\s*SELECT[^()]*(?:\\([^()]*\\)[^()]*)*\\)", "SUBSELECT");
-        log.debug("Protegidas {} subconsultas", subconsultasProtegidas.size());
+
+        // Proteger expresiones CASE (incluyendo CASE anidados)
+        sql = protegerExpresionesCase(sql);
+
+        sql = protegerPatron(sql,
+                "EXISTS\\s*\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)",
+                "EXISTS");
+
+        sql = protegerPatron(sql,
+                "\\(\\s*SELECT[^()]*(?:\\([^()]*\\)[^()]*)*\\)",
+                "SUBSELECT");
+
+        log.debug("Protegidas {} subconsultas y expresiones", subconsultasProtegidas.size());
         return sql;
+    }
+
+    /**
+     * Protege expresiones CASE WHEN ... END respetando anidamiento
+     */
+    private String protegerExpresionesCase(String sql) {
+        Pattern casePattern = Pattern.compile(
+                "\\bCASE\\b",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        Matcher matcher = casePattern.matcher(sql);
+        StringBuilder resultado = new StringBuilder();
+        int lastEnd = 0;
+        int contador = 0;
+
+        while (matcher.find()) {
+            resultado.append(sql, lastEnd, matcher.start());
+
+            // Encontrar el END correspondiente
+            int inicio = matcher.start();
+            int fin = encontrarEndDeCase(sql, matcher.end());
+
+            if (fin > 0) {
+                String expresionCase = sql.substring(inicio, fin);
+                String placeholder = "___CASE_" + contador + "___";
+                subconsultasProtegidas.put(placeholder, expresionCase);
+                resultado.append(placeholder);
+                lastEnd = fin;
+                contador++;
+            } else {
+                // Si no encuentra END, mantener el CASE original
+                resultado.append(sql, inicio, matcher.end());
+                lastEnd = matcher.end();
+            }
+        }
+
+        resultado.append(sql.substring(lastEnd));
+        return resultado.toString();
+    }
+
+    /**
+     * Encuentra la posición del END que cierra un CASE, respetando anidamiento
+     */
+    private int encontrarEndDeCase(String sql, int inicioDesdeCase) {
+        String upper = sql.toUpperCase();
+        int nivelCase = 1;
+        int pos = inicioDesdeCase;
+
+        while (pos < sql.length() && nivelCase > 0) {
+            // Buscar siguiente CASE o END
+            int nextCase = upper.indexOf("CASE", pos);
+            int nextEnd = upper.indexOf("END", pos);
+
+            // Ajustar para que sean palabras completas
+            if (nextCase >= 0 && !esLimiteDePalabra(sql, nextCase, nextCase + 4)) {
+                nextCase = -1;
+            }
+            if (nextEnd >= 0 && !esLimiteDePalabra(sql, nextEnd, nextEnd + 3)) {
+                nextEnd = -1;
+            }
+
+            if (nextEnd < 0) {
+                return -1; // No se encontró END
+            }
+
+            if (nextCase >= 0 && nextCase < nextEnd) {
+                // Hay un CASE anidado
+                nivelCase++;
+                pos = nextCase + 4;
+            } else {
+                // Encontramos un END
+                nivelCase--;
+                if (nivelCase == 0) {
+                    return nextEnd + 3; // Posición después de END
+                }
+                pos = nextEnd + 3;
+            }
+        }
+
+        return -1;
+    }
+
+    /**
+     * Verifica si una posición es límite de palabra (no alfanumérico antes/después)
+     */
+    private boolean esLimiteDePalabra(String sql, int inicio, int fin) {
+        if (inicio > 0 && Character.isLetterOrDigit(sql.charAt(inicio - 1))) {
+            return false;
+        }
+        if (fin < sql.length() && Character.isLetterOrDigit(sql.charAt(fin))) {
+            return false;
+        }
+        return true;
     }
 
     private String protegerPatron(String sql, String patronStr, String prefijo) {
@@ -730,6 +896,9 @@ public class DynamicBuilderQuery {
         return sql.replaceAll("(?i)WHERE\\s+(GROUP BY|ORDER BY|LIMIT|$)", "$1")
                 .replaceAll("\\s+", " ").trim();
     }
+
+
+
 
     // ==================== AGREGAR FILTROS DINÁMICOS ====================
 
