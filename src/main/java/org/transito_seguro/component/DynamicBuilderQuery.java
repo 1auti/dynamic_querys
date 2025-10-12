@@ -89,42 +89,32 @@ public class DynamicBuilderQuery {
     private String prepararQuerySegunEstrategia(String sql, AnalisisPaginacion analisis) {
         EstrategiaPaginacion estrategia = analisis.getEstrategiaPaginacion();
 
-        switch (estrategia) {
-            case KEYSET_CON_ID:
-                // Asegurar que i.id esté en el SELECT
-                if (!analisis.isTieneIdInfracciones()) {
-                    sql = agregarIdAlSelect(sql);
-                }
-                // Ajustar GROUP BY si usa numeración
-                if (usaGroupByNumerico(sql)) {
-                    sql = ajustarGroupByConId(sql, true);
-                }
-                break;
-
-            case KEY_COMPUESTO:
-                // No necesita i.id, usar solo los campos disponibles
-                if (usaGroupByNumerico(sql)) {
-                    sql = ajustarGroupByConId(sql, false);
-                }
-                break;
-
-            case SIN_PAGINACION:
-            case OFFSET:
-            case FALLBACK_LIMIT_ONLY:
-                // No requiere preparación especial
-                break;
+        // ✅ SOLO preparar si es KEYSET y no tiene id_infraccion
+        if ((estrategia == EstrategiaPaginacion.KEYSET_CON_ID || 
+             estrategia == EstrategiaPaginacion.KEY_COMPUESTO || 
+             estrategia == EstrategiaPaginacion.KEYSET_CONSOLIDADO) && 
+            !tieneIdInfraccionEnSelect(sql)) {
+            
+            sql = agregarIdInfraccionAlSelect(sql);
+            log.debug("🔧 id_infraccion agregado al SELECT para estrategia: {}", estrategia);
         }
 
         return sql;
     }
 
-    private boolean tieneIdEnSelect(String sql) {
-        return Pattern.compile("SELECT\\s+.*\\b(i\\.id|infracciones\\.id)\\b.*FROM",
+    /**
+     * Verifica si tiene id_infraccion en el SELECT
+     */
+    private boolean tieneIdInfraccionEnSelect(String sql) {
+        return Pattern.compile("SELECT\\s+.*\\b(id_infraccion|i\\.id|infracciones\\.id)\\b.*FROM",
                         Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
                 .matcher(sql).find();
     }
 
-    private String agregarIdAlSelect(String sql) {
+    /**
+     * Agrega id_infraccion al SELECT si no está presente
+     */
+    private String agregarIdInfraccionAlSelect(String sql) {
         Pattern pattern = Pattern.compile(
                 "(SELECT\\s+)(DISTINCT\\s+)?(.*?)(\\s+FROM)",
                 Pattern.CASE_INSENSITIVE | Pattern.DOTALL
@@ -138,164 +128,13 @@ public class DynamicBuilderQuery {
             String from = matcher.group(4);
 
             String nuevoSelect = distinct != null
-                    ? select + distinct + "i.id, " + campos + from
-                    : select + "i.id, " + campos + from;
+                    ? select + distinct + "id_infraccion, " + campos + from
+                    : select + "id_infraccion, " + campos + from;
 
-            log.debug("i.id agregado al SELECT (DISTINCT: {})", distinct != null);
             return matcher.replaceFirst(Matcher.quoteReplacement(nuevoSelect));
         }
 
         return sql;
-    }
-
-    private boolean usaGroupByNumerico(String sql) {
-        return Pattern.compile("GROUP\\s+BY\\s+\\d+", Pattern.CASE_INSENSITIVE)
-                .matcher(sql).find();
-    }
-
-    private String ajustarGroupByConId(String sql, boolean tieneId) {
-        Pattern pattern = Pattern.compile(
-                "(GROUP\\s+BY\\s+)(\\d+(?:\\s*,\\s*\\d+)*)",
-                Pattern.CASE_INSENSITIVE
-        );
-
-        Matcher matcher = pattern.matcher(sql);
-        if (matcher.find()) {
-            String groupByClause = matcher.group(1);
-            String numeros = matcher.group(2);
-            String[] nums = numeros.split("\\s*,\\s*");
-
-            // Extraer campos del SELECT para verificar funciones de agregación
-            List<Integer> columnasValidas = filtrarColumnasAgregacion(sql, nums);
-
-            if (columnasValidas.isEmpty()) {
-                log.warn("No hay columnas válidas para GROUP BY después del filtrado");
-                return sql;
-            }
-
-            // Construir nuevo GROUP BY
-            StringBuilder nuevo = new StringBuilder();
-
-            if (tieneId) {
-                // Si agregamos i.id al inicio, desplazar todas las columnas +1
-                nuevo.append("1"); // i.id
-                for (Integer numCol : columnasValidas) {
-                    nuevo.append(", ").append(numCol + 1);
-                }
-            } else {
-                // Si NO agregamos i.id, usar los números originales filtrados
-                nuevo.append(columnasValidas.get(0));
-                for (int i = 1; i < columnasValidas.size(); i++) {
-                    nuevo.append(", ").append(columnasValidas.get(i));
-                }
-            }
-
-            log.debug("GROUP BY ajustado: {} → {}", numeros, nuevo);
-            return matcher.replaceFirst(Matcher.quoteReplacement(groupByClause + nuevo));
-        }
-
-        return sql;
-    }
-
-    /**
-     * Filtra columnas del GROUP BY que NO son funciones de agregación
-     */
-    private List<Integer> filtrarColumnasAgregacion(String sql, String[] nums) {
-        List<Integer> columnasValidas = new ArrayList<>();
-
-        // Extraer SELECT clause
-        Pattern selectPattern = Pattern.compile(
-                "SELECT\\s+(DISTINCT\\s+)?(.*?)\\s+FROM",
-                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
-        );
-        Matcher selectMatcher = selectPattern.matcher(sql);
-
-        if (!selectMatcher.find()) {
-            // Si no podemos extraer SELECT, asumir que todas son válidas
-            for (String num : nums) {
-                columnasValidas.add(Integer.parseInt(num.trim()));
-            }
-            return columnasValidas;
-        }
-
-        String selectClause = selectMatcher.group(2);
-
-        // Dividir por comas respetando paréntesis
-        List<String> campos = dividirCamposSelect(selectClause);
-
-        // Verificar cada número del GROUP BY
-        for (String num : nums) {
-            int indice = Integer.parseInt(num.trim());
-
-            // Verificar que el índice sea válido (1-based)
-            if (indice > 0 && indice <= campos.size()) {
-                String campo = campos.get(indice - 1); // Convertir a 0-based
-
-                // Verificar si NO es una función de agregación
-                if (!esFuncionAgregacion(campo)) {
-                    columnasValidas.add(indice);
-                } else {
-                    log.debug("Columna {} omitida del GROUP BY (función agregación): {}",
-                            indice, campo.substring(0, Math.min(50, campo.length())));
-                }
-            }
-        }
-
-        return columnasValidas;
-    }
-
-    /**
-     * Verifica si un campo es una función de agregación
-     */
-    private boolean esFuncionAgregacion(String campo) {
-        String upper = campo.trim().toUpperCase();
-
-        // Funciones de agregación comunes
-        String[] funciones = {"COUNT(", "SUM(", "AVG(", "MIN(", "MAX(",
-                "STRING_AGG(", "ARRAY_AGG(", "JSON_AGG("};
-
-        for (String funcion : funciones) {
-            if (upper.startsWith(funcion)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Divide campos del SELECT respetando paréntesis y comillas
-     */
-    private List<String> dividirCamposSelect(String selectClause) {
-        List<String> campos = new ArrayList<>();
-        StringBuilder campoActual = new StringBuilder();
-        int nivelParentesis = 0;
-        boolean enComillas = false;
-        char tipoComilla = 0;
-
-        for (char c : selectClause.toCharArray()) {
-            if (!enComillas && (c == '\'' || c == '"')) {
-                enComillas = true;
-                tipoComilla = c;
-            } else if (enComillas && c == tipoComilla) {
-                enComillas = false;
-            } else if (!enComillas) {
-                if (c == '(') nivelParentesis++;
-                else if (c == ')') nivelParentesis--;
-                else if (c == ',' && nivelParentesis == 0) {
-                    campos.add(campoActual.toString().trim());
-                    campoActual = new StringBuilder();
-                    continue;
-                }
-            }
-            campoActual.append(c);
-        }
-
-        if (campoActual.length() > 0) {
-            campos.add(campoActual.toString().trim());
-        }
-
-        return campos;
     }
 
     // ==================== APLICAR PAGINACIÓN SEGÚN ESTRATEGIA ====================
@@ -308,14 +147,10 @@ public class DynamicBuilderQuery {
 
         switch (estrategia) {
             case KEYSET_CON_ID:
-                return aplicarKeysetConId(sql, analisis.getCamposDisponibles());
-
             case KEY_COMPUESTO:
-                return aplicarKeysetCompuesto(sql, analisis.getCamposDisponibles());
-
-            // AGREGAR ESTE CASE:
             case KEYSET_CONSOLIDADO:
-                return aplicarKeysetConsolidacion(sql, analisis.getCamposDisponibles());
+                // ✅ UNIFICAR TODAS LAS ESTRATEGIAS KEYSET A UNA SOLA
+                return aplicarKeysetSimplificado(sql);
 
             case OFFSET:
                 return aplicarOffset(sql);
@@ -332,198 +167,26 @@ public class DynamicBuilderQuery {
         }
     }
 
-    private String aplicarKeysetConsolidacion(String sql, List<CampoKeyset> campos) {
-        if (campos.isEmpty()) {
-            log.warn("Sin campos para keyset consolidación");
-            return aplicarLimitParaConsolidacion(sql);
-        }
+    /**
+     * ✅ KEYSET SIMPLIFICADO - Solo lastId para todas las queries
+     */
+    private String aplicarKeysetSimplificado(String sql) {
+        log.debug("🔑 Aplicando KEYSET SIMPLIFICADO (solo lastId)");
 
-        log.info("Aplicando KEYSET_CONSOLIDACION con {} campos: {}",
-                campos.size(),
-                campos.stream().map(CampoKeyset::getNombreCampo).collect(Collectors.toList()));
+        // Construir condición keyset simple
+        String keysetCondition = "\n  AND (:lastId::INTEGER IS NULL OR id_infraccion > :lastId::INTEGER)";
 
-        // Construir condición WHERE para keyset
-        StringBuilder keysetCondition = new StringBuilder();
-        String primerCampo = campos.get(0).getNombreCampo();
+        // Insertar condición
+        sql = insertarCondicionKeyset(sql, keysetCondition);
 
-        // Usar nombres de parámetros genéricos: keyset_campo_0, keyset_campo_1, etc.
-        keysetCondition.append("  AND (:keyset_campo_0 IS NULL OR \n");
-        keysetCondition.append("       (").append(primerCampo)
-                .append(" > :keyset_campo_0");
-
-        // Agregar campos adicionales en cascada (hasta 3)
-        for (int i = 1; i < Math.min(campos.size(), 3); i++) {
-            String campo = campos.get(i).getNombreCampo();
-            keysetCondition.append(" OR \n        (");
-
-            // Igualdad en campos anteriores
-            for (int j = 0; j < i; j++) {
-                String campoAnterior = campos.get(j).getNombreCampo();
-                keysetCondition.append(campoAnterior)
-                        .append(" = :keyset_campo_").append(j)
-                        .append(" AND ");
-            }
-
-            // Mayor en campo actual
-            keysetCondition.append(campo)
-                    .append(" > :keyset_campo_").append(i)
-                    .append(")");
-        }
-
-        keysetCondition.append(")\n");
-
-        // Insertar condición ANTES de GROUP BY
-        sql = insertarCondicionKeyset(sql, keysetCondition.toString());
-
-        // Agregar ORDER BY
-        StringBuilder orderBy = new StringBuilder("\nORDER BY ");
-        for (int i = 0; i < Math.min(campos.size(), 3); i++) {
-            if (i > 0) orderBy.append(", ");
-            orderBy.append(campos.get(i).getNombreCampo()).append(" ASC");
-        }
-        sql = insertarOrderBy(sql, orderBy.toString());
+        // Agregar ORDER BY por id_infraccion
+        sql = insertarOrderBy(sql, "\nORDER BY id_infraccion ASC");
 
         // Agregar LIMIT
         sql = agregarLimitSiNoExiste(sql);
 
         return sql;
     }
-
-    // ==================== KEYSET CON ID ====================
-
-    /**
-     * Aplica paginación KEYSET_CON_ID: i.id + campos adicionales
-     */
-    private String aplicarKeysetConId(String sql, List<CampoKeyset> campos) {
-        log.debug("Aplicando KEYSET_CON_ID con {} campos adicionales", campos.size());
-
-        // Construir condición keyset: i.id + hasta 3 campos adicionales
-        StringBuilder keysetCondition = new StringBuilder();
-        keysetCondition.append("  AND (:lastId::INTEGER IS NULL OR \n");
-        keysetCondition.append("       (i.id > :lastId::INTEGER");
-
-        // Limitar a 3 campos adicionales
-        int maxCampos = Math.min(3, campos.size());
-
-        // Agregar condiciones en cascada para cada campo
-        for (int i = 0; i < maxCampos; i++) {
-            CampoKeyset campo = campos.get(i);
-            keysetCondition.append(" OR \n");
-            keysetCondition.append("        (i.id = :lastId::INTEGER");
-
-            // Agregar condiciones de campos anteriores (igualdad)
-            for (int j = 0; j < i; j++) {
-                CampoKeyset campoAnterior = campos.get(j);
-                keysetCondition.append(" AND ")
-                        .append(campoAnterior.getNombreCampo())
-                        .append(" = ")
-                        .append(campoAnterior.getParametroJdbc());
-            }
-
-            // Agregar condición del campo actual (mayor que)
-            keysetCondition.append(" AND ")
-                    .append(campo.getNombreCampo())
-                    .append(" > ")
-                    .append(campo.getParametroJdbc())
-                    .append(")");
-        }
-
-        keysetCondition.append("))\n");
-
-        // Insertar condición
-        sql = insertarCondicionKeyset(sql, keysetCondition.toString());
-
-        // Agregar ORDER BY
-        sql = agregarOrderByKeysetConId(sql, campos, maxCampos);
-
-        // Agregar LIMIT (verificar que no exista)
-        sql = agregarLimitSiNoExiste(sql);
-
-        return sql;
-    }
-
-    private String agregarOrderByKeysetConId(String sql, List<CampoKeyset> campos, int maxCampos) {
-        StringBuilder orderBy = new StringBuilder("\nORDER BY i.id ASC");
-
-        for (int i = 0; i < maxCampos; i++) {
-            orderBy.append(", ").append(campos.get(i).getNombreCampo()).append(" ASC");
-        }
-
-        return insertarOrderBy(sql, orderBy.toString());
-    }
-
-    // ==================== KEYSET COMPUESTO ====================
-
-    /**
-     * Aplica paginación KEYSET_COMPUESTO: serie_equipo, tipo, fecha, etc.
-     */
-    private String aplicarKeysetCompuesto(String sql, List<CampoKeyset> campos) {
-        log.debug("Aplicando KEYSET_COMPUESTO con {} campos", campos.size());
-
-        if (campos.isEmpty()) {
-            log.warn("No hay campos disponibles para keyset compuesto, usando LIMIT simple");
-            return aplicarLimitSimple(sql);
-        }
-
-        // Limitar a 4 campos para keyset compuesto
-        int maxCampos = Math.min(4, campos.size());
-
-        // Construir condición keyset en cascada
-        StringBuilder keysetCondition = new StringBuilder();
-        keysetCondition.append("  AND (");
-
-        for (int i = 0; i < maxCampos; i++) {
-            if (i > 0) {
-                keysetCondition.append(" OR \n       ");
-            }
-
-            CampoKeyset campo = campos.get(i);
-
-            // Condición: campos anteriores iguales Y campo actual mayor
-            keysetCondition.append("(");
-
-            // Agregar igualdades de campos anteriores
-            for (int j = 0; j < i; j++) {
-                CampoKeyset campoAnterior = campos.get(j);
-                keysetCondition.append(campoAnterior.getNombreCampo())
-                        .append(" = ")
-                        .append(campoAnterior.getParametroJdbc())
-                        .append(" AND ");
-            }
-
-            // Agregar comparación del campo actual
-            keysetCondition.append(campo.getNombreCampo())
-                    .append(" > ")
-                    .append(campo.getParametroJdbc())
-                    .append(")");
-        }
-
-        keysetCondition.append(")\n");
-
-        // Insertar condición
-        sql = insertarCondicionKeyset(sql, keysetCondition.toString());
-
-        // Agregar ORDER BY
-        sql = agregarOrderByKeysetCompuesto(sql, campos, maxCampos);
-
-        // Agregar LIMIT (verificar que no exista)
-        sql = agregarLimitSiNoExiste(sql);
-
-        return sql;
-    }
-
-    private String agregarOrderByKeysetCompuesto(String sql, List<CampoKeyset> campos, int maxCampos) {
-        StringBuilder orderBy = new StringBuilder("\nORDER BY ");
-
-        for (int i = 0; i < maxCampos; i++) {
-            if (i > 0) orderBy.append(", ");
-            orderBy.append(campos.get(i).getNombreCampo()).append(" ASC");
-        }
-
-        return insertarOrderBy(sql, orderBy.toString());
-    }
-
-    // ==================== OTRAS ESTRATEGIAS ====================
 
     /**
      * Aplica paginación OFFSET tradicional
@@ -576,18 +239,39 @@ public class DynamicBuilderQuery {
     private String insertarCondicionKeyset(String sql, String condicion) {
         String upper = sql.toUpperCase();
 
-        // Insertar ANTES de GROUP BY
-        if (upper.contains("GROUP BY")) {
-            return sql.replaceFirst("(?i)\\s+GROUP\\s+BY", "\n" + condicion + "GROUP BY");
+        // Insertar después del WHERE si existe
+        if (upper.contains("WHERE")) {
+            // Buscar el WHERE y insertar después
+            Pattern wherePattern = Pattern.compile(
+                    "(WHERE\\s+.*?)(?=(?:GROUP BY|ORDER BY|LIMIT|$))", 
+                    Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+            );
+            
+            Matcher matcher = wherePattern.matcher(sql);
+            if (matcher.find()) {
+                String whereSection = matcher.group(1);
+                String nuevaWhereSection = whereSection + condicion;
+                return matcher.replaceFirst(Matcher.quoteReplacement(nuevaWhereSection));
+            }
         }
-        // Si no hay GROUP BY, insertar antes de ORDER BY
-        else if (upper.contains("ORDER BY")) {
-            return sql.replaceFirst("(?i)\\s+ORDER\\s+BY", "\n" + condicion + "ORDER BY");
-        }
-        // Si no hay nada, agregar al final
+        // Si no hay WHERE, agregar uno
         else {
-            return sql + "\n" + condicion;
+            // Buscar donde insertar el WHERE (después de FROM/JOIN)
+            Pattern fromPattern = Pattern.compile(
+                    "(FROM\\s+.*?)(?=(?:WHERE|GROUP BY|ORDER BY|LIMIT|$))", 
+                    Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+            );
+            
+            Matcher matcher = fromPattern.matcher(sql);
+            if (matcher.find()) {
+                String fromSection = matcher.group(1);
+                String nuevaSection = fromSection + "\nWHERE 1=1" + condicion;
+                return matcher.replaceFirst(Matcher.quoteReplacement(nuevaSection));
+            }
         }
+
+        // Fallback: agregar al final
+        return sql + "\nWHERE 1=1" + condicion;
     }
 
     private String insertarOrderBy(String sql, String orderBy) {
@@ -840,16 +524,12 @@ public class DynamicBuilderQuery {
         switch (tipo) {
             case FECHA:
                 // 1. Remover BETWEEN (debe ir primero porque incluye AND)
-                // Soporta: campo BETWEEN 'fecha1' AND 'fecha2'
-                //          campo BETWEEN DATE 'fecha1' AND DATE 'fecha2'
-                //          campo BETWEEN TO_DATE(...) AND TO_DATE(...)
                 sql = sql.replaceAll(
                         "(?i)" + escapado + "\\s+BETWEEN\\s+(?:DATE\\s+)?(?:'[^']*'|TO_DATE\\([^)]+\\))\\s+AND\\s+(?:DATE\\s+)?(?:'[^']*'|TO_DATE\\([^)]+\\))",
                         ""
                 );
 
                 // 2. Remover comparaciones simples con fechas literales
-                // Soporta: campo >= 'fecha', campo > DATE 'fecha', etc.
                 sql = sql.replaceAll(
                         "(?i)" + escapado + "\\s*(?:>=|>|<=|<|=)\\s*(?:DATE\\s+)?'[^']*'",
                         ""
@@ -896,9 +576,6 @@ public class DynamicBuilderQuery {
         return sql.replaceAll("(?i)WHERE\\s+(GROUP BY|ORDER BY|LIMIT|$)", "$1")
                 .replaceAll("\\s+", " ").trim();
     }
-
-
-
 
     // ==================== AGREGAR FILTROS DINÁMICOS ====================
 
@@ -989,5 +666,48 @@ public class DynamicBuilderQuery {
         sb.append(tieneWhere ? "\n  AND " : "\nWHERE ");
         sb.append("(:exportadoSacit::BOOLEAN IS NULL OR ")
                 .append(campo).append(" = :exportadoSacit::BOOLEAN)");
+    }
+
+    // ==================== MÉTODOS OBSOLETOS (MANTENER PARA COMPATIBILIDAD) ====================
+
+    /**
+     * @deprecated Usar aplicarKeysetSimplificado
+     */
+    @Deprecated
+    private String aplicarKeysetConId(String sql, List<CampoKeyset> campos) {
+        return aplicarKeysetSimplificado(sql);
+    }
+
+    /**
+     * @deprecated Usar aplicarKeysetSimplificado
+     */
+    @Deprecated
+    private String aplicarKeysetCompuesto(String sql, List<CampoKeyset> campos) {
+        return aplicarKeysetSimplificado(sql);
+    }
+
+    /**
+     * @deprecated Usar aplicarKeysetSimplificado
+     */
+    @Deprecated
+    private String aplicarKeysetConsolidacion(String sql, List<CampoKeyset> campos) {
+        return aplicarKeysetSimplificado(sql);
+    }
+
+    /**
+     * @deprecated Ya no se usa con la estrategia simplificada
+     */
+    @Deprecated
+    private boolean usaGroupByNumerico(String sql) {
+        return Pattern.compile("GROUP\\s+BY\\s+\\d+", Pattern.CASE_INSENSITIVE)
+                .matcher(sql).find();
+    }
+
+    /**
+     * @deprecated Ya no se usa con la estrategia simplificada
+     */
+    @Deprecated
+    private String ajustarGroupByConId(String sql, boolean tieneId) {
+        return sql; // No-op en la versión simplificada
     }
 }
