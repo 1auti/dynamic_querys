@@ -1,9 +1,8 @@
-package org.transito_seguro.model.consolidacion.analisis;
+package org.transito_seguro.model;
 
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import org.transito_seguro.enums.EstrategiaPaginacion;
-import org.transito_seguro.model.CampoKeyset;
 
 import java.util.List;
 

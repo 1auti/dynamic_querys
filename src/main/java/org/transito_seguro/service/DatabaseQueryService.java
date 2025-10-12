@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.transito_seguro.component.FormatoConverter;
+import org.transito_seguro.component.PaginationStrategyAnalyzer;
 import org.transito_seguro.component.ParametrosProcessor;
 import org.transito_seguro.component.QueryAnalyzer;
 import org.transito_seguro.component.DynamicBuilderQuery;
@@ -12,8 +13,10 @@ import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.dto.QueryStorageDTO;
 import org.transito_seguro.enums.EstadoQuery;
-import org.transito_seguro.model.QueryStorage;
+import org.transito_seguro.model.AnalisisPaginacion;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
+import org.transito_seguro.model.query.QueryStorage;
+import org.transito_seguro.model.query.QueryResult;
 import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 
@@ -36,6 +39,9 @@ public class DatabaseQueryService {
 
     @Autowired
     private QueryAnalyzer queryAnalyzer;
+
+    @Autowired
+    private PaginationStrategyAnalyzer paginationStrategyAnalyzer;
 
     @Autowired
     private DynamicBuilderQuery builderQuery;
@@ -78,6 +84,8 @@ public class DatabaseQueryService {
 
         AnalisisConsolidacion analisis = queryAnalyzer.analizarParaConsolidacion(sql);
 
+        AnalisisPaginacion  analisisPaginacion = paginationStrategyAnalyzer.determinarEstrategia(sql);
+
         // Los filtros dinámicos se agregan solo al ejecutar
         QueryStorage query = QueryStorage.builder()
                 .codigo(dto.getCodigo())
@@ -85,7 +93,10 @@ public class DatabaseQueryService {
                 .descripcion(dto.getDescripcion())
                 .sqlQuery(sql)
                 .categoria(dto.getCategoria() != null ? dto.getCategoria() : "GENERAL")
-                .esConsolidable(analisis.isEsConsolidado())
+                .esConsolidable(analisis.isEsConsolidable())
+                .tipoConsolidacion(analisis.getTipoConsolidacion())
+                .estrategiaPaginacion(analisisPaginacion.getEstrategiaPaginacion())
+                .registrosEstimados(analisis.getRegistrosEstimados())
                 .timeoutSegundos(dto.getTimeoutSegundos())
                 .limiteMaximo(dto.getLimiteMaximo())
                 .creadoPor(dto.getCreadoPor())
@@ -94,7 +105,7 @@ public class DatabaseQueryService {
                 .build();
 
         // Aplicar análisis automático o manual
-        if (analisis.isEsConsolidado()) {
+        if (analisis.isEsConsolidable()) {
             query.setCamposAgrupacionList(analisis.getCamposAgrupacion());
             query.setCamposNumericosList(analisis.getCamposNumericos());
             query.setCamposUbicacionList(analisis.getCamposUbicacion());
@@ -124,28 +135,7 @@ public class DatabaseQueryService {
         return guardada;
     }
 
-    // Agregamos la paginacion filtros dinamicos
-//    private String preprocesarSqlParaGuardar(String sqlOriginal) {
-//        log.info("Pre-procesando SQL para almacenamiento dinámico");
-//
-//        validarSqlQuery(sqlOriginal);
-//
-//        // 1. Analizar estructura del SQL usando DynamicBuilderQuery
-//        DynamicBuilderQuery.AnalisisSQL analisis = builderQuery.analizarSql(sqlOriginal);
-//
-//        // 2. Agregar filtros dinámicos según campos detectados
-//        String sqlConFiltros = agregarFiltrosDinamicosAlSql(sqlOriginal, analisis);
-//
-//        // 3. Agregar paginación dinámica
-//        String sqlFinal = agregarPaginacionDinamica(sqlConFiltros);
-//
-//        log.info("✅ SQL pre-procesado: {} → {} caracteres",
-//                sqlOriginal.length(), sqlFinal.length());
-//        log.debug("SQL resultante:\n{}", sqlFinal);
-//
-//        return sqlFinal;
-//    }
-
+   
     /**
      * ✏ Actualizar query existente
      */
@@ -170,9 +160,9 @@ public class DatabaseQueryService {
 
             // Re-análisis automático
             AnalisisConsolidacion analisis = queryAnalyzer.analizarParaConsolidacion(dto.getSqlQuery());
-            query.setEsConsolidable(analisis.isEsConsolidado());
+            query.setEsConsolidable(analisis.isEsConsolidable());
 
-            if (analisis.isEsConsolidado()) {
+            if (analisis.isEsConsolidable()) {
                 query.setCamposAgrupacionList(analisis.getCamposAgrupacion());
                 query.setCamposNumericosList(analisis.getCamposNumericos());
                 query.setCamposUbicacionList(analisis.getCamposUbicacion());
@@ -329,7 +319,7 @@ public class DatabaseQueryService {
 
             try {
                 // Ejecutar SQL DIRECTAMENTE usando el ParametrosProcessor
-                ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
+                QueryResult resultado = parametrosProcessor.procesarQuery(
                         queryStorage.getSqlQuery(), filtros);
 
                 // Ejecutar query SQL directamente en el JdbcTemplate
@@ -579,7 +569,7 @@ public class DatabaseQueryService {
                         String provincia = repo.getProvincia();
 
                         // Procesar parámetros con SQL de BD
-                        ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
+                        QueryResult resultado = parametrosProcessor.procesarQuery(
                                 queryStorage.getSqlQuery(), consulta.getParametrosFiltros());
 
                         // Ejecutar
@@ -836,13 +826,13 @@ public class DatabaseQueryService {
                             .descripcion("Migrada automáticamente desde archivo: " + consulta.getArchivoQuery())
                             .sqlQuery(sql)
                             .categoria(determinarCategoriaPorNombre(codigo))
-                            .esConsolidable(analisis.isEsConsolidado())
+                            .esConsolidable(analisis.isEsConsolidable())
                             .activa(true)
                             .estado(EstadoQuery.ANALIZADA)
                             .creadoPor("SISTEMA_MIGRACION")
                             .build();
 
-                    if (analisis.isEsConsolidado()) {
+                    if (analisis.isEsConsolidable()) {
                         queryStorage.setCamposAgrupacionList(analisis.getCamposAgrupacion());
                         queryStorage.setCamposNumericosList(analisis.getCamposNumericos());
                         queryStorage.setCamposUbicacionList(analisis.getCamposUbicacion());

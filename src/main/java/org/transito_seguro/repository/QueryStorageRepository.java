@@ -6,7 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import org.transito_seguro.enums.EstadoQuery;
-import org.transito_seguro.model.QueryStorage;
+import org.transito_seguro.model.query.QueryStorage;
 
 import java.util.List;
 import java.util.Optional;

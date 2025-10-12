@@ -25,4 +25,6 @@ public interface InfraccionesRepository {
      */
     String getProvincia();
 
+    Integer ejecutarQueryConteo(String nombreQuery, ParametrosFiltrosDTO filtros);
+
 }

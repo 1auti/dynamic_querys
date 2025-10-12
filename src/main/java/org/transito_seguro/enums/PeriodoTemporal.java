@@ -1,5 +1,9 @@
 package org.transito_seguro.enums;
 
+import lombok.Getter;
+
+@Getter
+
 public enum PeriodoTemporal {
     DIA("dia"),
     MES("mes"),
@@ -9,10 +13,5 @@ public enum PeriodoTemporal {
 
     PeriodoTemporal(String descripcion){
         this.descripcion = descripcion;
-    }
-
-
-    public String getDescripcion(){
-        return descripcion;
     }
 }

@@ -13,10 +13,11 @@ import org.transito_seguro.component.*;
 import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.exception.RuntimesFormatoExceleException;
-import org.transito_seguro.model.QueryStorage;
 import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 import org.transito_seguro.factory.RepositoryFactory;
+import org.transito_seguro.model.query.QueryStorage;
+import org.transito_seguro.model.query.QueryResult;
 import org.transito_seguro.utils.NormalizadorProvincias;
 
 import javax.annotation.PreDestroy;
@@ -416,7 +417,7 @@ public class InfraccionesService {
                 if (!queryOriginal.isEmpty()) {
                     String countQuery = "SELECT COUNT(*) as total FROM (" + queryOriginal + ") subquery";
 
-                    ParametrosProcessor.QueryResult resultado =
+                    QueryResult resultado =
                             parametrosProcessor.procesarQuery(countQuery, filtros);
 
                     List<Map<String, Object>> resultList = repo.getNamedParameterJdbcTemplate()
@@ -634,7 +635,7 @@ public class InfraccionesService {
 
                 try {
                     String sqlDinamico = queryStorage.getSqlQuery();
-                    ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
+                    QueryResult resultado = parametrosProcessor.procesarQuery(
                             sqlDinamico, filtros);
 
                     List<Map<String, Object>> datosProvincia = repo.getNamedParameterJdbcTemplate().queryForList(
@@ -693,7 +694,7 @@ public class InfraccionesService {
 
             try {
                 String sqlDinamico = queryStorage.getSqlQuery();
-                ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
+                 QueryResult resultado = parametrosProcessor.procesarQuery(
                         sqlDinamico, filtros);
 
                 List<Map<String, Object>> datosProvider = repo.getNamedParameterJdbcTemplate().queryForList(
@@ -781,7 +782,7 @@ public class InfraccionesService {
                         String provincia = repo.getProvincia();
                         String sqlDinamico = queryStorage.getSqlQuery();
 
-                        ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(
+                        QueryResult resultado = parametrosProcessor.procesarQuery(
                                 sqlDinamico, consulta.getParametrosFiltros());
 
                         List<Map<String, Object>> datos = repo.getNamedParameterJdbcTemplate().queryForList(

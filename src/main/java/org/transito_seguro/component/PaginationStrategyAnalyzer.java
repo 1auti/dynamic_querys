@@ -5,8 +5,8 @@ import org.apache.poi.ss.formula.functions.T;
 import org.springframework.stereotype.Component;
 import org.transito_seguro.enums.EstrategiaPaginacion;
 import org.transito_seguro.enums.TipoDatoKeyset;
+import org.transito_seguro.model.AnalisisPaginacion;
 import org.transito_seguro.model.CampoKeyset;
-import org.transito_seguro.model.consolidacion.analisis.AnalisisPaginacion;
 
 import java.util.*;
 import java.util.regex.Matcher;
@@ -334,12 +334,5 @@ public class PaginationStrategyAnalyzer {
 
         return TipoDatoKeyset.TEXT;
     }
-
-
-
-
-
-
-
 
 }

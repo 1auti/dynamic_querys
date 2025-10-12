@@ -778,7 +778,7 @@ public class ConsolidacionService {
             AnalisisConsolidacion analisis =
                     queryRegistryService.obtenerAnalisisConsolidacion(nombreQuery);
 
-            boolean consolidable = analisis.isEsConsolidado();
+            boolean consolidable = analisis.isEsConsolidable();
             log.debug("Query '{}' es consolidable: {}", nombreQuery, consolidable);
 
             return consolidable;

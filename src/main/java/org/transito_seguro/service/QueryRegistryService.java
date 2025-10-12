@@ -6,8 +6,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.transito_seguro.component.QueryAnalyzer;
 import org.transito_seguro.enums.EstadoQuery;
-import org.transito_seguro.model.QueryStorage;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
+import org.transito_seguro.model.query.QueryStorage;
 import org.transito_seguro.repository.QueryStorageRepository;
 
 import java.util.List;
@@ -134,7 +134,7 @@ public class QueryRegistryService {
                 query.getCamposTiempoList() != null ? query.getCamposTiempoList() : java.util.Collections.emptyList(),
                 query.getCamposUbicacionList() != null ? query.getCamposUbicacionList() : java.util.Collections.emptyList(),
                 java.util.Collections.emptyMap(), // tipoPorCampo - no almacenado actualmente
-                query.getEsConsolidable() != null ? query.getEsConsolidable() : false
+                query.getEsConsolidable() != null ? query.getEsConsolidable() : false, null, null, null, null
         );
     }
 

@@ -4,5 +4,6 @@ public enum TipoConsolidacion {
     AGREGACION,        // Sumar valores numéricos
     DEDUPLICACION,     // Eliminar duplicados por campos únicos
     JERARQUICA,        // Crear estructura anidada por ubicación/tiempo
-    COMBINADA          // Deduplicación + Agregación
+    COMBINADA,          // Deduplicación + Agregación
+    CRUDO // La query retorno los daots crudos en memoria sin procesar
 }

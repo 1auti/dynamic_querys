@@ -8,8 +8,8 @@ import org.springframework.stereotype.Component;
 import org.transito_seguro.enums.EstrategiaPaginacion;
 import org.transito_seguro.enums.TipoFiltroDetectado;
 import org.transito_seguro.exception.ValidationException;
+import org.transito_seguro.model.AnalisisPaginacion;
 import org.transito_seguro.model.CampoKeyset;
-import org.transito_seguro.model.consolidacion.analisis.AnalisisPaginacion;
 
 import java.util.*;
 import java.util.regex.Matcher;

@@ -6,10 +6,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
+import org.transito_seguro.enums.EstrategiaPaginacion;
 import org.transito_seguro.enums.EstrategiaProcessing;
-import org.transito_seguro.model.QueryStorage;
+import org.transito_seguro.enums.TipoConsolidacion;
+import org.transito_seguro.model.EstimacionDataset;
+import org.transito_seguro.model.query.QueryStorage;
+import org.transito_seguro.model.ContextoProcesamiento;
 import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
+import org.transito_seguro.service.QueryRegistryService;
 
 import javax.annotation.PreDestroy;
 import java.io.BufferedWriter;
@@ -47,7 +52,7 @@ public class BatchProcessor {
     private int threadPoolSize;
 
     @Autowired
-    private QueryStorageRepository queryStorageRepository;
+    private QueryRegistryService queryRegistryService;;
 
     private ExecutorService parallelExecutor;
     private final Map<String, Object[]> lastKeyPerProvince = new ConcurrentHashMap<>();
@@ -69,8 +74,7 @@ public class BatchProcessor {
                 60L,
                 TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(100),
-                new ThreadPoolExecutor.CallerRunsPolicy()
-        );
+                new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
     @PreDestroy
@@ -90,59 +94,6 @@ public class BatchProcessor {
         cacheQueryConsolidable.clear();
     }
 
-    private static class EstimacionDataset {
-        final int totalEstimado;
-        final double promedioPorProvincia;
-        final int maximoPorProvincia;
-
-        EstimacionDataset(int total, double promedio, int maximo) {
-            this.totalEstimado = total;
-            this.promedioPorProvincia = promedio;
-            this.maximoPorProvincia = maximo;
-        }
-    }
-
-    private static class ContextoProcesamiento {
-        final Consumer<List<Map<String, Object>>> procesador;
-        final BufferedWriter archivo;
-        private final ConcurrentLinkedQueue<Map<String, Object>> resultadosParciales = new ConcurrentLinkedQueue<>();
-        private final ObjectMapper mapper = new ObjectMapper();
-
-        ContextoProcesamiento(Consumer<List<Map<String, Object>>> procesador, BufferedWriter archivo) {
-            this.procesador = procesador;
-            this.archivo = archivo;
-        }
-
-        void agregarResultados(List<Map<String, Object>> resultados) {
-            resultadosParciales.addAll(resultados);
-        }
-
-        synchronized void procesarTodosResultados() {
-            if (resultadosParciales.isEmpty()) return;
-
-            List<Map<String, Object>> todosResultados = new ArrayList<>(resultadosParciales);
-            resultadosParciales.clear();
-
-            if (procesador != null) {
-                procesador.accept(todosResultados);
-            } else if (archivo != null) {
-                escribirArchivo(todosResultados);
-            }
-        }
-
-        private void escribirArchivo(List<Map<String, Object>> resultados) {
-            try {
-                for (Map<String, Object> resultado : resultados) {
-                    archivo.write(mapper.writeValueAsString(resultado));
-                    archivo.newLine();
-                }
-                archivo.flush();
-            } catch (IOException e) {
-                throw new RuntimeException("Error escribiendo archivo", e);
-            }
-        }
-    }
-
     public void procesarEnLotes(
             List<InfraccionesRepositoryImpl> repositories,
             ParametrosFiltrosDTO filtros,
@@ -160,13 +111,16 @@ public class BatchProcessor {
 
         ContextoProcesamiento contexto = new ContextoProcesamiento(procesarLotes, null);
 
+        QueryStorage queryStorage = queryRegistryService.buscarQuery(nombreQuery)
+                .orElse(null);
+
         try {
             switch (estrategia) {
                 case PARALELO:
-                    procesarParalelo(repositories, filtros, nombreQuery, contexto);
+                    procesarParalelo(repositories, filtros, nombreQuery, contexto,queryStorage);
                     break;
                 case HIBRIDO:
-                    procesarHibrido(repositories, filtros, nombreQuery, contexto);
+                    procesarHibrido(repositories, filtros, nombreQuery, contexto,queryStorage);
                     break;
                 case SECUENCIAL:
                     procesarSecuencial(repositories, filtros, nombreQuery, contexto);
@@ -185,7 +139,8 @@ public class BatchProcessor {
     }
 
     private void logInicio(int numProvincias, String nombreQuery) {
-        if (!log.isInfoEnabled()) return;
+        if (!log.isInfoEnabled())
+            return;
 
         log.info("═══════════════════════════════════════════════════════════");
         log.info("Inicio procesamiento - Provincias: {} | Query: {} | Memoria: {:.1f}%",
@@ -194,16 +149,18 @@ public class BatchProcessor {
     }
 
     private void logEstimacion(EstimacionDataset estimacion) {
-        if (!log.isInfoEnabled()) return;
+        if (!log.isInfoEnabled())
+            return;
 
         log.info("Estimación - Total: {} | Promedio: {} reg/prov | Máximo: {}",
-                estimacion.totalEstimado,
-                (int) estimacion.promedioPorProvincia,
-                estimacion.maximoPorProvincia);
+                estimacion.getTotalEstimado(),
+                (int) estimacion.getPromedioPorProvincia(),
+                estimacion.getMaximoPorProvincia());
     }
 
     private void imprimirResumenFinal() {
-        if (!log.isInfoEnabled()) return;
+        if (!log.isInfoEnabled())
+            return;
 
         long duracionTotal = System.currentTimeMillis() - tiempoInicioGlobal;
         int total = totalRegistrosGlobales.get();
@@ -217,44 +174,93 @@ public class BatchProcessor {
         log.info("═══════════════════════════════════════════════════════════");
     }
 
+    /**
+     * Estima el tamaño del dataset usando COUNT(*) en lugar de cargar datos.
+     * 
+     * @param repositories Lista de repositorios (uno por provincia)
+     * @param filtros      Filtros aplicados (fechas, tipos, etc.)
+     * @param nombreQuery  Código de la query a ejecutar
+     * @return Estimación con total real, promedio y máximo por provincia
+     */
     private EstimacionDataset estimarDataset(
             List<InfraccionesRepositoryImpl> repositories,
             ParametrosFiltrosDTO filtros,
             String nombreQuery) {
 
-        ParametrosFiltrosDTO filtrosPrueba = filtros.toBuilder()
-                .limite(SAMPLE_SIZE)
-                .offset(0)
-                .build();
-
-        List<Integer> muestras = repositories.parallelStream()
-                .map(repo -> estimarProvincia(repo, nombreQuery, filtrosPrueba))
+        // Ejecutar COUNT(*) en paralelo para todas las provincias
+        List<Integer> conteos = repositories.parallelStream()
+                .map(repo -> obtenerConteoReal(repo, nombreQuery, filtros))
                 .collect(Collectors.toList());
 
-        int totalEstimado = muestras.stream().mapToInt(Integer::intValue).sum();
+        // Calcular estadísticas
+        int totalEstimado = conteos.stream().mapToInt(Integer::intValue).sum();
         double promedio = repositories.isEmpty() ? 0 : (double) totalEstimado / repositories.size();
-        int maximo = muestras.stream().mapToInt(Integer::intValue).max().orElse(0);
+        int maximo = conteos.stream().mapToInt(Integer::intValue).max().orElse(0);
 
         return new EstimacionDataset(totalEstimado, promedio, maximo);
     }
 
-    private int estimarProvincia(InfraccionesRepositoryImpl repo, String nombreQuery, ParametrosFiltrosDTO filtros) {
-        try {
-            List<Map<String, Object>> muestra = repo.ejecutarQueryConFiltros(nombreQuery, filtros);
-            int size = muestra.size();
-            return size >= SAMPLE_SIZE ? size * ESTIMATION_MULTIPLIER : size * (ESTIMATION_MULTIPLIER / 2);
-        } catch (Exception e) {
-            log.warn("Error estimando {}: {}", repo.getProvincia(), e.getMessage());
-            return 1000;
+/*
+ * Obtiene el conteo real de registros usando COUNT(*) O estimación del análisis.
+ * Si el QueryAnalyzer ya proporcionó una estimación confiable, la usa.
+ * 
+ * @param repo        Repositorio de la provincia
+ * @param nombreQuery Código de la query
+ * @param filtros     Filtros aplicados
+ * @return Número exacto o estimado de registros
+ */
+private int obtenerConteoReal(
+        InfraccionesRepositoryImpl repo,
+        String nombreQuery,
+        ParametrosFiltrosDTO filtros) {
+    try {
+        Optional<QueryStorage> queryOpt = queryRegistryService.buscarQuery(nombreQuery);
+        if (!queryOpt.isPresent()) {
+            log.warn("Query no encontrada: {} para provincia {}", nombreQuery, repo.getProvincia());
+            return 0;
         }
+
+        QueryStorage queryStorage = queryOpt.get();
+        
+        // ✅ OPCIÓN 1: SIEMPRE usar COUNT(*) real (más seguro)
+        String queryOriginal = queryStorage.getSqlQuery();
+        String queryConteo = construirQueryConteo(queryOriginal);
+        Integer conteoReal = repo.ejecutarQueryConteo(queryConteo, filtros);
+        
+        log.info("🔍 Conteo REAL para {}: {} registros (estimación previa: {})", 
+                 repo.getProvincia(), 
+                 conteoReal,
+                 queryStorage.getRegistrosEstimados());
+                 
+        return conteoReal != null ? conteoReal : 0;
+
+    } catch (Exception e) {
+        log.error("Error obteniendo conteo para {} - {}: {}",
+                repo.getProvincia(), nombreQuery, e.getMessage());
+        return 0;
+    }
+}
+
+    /**
+     * Envuelve la query original en un SELECT COUNT(*).
+     * 
+     * @param queryOriginal Query SQL original
+     * @return Query modificada para contar registros
+     */
+    private String construirQueryConteo(String queryOriginal) {
+        // Remover ORDER BY si existe (no necesario para contar)
+        String querySinOrder = queryOriginal.replaceAll("(?i)ORDER BY[^;]*", "").trim();
+
+        // Envolver en subquery
+        return String.format("SELECT COUNT(*) as total FROM (%s) AS subquery", querySinOrder);
     }
 
     private EstrategiaProcessing decidirEstrategia(EstimacionDataset estimacion) {
-        if (estimacion.promedioPorProvincia < parallelThresholdPerProvince &&
-                estimacion.totalEstimado < parallelThresholdTotal) {
+        if (estimacion.getPromedioPorProvincia() < parallelThresholdPerProvince &&
+                estimacion.getTotalEstimado() < parallelThresholdTotal) {
             return EstrategiaProcessing.PARALELO;
         }
-        if (estimacion.maximoPorProvincia > massiveThresholdPerProvince) {
+        if (estimacion.getMaximoPorProvincia() > massiveThresholdPerProvince) {
             return EstrategiaProcessing.SECUENCIAL;
         }
         return EstrategiaProcessing.HIBRIDO;
@@ -264,15 +270,15 @@ public class BatchProcessor {
             List<InfraccionesRepositoryImpl> repositories,
             ParametrosFiltrosDTO filtros,
             String nombreQuery,
-            ContextoProcesamiento contexto) {
+            ContextoProcesamiento contexto,
+            QueryStorage queryStorage) {
 
         log.info("Ejecutando modo PARALELO");
 
         List<CompletableFuture<Void>> futures = repositories.stream()
                 .map(repo -> CompletableFuture.runAsync(
-                        () -> ejecutarProvincia(repo, filtros, nombreQuery, contexto),
-                        parallelExecutor
-                ))
+                        () -> ejecutarProvincia(repo, filtros, nombreQuery, contexto,queryStorage),
+                        parallelExecutor))
                 .collect(Collectors.toList());
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
@@ -283,7 +289,8 @@ public class BatchProcessor {
             List<InfraccionesRepositoryImpl> repositories,
             ParametrosFiltrosDTO filtros,
             String nombreQuery,
-            ContextoProcesamiento contexto) {
+            ContextoProcesamiento contexto,
+            QueryStorage queryStorage) {
 
         log.info("Ejecutando modo HÍBRIDO");
 
@@ -293,9 +300,8 @@ public class BatchProcessor {
 
             List<CompletableFuture<Void>> futures = grupo.stream()
                     .map(repo -> CompletableFuture.runAsync(
-                            () -> ejecutarProvincia(repo, filtros, nombreQuery, contexto),
-                            parallelExecutor
-                    ))
+                            () -> ejecutarProvincia(repo, filtros, nombreQuery, contexto,queryStorage),
+                            parallelExecutor))
                     .collect(Collectors.toList());
 
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
@@ -378,28 +384,63 @@ public class BatchProcessor {
         lastKeyPerProvince.remove(provincia);
     }
 
-    private void ejecutarProvincia(
-            InfraccionesRepositoryImpl repo,
-            ParametrosFiltrosDTO filtros,
-            String nombreQuery,
-            ContextoProcesamiento contexto) {
+   /**
+ * Ejecuta una provincia decidiendo la estrategia según el tipo de query.
+ * 
+ * @param repo Repositorio de la provincia
+ * @param filtros Filtros aplicados
+ * @param nombreQuery Código de la query
+ * @param contexto Contexto de procesamiento
+ */
+private void ejecutarProvincia(
+        InfraccionesRepositoryImpl repo,
+        ParametrosFiltrosDTO filtros,
+        String nombreQuery,
+        ContextoProcesamiento contexto,
+        QueryStorage queryStorage) {
 
-        String provincia = repo.getProvincia();
+    String provincia = repo.getProvincia();
 
-        // Verificar si debe forzar paginación
-        boolean debeUsarPaginacion = Boolean.TRUE.equals(filtros.getForzarPaginacion());
-
-        if (!debeUsarPaginacion && esQueryConsolidable(nombreQuery)) {
-            ejecutarQueryConsolidable(repo, filtros, nombreQuery, provincia, contexto);
+    
+    // Verificar si debe forzar paginación (override manual)
+      boolean estrategiaSinPaginacion = queryStorage.getEstrategiaPaginacion() == EstrategiaPaginacion.SIN_PAGINACION;
+    
+     // Si la query no es consolidable, siempre usar paginación
+    if (estrategiaSinPaginacion && esQueryConsolidable(nombreQuery)) {
+        
+        // Decidir estrategia según tipo de consolidación
+        if (queryStorage.getTipoConsolidacion() == TipoConsolidacion.AGREGACION) {
+            // Query bien diseñada (GROUP BY con pocos registros): carga directa
+            ejecutarQueryConsolidableAgregacion(repo, filtros, nombreQuery, provincia, contexto, queryStorage);
+            
+        } else if (queryStorage.getTipoConsolidacion() == TipoConsolidacion.CRUDO) {
+            // Query mal diseñada (sin GROUP BY o muchos registros): streaming
+            ejecutarQueryConsolidableCrudo(repo, filtros, nombreQuery, provincia, contexto, queryStorage);
+            
+        } else if (queryStorage.getTipoConsolidacion() == TipoConsolidacion.DEDUPLICACION) {
+            // Query con deduplicación: carga directa si < 10K, sino streaming
+            if (queryStorage.getRegistrosEstimados() != null && queryStorage.getRegistrosEstimados() < 10000) {
+                ejecutarQueryConsolidableAgregacion(repo, filtros, nombreQuery, provincia, contexto, queryStorage);
+            } else {
+                ejecutarQueryConsolidableCrudo(repo, filtros, nombreQuery, provincia, contexto, queryStorage);
+            }
+            
         } else {
-            ejecutarQueryPaginada(repo, filtros, nombreQuery, provincia, contexto);
+            // Tipo desconocido, JERARQUICA o COMBINADA: usar estrategia conservadora (streaming)
+            log.warn("Tipo de consolidación {} para {}, usando streaming", 
+                     queryStorage.getTipoConsolidacion(), nombreQuery);
+            ejecutarQueryConsolidableCrudo(repo, filtros, nombreQuery, provincia, contexto, queryStorage);
         }
+    } else {
+        // Query normal: usar paginación estándar
+        ejecutarQueryPaginada(repo, filtros, nombreQuery, provincia, contexto);
     }
+}
 
     private boolean esQueryConsolidable(String nombreQuery) {
         return cacheQueryConsolidable.computeIfAbsent(nombreQuery, key -> {
             try {
-                Optional<QueryStorage> qs = queryStorageRepository.findByCodigo(key);
+                Optional<QueryStorage> qs = queryRegistryService.buscarQuery(key);
                 return qs.map(QueryStorage::getEsConsolidable).orElse(false);
             } catch (Exception e) {
                 return false;
@@ -407,30 +448,192 @@ public class BatchProcessor {
         });
     }
 
-    private void ejecutarQueryConsolidable(
-            InfraccionesRepositoryImpl repo,
-            ParametrosFiltrosDTO filtros,
-            String nombreQuery,
-            String provincia,
-            ContextoProcesamiento contexto) {
 
-        try {
-            ParametrosFiltrosDTO filtrosSinLimite = filtros.toBuilder()
-                    .limite(null)
-                    .offset(null)
-                    .build();
+    /**
+ * Ejecuta query consolidable AGREGACION (bien diseñada).
+ * La query YA hace GROUP BY en la BD y retorna pocos registros.
+ * Es seguro cargar todo en memoria de una vez.
+ * 
+ * Ejemplo: SELECT provincia, COUNT(*) FROM infracciones GROUP BY provincia
+ * Retorna: ~24 registros
+ * 
+ * @param repo Repositorio de la provincia
+ * @param filtros Filtros aplicados
+ * @param nombreQuery Código de la query
+ * @param provincia Nombre de la provincia
+ * @param contexto Contexto de procesamiento
+ * @param info Información de la query
+ */
+private void ejecutarQueryConsolidableAgregacion(
+        InfraccionesRepositoryImpl repo,
+        ParametrosFiltrosDTO filtros,
+        String nombreQuery,
+        String provincia,
+        ContextoProcesamiento contexto,
+        QueryStorage info) {
 
-            List<Map<String, Object>> resultado = repo.ejecutarQueryConFiltros(nombreQuery, filtrosSinLimite);
+    try {
+        log.debug("Ejecutando query consolidable AGREGACION para {}: {} registros estimados", 
+                  provincia, info.getRegistrosEstimados());
 
-            if (resultado != null && !resultado.isEmpty()) {
-                List<Map<String, Object>> resultadoInmutable = crearCopiasInmutables(resultado, provincia);
-                contexto.agregarResultados(resultadoInmutable);
-                actualizarContadores(provincia, resultado.size());
+        // Ejecutar sin límite ni offset (query ya está agregada)
+        ParametrosFiltrosDTO filtrosSinLimite = filtros.toBuilder()
+                .limite(null)
+                .offset(null)
+                .build();
+
+        // Carga directa en memoria (seguro porque retorna pocos registros)
+        List<Map<String, Object>> resultado = repo.ejecutarQueryConFiltros(nombreQuery, filtrosSinLimite);
+
+        if (resultado != null && !resultado.isEmpty()) {
+            // Verificar que la estimación era correcta
+            if (info.getRegistrosEstimados() != null && resultado.size() > info.getRegistrosEstimados() * 10) {
+                log.warn(" Query {} retornó {} registros pero se estimaban {}. Considerar cambiar a CRUDO",
+                         nombreQuery, resultado.size(), info.getRegistrosEstimados());
             }
-        } catch (Exception e) {
-            log.error("Error en query consolidable {} para {}: {}", nombreQuery, provincia, e.getMessage());
+            
+            // Procesar resultados
+            List<Map<String, Object>> resultadoInmutable = crearCopiasInmutables(resultado, provincia);
+            contexto.agregarResultados(resultadoInmutable);
+            actualizarContadores(provincia, resultado.size());
+            
+            log.info(" Query consolidable AGREGACION completada para {}: {} registros | Memoria: {:.1f}%", 
+                     provincia, resultado.size(), obtenerPorcentajeMemoriaUsada());
+        } else {
+            log.debug("Query consolidable AGREGACION para {} no retornó resultados", provincia);
         }
+        
+    } catch (OutOfMemoryError oom) {
+        log.error(" OOM en query consolidable AGREGACION para {}. La query debería ser CRUDO", provincia);
+        throw oom;
+    } catch (Exception e) {
+        log.error("Error en query consolidable AGREGACION {} para {}: {}", 
+                  nombreQuery, provincia, e.getMessage());
     }
+}
+
+
+
+/**
+ * Ejecuta query consolidable CRUDO (mal diseñada).
+ * La query retorna datos sin agregar y puede tener muchos registros.
+ * Usa streaming para evitar OutOfMemoryError y consolida en memoria.
+ * 
+ * Ejemplo: SELECT fecha, tipo, monto FROM infracciones WHERE...
+ * Retorna: Miles de registros que deben ser consolidados
+ * 
+ * @param repo Repositorio de la provincia
+ * @param filtros Filtros aplicados
+ * @param nombreQuery Código de la query
+ * @param provincia Nombre de la provincia
+ * @param contexto Contexto de procesamiento
+ * @param info Información de la query
+ */
+private void ejecutarQueryConsolidableCrudo(
+        InfraccionesRepositoryImpl repo,
+        ParametrosFiltrosDTO filtros,
+        String nombreQuery,
+        String provincia,
+        ContextoProcesamiento contexto,
+        QueryStorage info) {
+
+    try {
+        log.info("Ejecutando query consolidable CRUDO con streaming para {}: {} registros estimados",
+                 provincia, info.getRegistrosEstimados());
+
+        // Configurar para usar streaming
+        ParametrosFiltrosDTO filtrosStreaming = filtros.toBuilder()
+                .limite(null)
+                .offset(null)
+                .build();
+
+        // Buffer para procesar en chunks
+        final int CHUNK_SIZE = 1000;
+        final List<Map<String, Object>> buffer = new ArrayList<>(CHUNK_SIZE);
+        final AtomicInteger totalProcesados = new AtomicInteger(0);
+        final AtomicInteger chunksEnviados = new AtomicInteger(0);
+
+        // Callback que se ejecuta por cada registro
+        Consumer<Map<String, Object>> procesarRegistro = registro -> {
+            buffer.add(registro);
+            
+            // Cuando el buffer se llena, procesarlo
+            if (buffer.size() >= CHUNK_SIZE) {
+                procesarChunk(buffer, provincia, contexto, totalProcesados, chunksEnviados);
+            }
+        };
+
+        // Ejecutar query con streaming
+        repo.ejecutarQueryConStreaming(nombreQuery, filtrosStreaming, procesarRegistro);
+
+        // Procesar registros restantes en el buffer
+        if (!buffer.isEmpty()) {
+            procesarChunk(buffer, provincia, contexto, totalProcesados, chunksEnviados);
+        }
+
+        // Actualizar contador global
+        actualizarContadores(provincia, totalProcesados.get());
+        
+        log.info(" Query consolidable CRUDO completada para {}: {} registros en {} chunks | Memoria: {:.1f}%", 
+                 provincia, 
+                 totalProcesados.get(),
+                 chunksEnviados.get(),
+                 obtenerPorcentajeMemoriaUsada());
+
+    } catch (Exception e) {
+        log.error(" Error en query consolidable CRUDO para {}: {}", provincia, e.getMessage(), e);
+    }
+}
+
+/**
+ * Procesa un chunk de registros y lo envía al contexto.
+ * Libera memoria después de procesar.
+ * 
+ * @param buffer Buffer con registros a procesar
+ * @param provincia Nombre de la provincia
+ * @param contexto Contexto de procesamiento
+ * @param totalProcesados Contador total de registros procesados
+ * @param chunksEnviados Contador de chunks enviados
+ */
+private void procesarChunk(
+        List<Map<String, Object>> buffer,
+        String provincia,
+        ContextoProcesamiento contexto,
+        AtomicInteger totalProcesados,
+        AtomicInteger chunksEnviados) {
+    
+    // SOLO procesar si el buffer NO está vacío
+    if(!buffer.isEmpty()){
+        
+        // Crear copia inmutable del chunk
+        List<Map<String, Object>> chunkInmutable = crearCopiasInmutables(buffer, provincia);
+        
+        // Enviar al contexto
+        contexto.agregarResultados(chunkInmutable);
+        
+        // Actualizar contadores
+        int procesados = buffer.size();
+        totalProcesados.addAndGet(procesados);
+        chunksEnviados.incrementAndGet();
+        
+        // Log cada 10 chunks (10,000 registros)
+        if (chunksEnviados.get() % 10 == 0) {
+            log.debug("Provincia {}: {} registros procesados en {} chunks | Memoria: {:.1f}%", 
+                      provincia, 
+                      totalProcesados.get(),
+                      chunksEnviados.get(),
+                      obtenerPorcentajeMemoriaUsada());
+        }
+        
+        // Vaciar buffer para liberar memoria
+        buffer.clear();
+    }
+    
+    // Pausa si memoria alta
+    if (esMemoriaAlta()) {
+        pausarSiNecesario();
+    }
+}
 
     private void ejecutarQueryPaginada(
             InfraccionesRepositoryImpl repo,
@@ -496,14 +699,15 @@ public class BatchProcessor {
     }
 
     private void guardarLastKey(List<Map<String, Object>> lote, String provincia) {
-        if (lote.isEmpty()) return;
+        if (lote.isEmpty())
+            return;
 
         try {
             Map<String, Object> ultimo = lote.get(lote.size() - 1);
 
             // Keyset estándar (queries normales con id)
             if (ultimo.containsKey("id") && ultimo.get("id") != null) {
-                lastKeyPerProvince.put(provincia, new Object[]{
+                lastKeyPerProvince.put(provincia, new Object[] {
                         ultimo.get("id"),
                         ultimo.get("serie_equipo"),
                         ultimo.get("lugar")
@@ -534,18 +738,19 @@ public class BatchProcessor {
         }
     }
 
-    private void logHeartbeat(int totalRepositorios) {
-        long ahora = System.currentTimeMillis();
-        long ultimo = ultimoHeartbeat.get();
-
-        if (ahora - ultimo > HEARTBEAT_INTERVAL_MS && ultimoHeartbeat.compareAndSet(ultimo, ahora)) {
-            long transcurrido = ahora - tiempoInicioGlobal;
-            log.info("Heartbeat - {}s | {} registros | Memoria: {:.1f}%",
-                    transcurrido / 1000,
-                    totalRegistrosGlobales.get(),
-                    obtenerPorcentajeMemoriaUsada());
-        }
+   private void logHeartbeat(int totalRepositorios) {
+    long ahora = System.currentTimeMillis();
+    long ultimo = ultimoHeartbeat.get();
+    
+    if (ahora - ultimo > HEARTBEAT_INTERVAL_MS) {
+        // Actualizar sin condición de carrera
+        ultimoHeartbeat.set(ahora);
+        log.info("Heartbeat - {}s | {} registros | Memoria: {:.1f}%",
+                (ahora - tiempoInicioGlobal) / 1000,
+                totalRegistrosGlobales.get(),
+                obtenerPorcentajeMemoriaUsada());
     }
+}
 
     private double obtenerPorcentajeMemoriaUsada() {
         Runtime runtime = Runtime.getRuntime();
@@ -554,7 +759,8 @@ public class BatchProcessor {
 
     private boolean esMemoriaCritica() {
         Runtime runtime = Runtime.getRuntime();
-        return ((double) (runtime.totalMemory() - runtime.freeMemory()) / runtime.maxMemory()) > memoryCriticalThreshold;
+        return ((double) (runtime.totalMemory() - runtime.freeMemory())
+                / runtime.maxMemory()) > memoryCriticalThreshold;
     }
 
     private boolean esMemoriaAlta() {

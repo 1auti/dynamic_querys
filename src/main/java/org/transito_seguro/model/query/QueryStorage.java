@@ -1,4 +1,4 @@
-package org.transito_seguro.model;
+package org.transito_seguro.model.query;
 
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -6,6 +6,8 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import org.transito_seguro.component.QueryAnalyzer;
 import org.transito_seguro.enums.EstadoQuery;
+import org.transito_seguro.enums.EstrategiaPaginacion;
+import org.transito_seguro.enums.TipoConsolidacion;
 
 import javax.persistence.*;
 import java.time.LocalDateTime;
@@ -47,8 +49,17 @@ public class QueryStorage {
     private String categoria;
 
     // Metadata de consolidación
+    /**Indica si la query esta diseñada para ser consolidable */
     @Column(name = "es_consolidable", nullable = false)
     private Boolean esConsolidable = false;
+
+    @Column(name = "tipo_consolidacion")
+    @Enumerated(EnumType.STRING)
+    private TipoConsolidacion tipoConsolidacion;
+
+    @Column(name = "estrategia_paginacion")
+    @Enumerated(EnumType.STRING)
+    private EstrategiaPaginacion estrategiaPaginacion;
 
     @Column(name = "campos_agrupacion", columnDefinition = "TEXT")
     private String camposAgrupacion;
@@ -62,18 +73,18 @@ public class QueryStorage {
     @Column(name = "campos_tiempo", columnDefinition = "TEXT")
     private String camposTiempo;
 
-    // ✅ CRÍTICO: Control de versiones - VALOR POR DEFECTO
+    
     @Column(name = "version", nullable = false)
-    @Builder.Default  // ✅ NUEVO: Para el builder
-    private Integer version = 1;  // ✅ CORREGIDO: Valor por defecto no-null
+    @Builder.Default  
+    private Integer version = 1;
 
     @Column(name = "activa", nullable = false)
-    @Builder.Default  // ✅ NUEVO: Para el builder
+    @Builder.Default  
     private Boolean activa = true;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "estado")
-    @Builder.Default  // ✅ NUEVO: Para el builder
+    @Builder.Default  
     private EstadoQuery estado = EstadoQuery.PENDIENTE;
 
     // Auditoría
@@ -90,16 +101,27 @@ public class QueryStorage {
     private LocalDateTime ultimoUso;
 
     @Column(name = "contador_usos")
-    @Builder.Default  // ✅ NUEVO: Para el builder
+    @Builder.Default  
     private Long contadorUsos = 0L;
 
     // Configuración de ejecución
     @Column(name = "timeout_segundos")
-    @Builder.Default  // ✅ NUEVO: Para el builder
+    @Builder.Default  
     private Integer timeoutSegundos = 30;
 
+
+    /*
+     * Si la estimacion es null se calcula de forma dinamica 
+     * 10.000 < consulta directa
+     * 10.000 >  usar streaming
+     * Usando para decidir que estrategia de usar
+     * 
+     */
+    @Column(name = "registros_estimados")
+    private Integer registrosEstimados;
+
     @Column(name = "limite_maximo")
-    @Builder.Default  // ✅ NUEVO: Para el builder
+    @Builder.Default  
     private Integer limiteMaximo = 50000;
 
     // Tags para búsqueda y organización
@@ -210,7 +232,7 @@ public class QueryStorage {
         this.fechaCreacion = LocalDateTime.now();
         this.fechaActualizacion = LocalDateTime.now();
 
-        // ✅ SEGURIDAD: Asegurar valores por defecto en @PrePersist
+        // Asegurar valores por defecto en @PrePersist
         if (this.version == null) {
             this.version = 1;
         }

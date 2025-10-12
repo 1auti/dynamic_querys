@@ -4,21 +4,26 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.transito_seguro.component.ParametrosProcessor;
+import org.transito_seguro.model.query.QueryResult;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.exception.SQLExecutionException;
-import org.transito_seguro.model.QueryStorage;
+import org.transito_seguro.model.query.QueryStorage;
 import org.transito_seguro.repository.InfraccionesRepository;
 import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.utils.SQLExceptionParser;
 import org.transito_seguro.utils.SqlUtils;
 
+import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 /**
  * Implementación del repositorio de infracciones para una provincia específica.
@@ -54,7 +59,7 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
 
         try {
             String querySQL = cargarQuery(nombreQuery);
-            ParametrosProcessor.QueryResult resultado = parametrosProcessor.procesarQuery(querySQL, filtros);
+            QueryResult resultado = parametrosProcessor.procesarQuery(querySQL, filtros);
 
             try {
 
@@ -137,14 +142,6 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         }
     }
 
-//    private void logParametros(ParametrosProcessor.QueryResult resultado) {
-//        if (log.isInfoEnabled()) {
-//            log.info("Parámetros pasados a JDBC:");
-//            for (String paramName : resultado.getParametros().getParameterNames()) {
-//                log.info("  {}: {}", paramName, resultado.getParametros().getValue(paramName));
-//            }
-//        }
-//    }
 
     public boolean validarConectividad() {
         try {
@@ -165,4 +162,148 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
     public String toString() {
         return String.format("InfraccionesRepositoryImpl{provincia='%s'}", provincia);
     }
+
+    @Override
+    public Integer ejecutarQueryConteo(String nombreQuery, ParametrosFiltrosDTO filtros) {
+      try{
+
+         QueryResult queryResult = parametrosProcessor.procesarQuery(nombreQuery,filtros);
+
+         String queryFiltros = queryResult.getQueryModificada();
+
+         return jdbcTemplate.queryForObject(queryFiltros, queryResult.getParametros(), Integer.class);
+
+      }catch (Exception e){
+          log.error("Error ejecutando query de conteo '{}' en provincia {}: {}",
+                  nombreQuery, provincia, e.getMessage(), e);
+          throw new RuntimeException("Error ejecutando query de conteo: " + nombreQuery, e);
+      }
+    }
+
+/**
+ * Ejecuta una query usando streaming (cursor JDBC).
+ * Procesa resultados uno por uno sin cargar todo en memoria.
+ * 
+ * IMPORTANTE: Solo usar para queries que pueden retornar muchos registros.
+ * 
+ * @param nombreQuery Código de la query
+ * @param filtros Filtros aplicados
+ * @param procesarRegistro Callback ejecutado por cada registro
+ */
+public void ejecutarQueryConStreaming(
+        String nombreQuery,
+        ParametrosFiltrosDTO filtros,
+        Consumer<Map<String, Object>> procesarRegistro) {
+    
+    try {
+        // Obtener query
+        Optional<QueryStorage> queryOpt = queryStorageRepository.findByCodigo(nombreQuery);
+        
+        if (!queryOpt.isPresent()) {
+            throw new RuntimeException("Query no encontrada: " + nombreQuery);
+        }
+        
+        String sql = queryOpt.get().getSqlQuery();
+        QueryResult queryResult = parametrosProcessor.procesarQuery(sql, filtros);
+        String sqlModificada = queryResult.getQueryModificada();
+        
+        // ✅ CORRECCIÓN 1: getParametros() retorna MapSqlParameterSource, no Map
+        org.springframework.jdbc.core.namedparam.MapSqlParameterSource parametros = 
+            queryResult.getParametros();
+        
+        log.debug("Ejecutando query con streaming para provincia {}: {}", provincia, nombreQuery);
+        
+        // Convertir named parameters a posicionales
+        org.springframework.jdbc.core.namedparam.ParsedSql parsedSql = 
+            org.springframework.jdbc.core.namedparam.NamedParameterUtils.parseSqlStatement(sqlModificada);
+        
+        // ✅ CORRECCIÓN 2: Pasar 'parametros' directamente, no crear nuevo MapSqlParameterSource
+        String sqlPosicional = org.springframework.jdbc.core.namedparam.NamedParameterUtils
+            .substituteNamedParameters(parsedSql, parametros);
+        
+        // ✅ CORRECCIÓN 3: Pasar 'parametros' directamente
+        Object[] args = org.springframework.jdbc.core.namedparam.NamedParameterUtils
+            .buildValueArray(parsedSql, parametros, null);
+        
+        // Contador para logging
+        final int[] contador = {0};
+        
+        // Usar JdbcTemplate nativo para tener control del PreparedStatement
+        jdbcTemplate.getJdbcTemplate().query(
+            connection -> {
+                // Crear PreparedStatement con configuración de streaming
+                java.sql.PreparedStatement ps = connection.prepareStatement(
+                    sqlPosicional,
+                    java.sql.ResultSet.TYPE_FORWARD_ONLY,
+                    java.sql.ResultSet.CONCUR_READ_ONLY
+                );
+                
+                // CRÍTICO: Configurar fetch size para streaming
+                ps.setFetchSize(1000);
+                
+                // Establecer parámetros
+                for (int i = 0; i < args.length; i++) {
+                    ps.setObject(i + 1, args[i]);
+                }
+                
+                return ps;
+            },
+            rs -> {
+                // Este callback se ejecuta por cada fila
+                Map<String, Object> registro = mapearResultSetStreaming(rs);
+                procesarRegistro.accept(registro);
+                
+                // ✅ CORRECCIÓN 4: Agregar contador para logging
+                contador[0]++;
+                
+                // Log cada 10,000 registros
+                if (contador[0] % 10000 == 0) {
+                    log.debug("Streaming provincia {}: {} registros procesados", 
+                              provincia, contador[0]);
+                }
+            }
+        );
+        
+        // ✅ CORRECCIÓN 5: Log con total de registros procesados
+        log.debug("Query con streaming completada para provincia {}: {} registros totales", 
+                  provincia, contador[0]);
+        
+    } catch (Exception e) {
+        log.error("Error en streaming para provincia {}: {}", provincia, e.getMessage());
+        throw new RuntimeException("Error en streaming: " + e.getMessage(), e);
+    }
+}
+
+/**
+ * Mapea una fila del ResultSet a un Map (versión para streaming).
+ * 
+ * @param rs ResultSet posicionado en la fila actual
+ * @return Map con columnas y valores
+ */
+private Map<String, Object> mapearResultSetStreaming(ResultSet rs) {
+    try {
+        Map<String, Object> registro = new HashMap<>();
+        ResultSetMetaData metaData = rs.getMetaData();
+        
+        for (int i = 1; i <= metaData.getColumnCount(); i++) {
+            String columna = metaData.getColumnName(i);
+            Object valor = rs.getObject(i);
+            
+            // No incluir provincia si ya existe en el resultado
+            if (!"provincia".equalsIgnoreCase(columna)) {
+                registro.put(columna, valor);
+            }
+        }
+        
+        // Agregar provincia del repositorio
+        registro.put("provincia", this.provincia);
+        
+        return registro;
+        
+    } catch (SQLException e) {
+        log.error("Error mapeando ResultSet en streaming: {}", e.getMessage());
+        throw new RuntimeException("Error mapeando fila", e);
+    }
+}
+
 }
