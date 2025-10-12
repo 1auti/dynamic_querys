@@ -441,6 +441,9 @@ static {
                         camposAgrupacion.add(campo.nombreFinal);
                     }
                     break;
+                default:
+                log.warn("Tipo de campo no manejado en clasificación: {}", campo.tipo);
+                    break;
             }
         }
 

@@ -146,32 +146,6 @@ public class ParametrosProcessor {
         return lista.toArray(new Integer[0]);
     }
 
-    // =================== MÉTODOS DELEGACY (ELIMINAR EVENTUALMENTE) ===================
-
-    /**
-     * @deprecated Usar mapearKeysetSimplificado
-     */
-    @Deprecated
-    private void mapearParametrosKeyset(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
-        mapearKeysetSimplificado(params, filtros);
-    }
-
-    /**
-     * @deprecated Usar mapearPaginacionKeyset
-     */
-    @Deprecated
-    private void mapearPaginacionSeguro(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        mapearPaginacionKeyset(params, filtros);
-    }
-
-    /**
-     * @deprecated Mantener para compatibilidad
-     */
-    @Deprecated
-    private void mapearPaginacion(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
-        mapearPaginacionKeyset(params, filtros);
-    }
-
     // =================== MÉTODOS DE DEBUGGING ===================
 
     public void logParametros(MapSqlParameterSource params) {

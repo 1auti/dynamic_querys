@@ -1,6 +1,5 @@
 package org.transito_seguro.component;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -12,13 +11,10 @@ import org.transito_seguro.enums.TipoConsolidacion;
 import org.transito_seguro.model.EstimacionDataset;
 import org.transito_seguro.model.query.QueryStorage;
 import org.transito_seguro.model.ContextoProcesamiento;
-import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 import org.transito_seguro.service.QueryRegistryService;
 
 import javax.annotation.PreDestroy;
-import java.io.BufferedWriter;
-import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -62,8 +58,7 @@ public class BatchProcessor {
     private final Map<String, Boolean> cacheQueryConsolidable = new ConcurrentHashMap<>();
 
     private static final long HEARTBEAT_INTERVAL_MS = 30000;
-    private static final int SAMPLE_SIZE = 50;
-    private static final int ESTIMATION_MULTIPLIER = 100;
+
     private long tiempoInicioGlobal;
 
     @Autowired

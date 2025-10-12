@@ -9,12 +9,12 @@ import org.transito_seguro.enums.EstrategiaPaginacion;
 import org.transito_seguro.enums.TipoFiltroDetectado;
 import org.transito_seguro.exception.ValidationException;
 import org.transito_seguro.model.AnalisisPaginacion;
-import org.transito_seguro.model.CampoKeyset;
+
 
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
+
 
 @Component
 @Slf4j
@@ -487,6 +487,9 @@ public class DynamicBuilderQuery {
             case EXPORTA_SACIT:
                 // Remover comparación booleana
                 sql = sql.replaceAll("(?i)" + escapado + "\\s*=\\s*(?:true|false|TRUE|FALSE)", "");
+                break;
+            default:
+                log.warn("Tipo de filtro no soportado para remoción: {}", tipo);
                 break;
         }
 

@@ -1,7 +1,6 @@
 package org.transito_seguro.component;
 
 import lombok.extern.slf4j.Slf4j;
-import org.apache.poi.ss.formula.functions.T;
 import org.springframework.stereotype.Component;
 import org.transito_seguro.enums.EstrategiaPaginacion;
 import org.transito_seguro.enums.TipoDatoKeyset;
