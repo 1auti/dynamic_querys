@@ -15,16 +15,15 @@ import java.util.Map;
 @Component
 public class ParametrosProcessor {
 
-    
     /**
      * Método principal para procesar cualquier query con filtros dinámicos
-     *  Tipos explícitos seguros para PostgreSQL
+     * - Solo lastId para keyset
      */
     public QueryResult procesarQuery(String queryOriginal, ParametrosFiltrosDTO filtros) {
         MapSqlParameterSource parametros = new MapSqlParameterSource();
         Map<String, Object> metadata = new HashMap<>();
 
-        // Mapear TODOS los parámetros
+        // 1. Mapear TODOS los parámetros básicos
         mapearParametroFechasSeguro(filtros, parametros);
         mapearParametrosUbicacion(filtros, parametros);
         mapearParametrosEquipos(filtros, parametros);
@@ -32,186 +31,38 @@ public class ParametrosProcessor {
         mapearParametrosDominios(filtros, parametros);
         mapearParametrosAdicionalesSeguro(filtros, parametros);
 
-        // Mapear Keyset Y paginación
-        
-        mapearParametrosKeyset(parametros, filtros);
-       
+        // 2.  KEYSET SIMPLIFICADO + PAGINACIÓN
+        mapearKeysetSimplificado(parametros, filtros);
+        mapearPaginacionKeyset(parametros, filtros);
 
-        log.debug("Query procesada con Keyset. Parámetros: {}", parametros.getParameterNames().length);
+        log.debug("Query procesada. Parámetros: {} | Keyset: {}", 
+                  parametros.getParameterNames().length,
+                  filtros.getLastId() != null ? "ACTIVO(id=" + filtros.getLastId() + ")" : "INACTIVO");
 
         return new QueryResult(queryOriginal, parametros, metadata);
     }
 
-    // =================== MAPEO DE FECHAS CORREGIDO ===================
+    // =================== KEYSET SIMPLIFICADO ===================
 
     /**
-     * NUEVO: Mapeo de fechas más seguro para PostgreSQL
+     *  KEYSET SIMPLIFICADO - Solo lastId para todas las queries
      */
-    private void mapearParametroFechasSeguro(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        // Fechas principales con tipos específicos
-        params.addValue("fechaInicio", filtros.getFechaInicio(), Types.DATE);
-        params.addValue("fechaFin", filtros.getFechaFin(), Types.DATE);
-        params.addValue("fechaEspecifica", filtros.getFechaEspecifica(), Types.DATE);
-    }
-
-    // =================== MAPEO DE UBICACIÓN CORREGIDO ===================
-
-    private void mapearParametrosUbicacion(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        // Ubicación geográfica con tipos específicos para PostgreSQL
-        params.addValue("provincias", convertirListaAArrayPostgreSQL(filtros.getProvincias()), Types.OTHER);
-        params.addValue("municipios", convertirListaAArrayPostgreSQL(filtros.getMunicipios()), Types.OTHER);
-        params.addValue("lugares", convertirListaAArrayPostgreSQL(filtros.getLugares()), Types.OTHER);
-        params.addValue("partido", convertirListaAArrayPostgreSQL(filtros.getPartido()), Types.OTHER);
-
-        // Arrays de enteros para PostgreSQL
-        params.addValue("concesiones", convertirListaEnterosAArrayPostgreSQL(filtros.getConcesiones()), Types.OTHER);
-    }
-
-    private void mapearPaginacion(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
+    private void mapearKeysetSimplificado(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
         if (filtros == null) {
-            params.addValue("limite", 1000, Types.INTEGER);
-            params.addValue("offset", 0, Types.INTEGER);
-            return;
-        }
-
-        // Si tiene Keyset, no usar OFFSET
-        if (filtros.getLastId() != null) {
-            params.addValue("limite", filtros.getLimite(), Types.INTEGER);
-            params.addValue("offset", null, Types.INTEGER); // Ignorar OFFSET
-            log.debug("Paginación Keyset: limite={}", filtros.getLimite());
-        } else {
-            // Paginación OFFSET normal
-            params.addValue("limite", filtros.getLimite(), Types.INTEGER);
-            params.addValue("offset", filtros.getOffset(), Types.INTEGER);
-            log.debug("Paginación OFFSET: limite={}, offset={}",
-                    filtros.getLimite(), filtros.getOffset());
-        }
-    }
-
-
-    // =================== MAPEO DE EQUIPOS CORREGIDO ===================
-
-    private void mapearParametrosEquipos(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        // Tipos de dispositivos
-        params.addValue("tiposDispositivos", convertirListaEnterosAArrayPostgreSQL(filtros.getTiposDispositivos()), Types.OTHER);
-
-        // Patrones para búsqueda con LIKE
-        params.addValue("patronesEquipos", convertirListaAArrayPostgreSQL(filtros.getPatronesEquipos()), Types.OTHER);
-        params.addValue("tipoEquipo", convertirListaAArrayPostgreSQL(filtros.getPatronesEquipos()), Types.OTHER); // Alias
-
-        // Series exactas de equipos
-        params.addValue("seriesEquiposExactas", convertirListaAArrayPostgreSQL(filtros.getSeriesEquiposExactas()), Types.OTHER);
-
-        // Filtros booleanos para tipos específicos de equipos
-        params.addValue("filtrarPorTipoEquipo", filtros.getFiltrarPorTipoEquipo(), Types.BOOLEAN);
-        params.addValue("incluirSE", filtros.getIncluirSE(), Types.BOOLEAN);
-        params.addValue("incluirVLR", filtros.getIncluirVLR(), Types.BOOLEAN);
-    }
-
-    // =================== MAPEO DE INFRACCIONES CORREGIDO ===================
-
-    private void mapearParametrosInfracciones(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        // Tipos y estados
-        params.addValue("tiposInfracciones", convertirListaEnterosAArrayPostgreSQL(filtros.getTiposInfracciones()), Types.OTHER);
-        params.addValue("estadosInfracciones", convertirListaEnterosAArrayPostgreSQL(filtros.getEstadosInfracciones()), Types.OTHER);
-
-        // Exportación SACIT
-        params.addValue("exportadoSacit", filtros.getExportadoSacit(), Types.BOOLEAN);
-    }
-
-    // =================== MAPEO DE DOMINIOS Y VEHÍCULOS CORREGIDO ===================
-
-    private void mapearParametrosDominios(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        params.addValue("tiposVehiculos", convertirListaAArrayPostgreSQL(filtros.getTipoVehiculo()), Types.OTHER);
-        params.addValue("tieneEmail", filtros.getTieneEmail(), Types.BOOLEAN);
-
-        // Parámetro específico para la query de personas jurídicas
-        params.addValue("tipoDocumento", null, Types.VARCHAR);
-    }
-
-    // =================== MAPEO DE PARÁMETROS ADICIONALES CORREGIDO ===================
-
-    /**
-     * NUEVO: Parámetros adicionales más seguros para PostgreSQL
-     */
-    private void mapearParametrosAdicionalesSeguro(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        // Parámetros que pueden ser nulos pero son necesarios para algunas queries
-        params.addValue("provincia", null, Types.VARCHAR);
-        params.addValue("fechaReporte", null, Types.DATE);
-    }
-
-    // =================== MAPEO DE PAGINACIÓN CORREGIDO ===================
-
-    /**
-     * NUEVO: Paginación más segura para PostgreSQL
-     */
-    // En ParametrosProcessor.java
-    private void mapearPaginacionSeguro(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        Integer limite = filtros.getLimiteEfectivo();
-
-        // Si es null, no aplicar límite
-        if (limite == null) {
-            params.addValue("limite", Integer.MAX_VALUE, Types.INTEGER);
-        } else {
-            params.addValue("limite", limite, Types.INTEGER);
-        }
-
-        int offset = filtros.calcularOffset();
-        params.addValue("offset", offset >= 0 ? offset : 0, Types.INTEGER);
-    }
-
-    private void mapearParametrosKeyset(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
-        if (filtros == null) {
-            // Keyset estándar
             params.addValue("lastId", null, Types.INTEGER);
-            params.addValue("lastSerieEquipo", null, Types.VARCHAR);
-            params.addValue("lastLugar", null, Types.VARCHAR);
-
-            // Keyset consolidación genérico (hasta 3 campos)
-            params.addValue("keyset_campo_0", null, Types.VARCHAR);
-            params.addValue("keyset_campo_1", null, Types.VARCHAR);
-            params.addValue("keyset_campo_2", null, Types.VARCHAR);
             return;
         }
 
-        // Keyset estándar
+        //  SOLO lastId - suficiente para paginación eficiente
         params.addValue("lastId", filtros.getLastId(), Types.INTEGER);
-        params.addValue("lastSerieEquipo", filtros.getLastSerieEquipo(), Types.VARCHAR);
-        params.addValue("lastLugar", filtros.getLastLugar(), Types.VARCHAR);
-
-        // Keyset consolidación genérico
-        Map<String, Object> keysetCons = filtros.getLastKeysetConsolidacion();
-        if (keysetCons != null && !keysetCons.isEmpty()) {
-            for (int i = 0; i < 3; i++) {
-                String key = "campo_" + i;
-                Object valor = keysetCons.get(key);
-
-                if (valor != null) {
-                    if (valor instanceof Integer) {
-                        params.addValue("keyset_campo_" + i, valor, Types.INTEGER);
-                    } else if (valor instanceof java.sql.Date || valor instanceof java.util.Date) {
-                        params.addValue("keyset_campo_" + i, valor, Types.TIMESTAMP);
-                    } else {
-                        params.addValue("keyset_campo_" + i, valor.toString(), Types.VARCHAR);
-                    }
-                    log.debug("🔑 Keyset consolidación[{}]: {}", i, valor);
-                } else {
-                    params.addValue("keyset_campo_" + i, null, Types.VARCHAR);
-                }
-            }
-        } else {
-            params.addValue("keyset_campo_0", null, Types.VARCHAR);
-            params.addValue("keyset_campo_1", null, Types.VARCHAR);
-            params.addValue("keyset_campo_2", null, Types.VARCHAR);
-        }
-
+        
         if (filtros.getLastId() != null) {
-            log.debug("🔑 Keyset activo: lastId={}", filtros.getLastId());
+            log.debug("🔑 Keyset SIMPLIFICADO activo: lastId={}", filtros.getLastId());
         }
     }
 
     /**
-     * ✅ NUEVO: Paginación sin OFFSET cuando hay Keyset
+     *  PAGINACIÓN SOLO CON LIMIT (sin OFFSET cuando hay keyset)
      */
     private void mapearPaginacionKeyset(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
         if (filtros == null) {
@@ -219,83 +70,110 @@ public class ParametrosProcessor {
             return;
         }
 
-        // Solo LIMIT, nunca OFFSET con Keyset
+        //  Solo LIMIT, nunca OFFSET con Keyset
         int limite = filtros.getLimiteEfectivo();
         params.addValue("limite", limite > 0 ? limite : 1000, Types.INTEGER);
 
-        log.debug("📊 Paginación: limite={} (sin OFFSET)", limite);
+        log.debug("📊 Paginación Keyset: limite={}", limite);
     }
-    // =================== MÉTODOS UTILITARIOS CORREGIDOS ===================
 
-    /**
-     * Convierte una lista de strings a un arreglo compatible con PostgreSQL
-     * CORREGIDO: Retorna null explícitamente si está vacío
-     */
+    // =================== MAPEO DE FECHAS ===================
+
+    private void mapearParametroFechasSeguro(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
+        params.addValue("fechaInicio", filtros.getFechaInicio(), Types.DATE);
+        params.addValue("fechaFin", filtros.getFechaFin(), Types.DATE);
+        params.addValue("fechaEspecifica", filtros.getFechaEspecifica(), Types.DATE);
+    }
+
+    // =================== MAPEO DE UBICACIÓN ===================
+
+    private void mapearParametrosUbicacion(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
+        params.addValue("provincias", convertirListaAArrayPostgreSQL(filtros.getProvincias()), Types.OTHER);
+        params.addValue("municipios", convertirListaAArrayPostgreSQL(filtros.getMunicipios()), Types.OTHER);
+        params.addValue("lugares", convertirListaAArrayPostgreSQL(filtros.getLugares()), Types.OTHER);
+        params.addValue("partido", convertirListaAArrayPostgreSQL(filtros.getPartido()), Types.OTHER);
+        params.addValue("concesiones", convertirListaEnterosAArrayPostgreSQL(filtros.getConcesiones()), Types.OTHER);
+    }
+
+    // =================== MAPEO DE EQUIPOS ===================
+
+    private void mapearParametrosEquipos(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
+        params.addValue("tiposDispositivos", convertirListaEnterosAArrayPostgreSQL(filtros.getTiposDispositivos()), Types.OTHER);
+        params.addValue("patronesEquipos", convertirListaAArrayPostgreSQL(filtros.getPatronesEquipos()), Types.OTHER);
+        params.addValue("tipoEquipo", convertirListaAArrayPostgreSQL(filtros.getPatronesEquipos()), Types.OTHER);
+        params.addValue("seriesEquiposExactas", convertirListaAArrayPostgreSQL(filtros.getSeriesEquiposExactas()), Types.OTHER);
+        params.addValue("filtrarPorTipoEquipo", filtros.getFiltrarPorTipoEquipo(), Types.BOOLEAN);
+        params.addValue("incluirSE", filtros.getIncluirSE(), Types.BOOLEAN);
+        params.addValue("incluirVLR", filtros.getIncluirVLR(), Types.BOOLEAN);
+    }
+
+    // =================== MAPEO DE INFRACCIONES ===================
+
+    private void mapearParametrosInfracciones(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
+        params.addValue("tiposInfracciones", convertirListaEnterosAArrayPostgreSQL(filtros.getTiposInfracciones()), Types.OTHER);
+        params.addValue("estadosInfracciones", convertirListaEnterosAArrayPostgreSQL(filtros.getEstadosInfracciones()), Types.OTHER);
+        params.addValue("exportadoSacit", filtros.getExportadoSacit(), Types.BOOLEAN);
+    }
+
+    // =================== MAPEO DE DOMINIOS ===================
+
+    private void mapearParametrosDominios(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
+        params.addValue("tiposVehiculos", convertirListaAArrayPostgreSQL(filtros.getTipoVehiculo()), Types.OTHER);
+        params.addValue("tieneEmail", filtros.getTieneEmail(), Types.BOOLEAN);
+        params.addValue("tipoDocumento", null, Types.VARCHAR);
+    }
+
+    // =================== PARÁMETROS ADICIONALES ===================
+
+    private void mapearParametrosAdicionalesSeguro(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
+        params.addValue("provincia", null, Types.VARCHAR);
+        params.addValue("fechaReporte", null, Types.DATE);
+    }
+
+    // =================== MÉTODOS UTILITARIOS ===================
+
     private String[] convertirListaAArrayPostgreSQL(List<String> lista) {
         if (lista == null || lista.isEmpty()) {
-            return null; // PostgreSQL entiende NULL mejor que array vacío
+            return null;
         }
         return lista.toArray(new String[0]);
     }
 
-    /**
-     * Convierte una lista de enteros a un arreglo compatible con PostgreSQL
-     * CORREGIDO: Retorna null explícitamente si está vacío
-     */
     private Integer[] convertirListaEnterosAArrayPostgreSQL(List<Integer> lista) {
         if (lista == null || lista.isEmpty()) {
-            return null; // PostgreSQL entiende NULL mejor que array vacío
+            return null;
         }
         return lista.toArray(new Integer[0]);
     }
 
-    // =================== MÉTODOS LEGACY (MANTENER PARA COMPATIBILIDAD) ===================
+    // =================== MÉTODOS DELEGACY (ELIMINAR EVENTUALMENTE) ===================
 
     /**
-     * @deprecated Mantener para compatibilidad - usar métodos específicos de PostgreSQL
+     * @deprecated Usar mapearKeysetSimplificado
      */
     @Deprecated
-    private String[] convertirListaAArray(List<String> lista) {
-        return convertirListaAArrayPostgreSQL(lista);
+    private void mapearParametrosKeyset(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
+        mapearKeysetSimplificado(params, filtros);
     }
 
     /**
-     * @deprecated Mantener para compatibilidad - usar métodos específicos de PostgreSQL
+     * @deprecated Usar mapearPaginacionKeyset
      */
     @Deprecated
-    private Integer[] convertirListaEnterosAArray(List<Integer> lista) {
-        return convertirListaEnterosAArrayPostgreSQL(lista);
+    private void mapearPaginacionSeguro(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
+        mapearPaginacionKeyset(params, filtros);
     }
 
     /**
-     * @deprecated Usar procesarQuery() con tipos seguros
+     * @deprecated Mantener para compatibilidad
      */
     @Deprecated
-    private void mapearParametroFechas(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        mapearParametroFechasSeguro(filtros, params);
+    private void mapearPaginacion(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
+        mapearPaginacionKeyset(params, filtros);
     }
 
-    /**
-     * @deprecated Usar mapearPaginacionSeguro()
-     */
-    @Deprecated
-    private void mapearPaginacion(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        mapearPaginacionSeguro(filtros, params);
-    }
+    // =================== MÉTODOS DE DEBUGGING ===================
 
-    /**
-     * @deprecated Usar mapearParametrosAdicionalesSeguro()
-     */
-    @Deprecated
-    private void mapearParametrosAdicionales(ParametrosFiltrosDTO filtros, MapSqlParameterSource params) {
-        mapearParametrosAdicionalesSeguro(filtros, params);
-    }
-
-    // =================== MÉTODOS DE DEBUGGING Y VALIDACIÓN ===================
-
-    /**
-     * Método utilitario para debugging de parámetros
-     */
     public void logParametros(MapSqlParameterSource params) {
         if (log.isDebugEnabled()) {
             for (String paramName : params.getParameterNames()) {
@@ -309,9 +187,6 @@ public class ParametrosProcessor {
         }
     }
 
-    /**
-     * Valida que todos los parámetros requeridos estén presentes
-     */
     public boolean validarParametrosRequeridos(MapSqlParameterSource params, String... nombresRequeridos) {
         for (String nombre : nombresRequeridos) {
             if (!params.hasValue(nombre)) {
@@ -320,52 +195,5 @@ public class ParametrosProcessor {
             }
         }
         return true;
-    }
-
-    /**
-     * Obtiene estadísticas de parámetros mapeados
-     */
-    public Map<String, Object> obtenerEstadisticasParametros(MapSqlParameterSource params) {
-        Map<String, Object> stats = new HashMap<>();
-
-        int totalParametros = params.getParameterNames().length;
-        int parametrosConValor = 0;
-        int parametrosNulos = 0;
-
-        for (String paramName : params.getParameterNames()) {
-            Object value = params.getValue(paramName);
-            if (value != null) {
-                parametrosConValor++;
-            } else {
-                parametrosNulos++;
-            }
-        }
-
-        stats.put("total_parametros", totalParametros);
-        stats.put("parametros_con_valor", parametrosConValor);
-        stats.put("parametros_nulos", parametrosNulos);
-        stats.put("porcentaje_utilizacion",
-                totalParametros > 0 ? (double) parametrosConValor / totalParametros * 100 : 0);
-
-        return stats;
-    }
-
-    /**
-     * Valida tipos de parámetros para PostgreSQL
-     */
-    public boolean validarTiposPostgreSQL(MapSqlParameterSource params) {
-        boolean todosValidos = true;
-
-        for (String paramName : params.getParameterNames()) {
-            Object value = params.getValue(paramName);
-            int sqlType = params.getSqlType(paramName);
-
-            if (value != null && sqlType == Types.NULL) {
-                log.warn("Parámetro '{}' sin tipo SQL explícito", paramName);
-                todosValidos = false;
-            }
-        }
-
-        return todosValidos;
     }
 }

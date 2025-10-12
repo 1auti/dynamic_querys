@@ -222,7 +222,11 @@ private int obtenerConteoReal(
 
         QueryStorage queryStorage = queryOpt.get();
         
-        // ✅ OPCIÓN 1: SIEMPRE usar COUNT(*) real (más seguro)
+        /**
+         * ES mejor usar el count real porque es maala idea a la larga no estimar la cantidad de registros 
+         * que podes tener :) 
+         */
+     
         String queryOriginal = queryStorage.getSqlQuery();
         String queryConteo = construirQueryConteo(queryOriginal);
         Integer conteoReal = repo.ejecutarQueryConteo(queryConteo, filtros);
