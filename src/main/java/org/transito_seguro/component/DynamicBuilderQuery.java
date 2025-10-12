@@ -65,8 +65,6 @@ public class DynamicBuilderQuery {
                 analisisPaginacion.getEstrategiaPaginacion(),
                 analisisPaginacion.getRazon());
 
-        // 3. Preparar query según estrategia
-        sql = prepararQuerySegunEstrategia(sql, analisisPaginacion);
 
         // 4. Analizar y procesar filtros
         AnalisisFiltros analisisFiltros = analizarFiltrosExistentes(sql);
@@ -78,62 +76,6 @@ public class DynamicBuilderQuery {
         sql = aplicarPaginacionSegunEstrategia(sql, analisisPaginacion);
 
         log.debug("SQL construido: {} caracteres", sql.length());
-        return sql;
-    }
-
-    // ==================== PREPARACIÓN SEGÚN ESTRATEGIA ====================
-
-    /**
-     * Prepara la query según la estrategia determinada
-     */
-    private String prepararQuerySegunEstrategia(String sql, AnalisisPaginacion analisis) {
-        EstrategiaPaginacion estrategia = analisis.getEstrategiaPaginacion();
-
-        // ✅ SOLO preparar si es KEYSET y no tiene id_infraccion
-        if ((estrategia == EstrategiaPaginacion.KEYSET_CON_ID || 
-             estrategia == EstrategiaPaginacion.KEY_COMPUESTO || 
-             estrategia == EstrategiaPaginacion.KEYSET_CONSOLIDADO) && 
-            !tieneIdInfraccionEnSelect(sql)) {
-            
-            sql = agregarIdInfraccionAlSelect(sql);
-            log.debug("🔧 id_infraccion agregado al SELECT para estrategia: {}", estrategia);
-        }
-
-        return sql;
-    }
-
-    /**
-     * Verifica si tiene id_infraccion en el SELECT
-     */
-    private boolean tieneIdInfraccionEnSelect(String sql) {
-        return Pattern.compile("SELECT\\s+.*\\b(id_infraccion|i\\.id|infracciones\\.id)\\b.*FROM",
-                        Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
-                .matcher(sql).find();
-    }
-
-    /**
-     * Agrega id_infraccion al SELECT si no está presente
-     */
-    private String agregarIdInfraccionAlSelect(String sql) {
-        Pattern pattern = Pattern.compile(
-                "(SELECT\\s+)(DISTINCT\\s+)?(.*?)(\\s+FROM)",
-                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
-        );
-
-        Matcher matcher = pattern.matcher(sql);
-        if (matcher.find()) {
-            String select = matcher.group(1);
-            String distinct = matcher.group(2);
-            String campos = matcher.group(3).trim();
-            String from = matcher.group(4);
-
-            String nuevoSelect = distinct != null
-                    ? select + distinct + "id_infraccion, " + campos + from
-                    : select + "id_infraccion, " + campos + from;
-
-            return matcher.replaceFirst(Matcher.quoteReplacement(nuevoSelect));
-        }
-
         return sql;
     }
 
@@ -149,12 +91,10 @@ public class DynamicBuilderQuery {
             case KEYSET_CON_ID:
             case KEY_COMPUESTO:
             case KEYSET_CONSOLIDADO:
-                // ✅ UNIFICAR TODAS LAS ESTRATEGIAS KEYSET A UNA SOLA
+                //  UNIFICAR TODAS LAS ESTRATEGIAS KEYSET A UNA SOLA
                 return aplicarKeysetSimplificado(sql);
 
-            case OFFSET:
-                return aplicarOffset(sql);
-
+        
             case FALLBACK_LIMIT_ONLY:
                 return aplicarLimitSimple(sql);
 
@@ -168,7 +108,7 @@ public class DynamicBuilderQuery {
     }
 
     /**
-     * ✅ KEYSET SIMPLIFICADO - Solo lastId para todas las queries
+     *  KEYSET SIMPLIFICADO - Solo lastId para todas las queries
      */
     private String aplicarKeysetSimplificado(String sql) {
         log.debug("🔑 Aplicando KEYSET SIMPLIFICADO (solo lastId)");
@@ -188,21 +128,7 @@ public class DynamicBuilderQuery {
         return sql;
     }
 
-    /**
-     * Aplica paginación OFFSET tradicional
-     */
-    private String aplicarOffset(String sql) {
-        log.debug("Aplicando paginación OFFSET");
-
-        sql = agregarLimitSiNoExiste(sql);
-
-        if (!sql.toUpperCase().contains("OFFSET")) {
-            sql += "\nOFFSET COALESCE(:offset::INTEGER, 0)";
-        }
-
-        return sql;
-    }
-
+   
     /**
      * Aplica solo LIMIT sin condiciones keyset
      */
@@ -668,46 +594,4 @@ public class DynamicBuilderQuery {
                 .append(campo).append(" = :exportadoSacit::BOOLEAN)");
     }
 
-    // ==================== MÉTODOS OBSOLETOS (MANTENER PARA COMPATIBILIDAD) ====================
-
-    /**
-     * @deprecated Usar aplicarKeysetSimplificado
-     */
-    @Deprecated
-    private String aplicarKeysetConId(String sql, List<CampoKeyset> campos) {
-        return aplicarKeysetSimplificado(sql);
-    }
-
-    /**
-     * @deprecated Usar aplicarKeysetSimplificado
-     */
-    @Deprecated
-    private String aplicarKeysetCompuesto(String sql, List<CampoKeyset> campos) {
-        return aplicarKeysetSimplificado(sql);
-    }
-
-    /**
-     * @deprecated Usar aplicarKeysetSimplificado
-     */
-    @Deprecated
-    private String aplicarKeysetConsolidacion(String sql, List<CampoKeyset> campos) {
-        return aplicarKeysetSimplificado(sql);
-    }
-
-    /**
-     * @deprecated Ya no se usa con la estrategia simplificada
-     */
-    @Deprecated
-    private boolean usaGroupByNumerico(String sql) {
-        return Pattern.compile("GROUP\\s+BY\\s+\\d+", Pattern.CASE_INSENSITIVE)
-                .matcher(sql).find();
-    }
-
-    /**
-     * @deprecated Ya no se usa con la estrategia simplificada
-     */
-    @Deprecated
-    private String ajustarGroupByConId(String sql, boolean tieneId) {
-        return sql; // No-op en la versión simplificada
-    }
 }
