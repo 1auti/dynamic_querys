@@ -19,6 +19,8 @@ public interface InfraccionesRepository {
      */
     List<Map<String, Object>> ejecutarQueryConFiltros(String nombreQuery, ParametrosFiltrosDTO filtros);
 
+
+
     /**
      * Obtiene el nombre de la provincia asociada a este repositorio
      * @return Nombre de la provincia
@@ -26,5 +28,7 @@ public interface InfraccionesRepository {
     String getProvincia();
 
     Integer ejecutarQueryConteo(String nombreQuery, ParametrosFiltrosDTO filtros);
+
+    Integer ejecutarQueryConteoDesdeSQL(String sqlQuery);
 
 }

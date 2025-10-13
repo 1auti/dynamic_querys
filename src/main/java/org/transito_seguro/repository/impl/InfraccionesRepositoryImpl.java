@@ -61,9 +61,21 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
             String querySQL = cargarQuery(nombreQuery);
             QueryResult resultado = parametrosProcessor.procesarQuery(querySQL, filtros);
 
-            try {
+            // ✅ DEBUG 1: Query y parámetros
+            log.debug("🔍 QUERY A EJECUTAR para {}:\n{}", provincia, resultado.getQueryModificada());
+            log.debug("🔍 PARÁMETROS para {}: lastId={}, limite={}",
+                    provincia,
+                    filtros != null ? filtros.getLastId() : "null",
+                    filtros != null ? filtros.getLimite() : "null");
 
-            }catch (DataAccessException e){
+            List<Map<String, Object>> resultados;
+            try {
+                resultados = jdbcTemplate.query(
+                        resultado.getQueryModificada(),
+                        resultado.getParametros(),
+                        this::mapearFila
+                );
+            } catch (DataAccessException e) {
                 SQLExecutionException executionException = SQLExceptionParser.parse(
                         e,
                         querySQL,
@@ -73,22 +85,40 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
 
                 // Log con sugerencias específicas
                 log.error(SQLExceptionParser.obtenerSugerencias(e, querySQL));
-
-                // Log del error enriquecido
                 log.error("{}", executionException.getMessageDetallado());
 
                 throw executionException;
             }
 
-            List<Map<String, Object>> resultados = jdbcTemplate.query(
-                    resultado.getQueryModificada(),
-                    resultado.getParametros(),
-                    this::mapearFila
-            );
+            // ✅ DEBUG 2: Verificar QUÉ CAMPOS retornan los registros
+            if (!resultados.isEmpty()) {
+                Map<String, Object> primerRegistro = resultados.get(0);
+                Map<String, Object> ultimoRegistro = resultados.get(resultados.size() - 1);
 
-//            logParametros(resultado);
+                log.debug("🔍 PRIMER REGISTRO {} - Campos: {}", provincia, primerRegistro.keySet());
+                log.debug("🔍 PRIMER REGISTRO {} - Valores: {}", provincia, primerRegistro);
+
+                log.debug("🔍 ÚLTIMO REGISTRO {} - Campos: {}", provincia, ultimoRegistro.keySet());
+                log.debug("🔍 ÚLTIMO REGISTRO {} - Valores: {}", provincia, ultimoRegistro);
+
+                // ✅ DEBUG 3: Buscar específicamente el campo 'id'
+                if (primerRegistro.containsKey("id")) {
+                    log.debug("✅ CAMPO 'id' ENCONTRADO en {}: valor={}", provincia, primerRegistro.get("id"));
+                } else {
+                    log.warn("⚠️ CAMPO 'id' NO ENCONTRADO en {}. Buscando alternativas...", provincia);
+
+                    // Buscar cualquier campo que contenga "id"
+                    for (String campo : primerRegistro.keySet()) {
+                        if (campo.toLowerCase().contains("id")) {
+                            log.debug("🔍 Campo similar a ID encontrado: {} = {}", campo, primerRegistro.get(campo));
+                        }
+                    }
+                }
+            } else {
+                log.debug("🔍 {}: No hay resultados para analizar", provincia);
+            }
+
             log.debug("Query '{}' completada. Resultados: {} registros", nombreQuery, resultados.size());
-
             return resultados;
 
         } catch (Exception e) {
@@ -98,20 +128,47 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         }
     }
 
+
+
     private Map<String, Object> mapearFila(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
         Map<String, Object> row = new HashMap<>();
         ResultSetMetaData metaData = rs.getMetaData();
         int columnCount = metaData.getColumnCount();
 
-        for (int i = 1; i <= columnCount; i++) {
-            String columnName = metaData.getColumnLabel(i);
-
-            if (!"provincia".equalsIgnoreCase(columnName)) {
-                row.put(columnName, rs.getObject(i));
+        // ✅ DEBUG: Ver TODOS los campos del ResultSet
+        if (rowNum == 0) { // Solo debug para el primer registro
+            log.debug("🔍 CAMPOS EN RESULTSET para fila {}:", rowNum);
+            for (int i = 1; i <= columnCount; i++) {
+                String columnName = metaData.getColumnLabel(i);
+                String columnType = metaData.getColumnTypeName(i);
+                log.debug("   - {} ({})", columnName, columnType);
             }
         }
 
-        row.put("provincia", this.provincia);
+        for (int i = 1; i <= columnCount; i++) {
+            String columnName = metaData.getColumnLabel(i);
+            Object columnValue = rs.getObject(i);
+
+            // ✅ DEBUG: Campo 'id' específico
+            if ("id".equalsIgnoreCase(columnName)) {
+                log.debug("🎯 MAPEANDO CAMPO 'id': {}", columnValue);
+            }
+
+            // Verificar si estás filtrando algún campo
+            // ❌ SI TIENES ESTO, QUÍTALO:
+            // if (!"provincia".equalsIgnoreCase(columnName)) {
+            //     row.put(columnName, columnValue);
+            // }
+
+            // ✅ DEBERÍA SER SIMPLEMENTE:
+            row.put(columnName, columnValue);
+        }
+
+        // Solo agregar provincia si no existe
+        if (!row.containsKey("provincia")) {
+            row.put("provincia", this.provincia);
+        }
+
         return row;
     }
 
@@ -180,7 +237,26 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
       }
     }
 
-/**
+    @Override
+    public Integer ejecutarQueryConteoDesdeSQL(String sqlQuery) {
+        try {
+            // Procesar la query con filtros vacíos
+            ParametrosFiltrosDTO filtrosVacios = new ParametrosFiltrosDTO();
+            QueryResult queryResult = parametrosProcessor.procesarQuery(sqlQuery, filtrosVacios);
+
+            String queryFiltros = queryResult.getQueryModificada();
+
+            return jdbcTemplate.queryForObject(queryFiltros, queryResult.getParametros(), Integer.class);
+
+        } catch (Exception e) {
+            log.error("Error ejecutando query de conteo desde SQL en provincia {}: {}",
+                    provincia, e.getMessage(), e);
+            throw new RuntimeException("Error ejecutando query de conteo desde SQL", e);
+        }
+    }
+
+
+    /**
  * Ejecuta una query usando streaming (cursor JDBC).
  * Procesa resultados uno por uno sin cargar todo en memoria.
  * 

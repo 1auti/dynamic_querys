@@ -17,7 +17,7 @@ public class ParametrosProcessor {
 
     /**
      * Método principal para procesar cualquier query con filtros dinámicos
-     * - Solo lastId para keyset
+     * CORREGIDO: Ahora valida y activa keyset correctamente
      */
     public QueryResult procesarQuery(String queryOriginal, ParametrosFiltrosDTO filtros) {
         MapSqlParameterSource parametros = new MapSqlParameterSource();
@@ -31,13 +31,16 @@ public class ParametrosProcessor {
         mapearParametrosDominios(filtros, parametros);
         mapearParametrosAdicionalesSeguro(filtros, parametros);
 
-        // 2.  KEYSET SIMPLIFICADO + PAGINACIÓN
+        // 2. KEYSET SIMPLIFICADO + PAGINACIÓN CORREGIDA
         mapearKeysetSimplificado(parametros, filtros);
         mapearPaginacionKeyset(parametros, filtros);
 
-        log.debug("Query procesada. Parámetros: {} | Keyset: {}", 
-                  parametros.getParameterNames().length,
-                  filtros.getLastId() != null ? "ACTIVO(id=" + filtros.getLastId() + ")" : "INACTIVO");
+        // 3. Detectar estado de keyset para logging
+        boolean keysetActivo = filtros != null && filtros.getLastId() != null;
+
+        log.debug("Query procesada. Parámetros: {} | Keyset: {}",
+                parametros.getParameterNames().length,
+                keysetActivo ? "ACTIVO(id=" + filtros.getLastId() + ")" : "INACTIVO");
 
         return new QueryResult(queryOriginal, parametros, metadata);
     }
@@ -45,7 +48,7 @@ public class ParametrosProcessor {
     // =================== KEYSET SIMPLIFICADO ===================
 
     /**
-     *  KEYSET SIMPLIFICADO - Solo lastId para todas las queries
+     * KEYSET MEJORADO con validación de progreso
      */
     private void mapearKeysetSimplificado(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
         if (filtros == null) {
@@ -53,16 +56,27 @@ public class ParametrosProcessor {
             return;
         }
 
-        //  SOLO lastId - suficiente para paginación eficiente
-        params.addValue("lastId", filtros.getLastId(), Types.INTEGER);
-        
-        if (filtros.getLastId() != null) {
-            log.debug("🔑 Keyset SIMPLIFICADO activo: lastId={}", filtros.getLastId());
+        Integer lastId = filtros.getLastId();
+
+        // ✅ VALIDACIÓN: Verificar que lastId no sea inválido
+        if (lastId != null && lastId < 0) {
+            log.warn(" LastId inválido detectado: {}. Usando null.", lastId);
+            lastId = null;
+        }
+
+        params.addValue("lastId", lastId, Types.INTEGER);
+
+        if (lastId != null) {
+            log.debug(" Keyset ACTIVO: lastId={}", lastId);
+        } else {
+            log.debug(" Keyset INACTIVO: primera página");
         }
     }
 
     /**
-     *  PAGINACIÓN SOLO CON LIMIT (sin OFFSET cuando hay keyset)
+     * PAGINACIÓN CORREGIDA
+     * - Usa límite razonable por defecto (1000)
+     * - NUNCA usa Integer.MAX_VALUE que desactiva keyset
      */
     private void mapearPaginacionKeyset(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
         if (filtros == null) {
@@ -70,11 +84,26 @@ public class ParametrosProcessor {
             return;
         }
 
-        //  Solo LIMIT, nunca OFFSET con Keyset
-        int limite = filtros.getLimiteEfectivo();
-        params.addValue("limite", limite > 0 ? limite : 1000, Types.INTEGER);
+        // CRÍTICO: Validar límite para activar keyset
+        Integer limiteOriginal = filtros.getLimite();
+        int limiteFinal;
 
-        log.debug("📊 Paginación Keyset: limite={}", limite);
+        if (limiteOriginal == null || limiteOriginal <= 0 || limiteOriginal == Integer.MAX_VALUE) {
+            // Usar límite por defecto para activar keyset
+            limiteFinal = 1000;
+            log.debug("🔧 Límite corregido: {} → {}", limiteOriginal, limiteFinal);
+        } else if (limiteOriginal > 10000) {
+            // Límite muy alto: reducir para performance
+            limiteFinal = 1000;
+            log.debug("🔧 Límite reducido: {} → {} (optimización)", limiteOriginal, limiteFinal);
+        } else {
+            // Límite razonable: usar el solicitado
+            limiteFinal = limiteOriginal;
+        }
+
+        params.addValue("limite", limiteFinal, Types.INTEGER);
+
+        log.debug("📊 Paginación Keyset: limite={}", limiteFinal);
     }
 
     // =================== MAPEO DE FECHAS ===================

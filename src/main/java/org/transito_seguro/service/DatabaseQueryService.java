@@ -13,6 +13,7 @@ import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.dto.QueryStorageDTO;
 import org.transito_seguro.enums.EstadoQuery;
+import org.transito_seguro.factory.RepositoryFactory;
 import org.transito_seguro.model.AnalisisPaginacion;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
 import org.transito_seguro.model.query.QueryStorage;
@@ -41,6 +42,11 @@ public class DatabaseQueryService {
     private QueryAnalyzer queryAnalyzer;
 
     @Autowired
+    private QueryAnalisisService queryAnalisisService;
+    @Autowired
+    private QueryExecutionService queryExecutionService;
+
+    @Autowired
     private PaginationStrategyAnalyzer paginationStrategyAnalyzer;
 
     @Autowired
@@ -58,6 +64,9 @@ public class DatabaseQueryService {
     @Autowired
     private ParametrosProcessor parametrosProcessor;
 
+    @Autowired
+    private RepositoryFactory repositoryFactory;
+
 
     // =============== GESTIÓN DE QUERIES ===============
 
@@ -66,8 +75,6 @@ public class DatabaseQueryService {
      */
     public QueryStorage guardarQuery(QueryStorageDTO dto) {
         log.info("Guardando nueva query: {}", dto.getCodigo());
-
-
 
         // Validaciones
         if (!dto.esValida()) {
@@ -81,8 +88,12 @@ public class DatabaseQueryService {
 
         String sql = builderQuery.construirSqlInteligente(dto.getSqlQuery());
 
+        List<InfraccionesRepositoryImpl> repositories = repositoryFactory.getAllRepositories().values().stream()
+                .map(repo -> (InfraccionesRepositoryImpl) repo)
+                .collect(Collectors.toList());
 
-        AnalisisConsolidacion analisis = queryAnalyzer.analizarParaConsolidacion(sql);
+
+        AnalisisConsolidacion analisis = queryAnalisisService.analizarConVerificacionDinamica(repositories,sql);
 
         AnalisisPaginacion  analisisPaginacion = paginationStrategyAnalyzer.determinarEstrategia(sql);
 
@@ -308,60 +319,63 @@ public class DatabaseQueryService {
         }
     }
 
-    private List<Map<String, Object>> recopilarDatosConQueryStorageDirecto(QueryStorage queryStorage,
-                                                                           List<InfraccionesRepositoryImpl> repositories,
-                                                                           ParametrosFiltrosDTO filtros) {
 
-        List<Map<String, Object>> todosLosDatos = new ArrayList<>();
+        /**
+         * Recopila datos usando QueryExecutionService en lugar de lógica propia.
+         */
+        private List<Map<String, Object>> recopilarDatosConQueryStorageDirecto(
+                QueryStorage queryStorage,
+                List<InfraccionesRepositoryImpl> repositories,
+                ParametrosFiltrosDTO filtros) {
 
-        for (InfraccionesRepositoryImpl repo : repositories) {
-            String provincia = repo.getProvincia();
+            List<Map<String, Object>> todosLosDatos = new ArrayList<>();
 
-            try {
-                // Ejecutar SQL DIRECTAMENTE usando el ParametrosProcessor
-                QueryResult resultado = parametrosProcessor.procesarQuery(
-                        queryStorage.getSqlQuery(), filtros);
+            for (InfraccionesRepositoryImpl repo : repositories) {
+                String provincia = repo.getProvincia();
 
-                // Ejecutar query SQL directamente en el JdbcTemplate
-                List<Map<String, Object>> datosProvider = repo.getNamedParameterJdbcTemplate().queryForList(
-                        resultado.getQueryModificada(),
-                        resultado.getParametros()
-                );
+                try {
+                    // ✅ Usar QueryExecutionService para ejecutar
+                    List<Map<String, Object>> datosProvider = queryExecutionService.ejecutarQueryEnRepositorio(
+                            repo,
+                            queryStorage.getSqlQuery(),
+                            filtros
+                    );
 
-                if (datosProvider != null && !datosProvider.isEmpty()) {
-                    // Agregar metadata de provincia
-                    for (Map<String, Object> registro : datosProvider) {
-                        registro.put("provincia", provincia);
-                        registro.put("provincia_origen", provincia);
-                        registro.put("query_codigo", queryStorage.getCodigo()); // Para auditoría
+                    if (datosProvider != null && !datosProvider.isEmpty()) {
+                        // Agregar metadata de provincia
+                        for (Map<String, Object> registro : datosProvider) {
+                            registro.put("provincia", provincia);
+                            registro.put("provincia_origen", provincia);
+                            registro.put("query_codigo", queryStorage.getCodigo());
+                        }
+
+                        todosLosDatos.addAll(datosProvider);
+                        log.debug("Query BD '{}' en provincia {}: {} registros",
+                                queryStorage.getCodigo(), provincia, datosProvider.size());
                     }
 
-                    todosLosDatos.addAll(datosProvider);
-                    log.debug("Query BD '{}' en provincia {}: {} registros",
-                            queryStorage.getCodigo(), provincia, datosProvider.size());
+                } catch (Exception e) {
+                    log.error("Error ejecutando QueryStorage '{}' en provincia {}: {}",
+                            queryStorage.getCodigo(), provincia, e.getMessage());
+
+                    // Agregar registro de error
+                    Map<String, Object> registroError = new HashMap<>();
+                    registroError.put("provincia", provincia);
+                    registroError.put("error_consolidacion", true);
+                    registroError.put("mensaje_error", e.getMessage());
+                    registroError.put("query_codigo", queryStorage.getCodigo());
+                    registroError.put("timestamp_error", new java.util.Date());
+
+                    todosLosDatos.add(registroError);
                 }
-
-            } catch (Exception e) {
-                log.error("Error ejecutando QueryStorage '{}' en provincia {}: {}",
-                        queryStorage.getCodigo(), provincia, e.getMessage());
-
-                // Agregar registro de error en lugar de fallar completamente
-                Map<String, Object> registroError = new HashMap<>();
-                registroError.put("provincia", provincia);
-                registroError.put("error_consolidacion", true);
-                registroError.put("mensaje_error", e.getMessage());
-                registroError.put("query_codigo", queryStorage.getCodigo());
-                registroError.put("timestamp_error", new java.util.Date());
-
-                todosLosDatos.add(registroError);
             }
+
+            log.info("QueryStorage '{}': Total recopilado {} registros de {} provincias",
+                    queryStorage.getCodigo(), todosLosDatos.size(), repositories.size());
+
+            return todosLosDatos;
         }
 
-        log.info("QueryStorage '{}': Total recopilado {} registros de {} provincias",
-                queryStorage.getCodigo(), todosLosDatos.size(), repositories.size());
-
-        return todosLosDatos;
-    }
 
     private List<Map<String, Object>> normalizarProvinciasEnDatos(List<Map<String, Object>> datos) {
         for (Map<String, Object> registro : datos) {

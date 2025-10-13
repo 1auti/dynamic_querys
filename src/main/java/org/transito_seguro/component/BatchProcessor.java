@@ -3,6 +3,7 @@ package org.transito_seguro.component;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.enums.EstrategiaPaginacion;
@@ -13,6 +14,7 @@ import org.transito_seguro.model.query.QueryStorage;
 import org.transito_seguro.model.ContextoProcesamiento;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 import org.transito_seguro.service.QueryRegistryService;
+import org.transito_seguro.utils.LogFileWriter;
 
 import javax.annotation.PreDestroy;
 import java.util.*;
@@ -49,6 +51,9 @@ public class BatchProcessor {
 
     @Autowired
     private QueryRegistryService queryRegistryService;;
+
+    @Autowired
+    private LogFileWriter logFileWriter;
 
     private ExecutorService parallelExecutor;
     private final Map<String, Object[]> lastKeyPerProvince = new ConcurrentHashMap<>();
@@ -247,11 +252,24 @@ private int obtenerConteoReal(
      * @return Query modificada para contar registros
      */
     private String construirQueryConteo(String queryOriginal) {
-        // Remover ORDER BY si existe (no necesario para contar)
-        String querySinOrder = queryOriginal.replaceAll("(?i)ORDER BY[^;]*", "").trim();
+        if (queryOriginal == null || queryOriginal.trim().isEmpty()) {
+            throw new IllegalArgumentException("Query original no puede estar vacía");
+        }
 
-        // Envolver en subquery
-        return String.format("SELECT COUNT(*) as total FROM (%s) AS subquery", querySinOrder);
+        String queryLimpia = queryOriginal.trim();
+
+        // 1. Remover el ; final si existe
+        queryLimpia = queryLimpia.replaceAll(";\\s*$", "");
+
+        // 2. Remover ORDER BY (innecesario para contar y puede afectar performance)
+        queryLimpia = queryLimpia.replaceAll("(?i)\\s+ORDER\\s+BY\\s+[^;]+$", "");
+
+        // 3. Remover LIMIT/OFFSET si existen (afectarían el conteo)
+        queryLimpia = queryLimpia.replaceAll("(?i)\\s+LIMIT\\s+\\d+", "");
+        queryLimpia = queryLimpia.replaceAll("(?i)\\s+OFFSET\\s+\\d+", "");
+
+        // 4. Envolver en subquery
+        return String.format("SELECT COUNT(*) as total FROM (%s) AS subquery", queryLimpia.trim());
     }
 
     private EstrategiaProcessing decidirEstrategia(EstimacionDataset estimacion) {
@@ -634,6 +652,21 @@ private void procesarChunk(
     }
 }
 
+    /**
+     * Ejecuta query paginada usando un contador externo simulado.
+     * Para queries con GROUP BY que no tienen campo ID y queremos evitar OFFSET.
+     *
+     * ESTRATEGIA:
+     * - Usa un contador incremental como "pseudo-ID"
+     * - La query debe retornar TODOS los registros ordenados consistentemente
+     * - El procesamiento se hace por chunks en memoria
+     *
+     * @param repo Repositorio de la provincia
+     * @param filtros Filtros aplicados
+     * @param nombreQuery Código de la query
+     * @param provincia Nombre de la provincia
+     * @param contexto Contexto de procesamiento
+     */
     private void ejecutarQueryPaginada(
             InfraccionesRepositoryImpl repo,
             ParametrosFiltrosDTO filtros,
@@ -642,42 +675,117 @@ private void procesarChunk(
             ContextoProcesamiento contexto) {
 
         String provinciaRepo = repo.getProvincia();
-        lastKeyPerProvince.remove(provinciaRepo);
-
         int procesados = 0;
-        int offset = 0;
-        int maxLote = 1000;
+        int iteracion = 0;
+        final int batchSize = 1000;
+
+        // ✅ Contador externo que simula el "lastId"
+        int contadorPaginacion = 0;
+
+        log.debug("🚀 Iniciando paginación con contador externo para {}", provinciaRepo);
 
         while (true) {
             try {
-                ParametrosFiltrosDTO filtrosLote = crearFiltrosParaLote(filtros, maxLote, offset, provinciaRepo);
+                // ✅ Crear filtros usando el contador como si fuera un ID
+                ParametrosFiltrosDTO filtrosLote = filtros.toBuilder()
+                        .limite(batchSize)
+                        .offset(null)  // ❌ NO usar offset
+                        .lastId(contadorPaginacion)  // ✅ Usar contador como "pseudo-ID"
+                        .lastSerieEquipo(null)
+                        .lastLugar(null)
+                        .lastKeysetConsolidacion(null)
+                        .build();
+
+                log.debug("📄 Iteración {}: LIMIT {} con contador={}",
+                        iteracion, batchSize, contadorPaginacion);
+
+                // Ejecutar query
                 List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
 
+                // Verificar si hay datos
                 if (lote == null || lote.isEmpty()) {
+                    log.debug("✅ Fin de datos para {} en iteración {}", provinciaRepo, iteracion);
                     break;
                 }
 
-                guardarLastKey(lote, provinciaRepo);
-
+                // Procesar resultados
                 List<Map<String, Object>> loteInmutable = crearCopiasInmutables(lote, provinciaRepo);
                 contexto.agregarResultados(loteInmutable);
 
+                // Actualizar contadores
                 procesados += lote.size();
-                offset += maxLote;
+                contadorPaginacion += lote.size();  // ✅ Incrementar contador externo
+                iteracion++;
 
-                if (lote.size() < maxLote) {
+                log.debug("📦 Lote {} procesado: {} registros (contador: {} → {}, total: {})",
+                        iteracion, lote.size(), contadorPaginacion - lote.size(),
+                        contadorPaginacion, procesados);
+
+                // ✅ Condición de salida: lote incompleto indica última página
+                if (lote.size() < batchSize) {
+                    log.debug("✅ Último lote para {}: {} < {}", provinciaRepo, lote.size(), batchSize);
                     break;
                 }
 
+                // Control de seguridad
+                if (iteracion >= 1000) {
+                    log.warn("⚠️ Límite de iteraciones alcanzado para {}: {} iteraciones",
+                            provinciaRepo, iteracion);
+                    break;
+                }
+
+                // Pausa si memoria alta
+                if (esMemoriaAlta()) {
+                    pausarSiNecesario();
+                }
+
             } catch (Exception e) {
-                log.error("Error en paginación {} para {}: {}", nombreQuery, provinciaRepo, e.getMessage());
+                log.error("❌ Error en iteración {} para {}: {}", iteracion, provinciaRepo, e.getMessage(), e);
                 break;
             }
         }
 
+        log.info("✅ Paginación completada para {}: {} registros en {} iteraciones",
+                provinciaRepo, procesados, iteracion);
+
+        // Actualizar contadores globales
         actualizarContadores(provinciaRepo, procesados);
-        lastKeyPerProvince.remove(provinciaRepo);
     }
+
+
+    /**
+     * Obtiene el último ID del lote actual
+     */
+    private Integer obtenerUltimoIdDelLote(List<Map<String, Object>> lote) {
+        if (lote == null || lote.isEmpty()) {
+            return null;
+        }
+
+        Map<String, Object> ultimoRegistro = lote.get(lote.size() - 1);
+
+        // Buscar campo ID con diferentes nombres posibles
+        String[] posiblesCamposId = {"id", "infraccion_id", "registro_id", "consecutivo"};
+
+        for (String campo : posiblesCamposId) {
+            Object valor = ultimoRegistro.get(campo);
+            if (valor instanceof Integer) {
+                return (Integer) valor;
+            } else if (valor instanceof Long) {
+                return ((Long) valor).intValue();
+            } else if (valor instanceof String) {
+                try {
+                    return Integer.parseInt((String) valor);
+                } catch (NumberFormatException e) {
+                    // Continuar con siguiente campo
+                }
+            }
+        }
+
+        log.warn("⚠️ No se encontró campo ID válido en el último registro. Campos disponibles: {}",
+                ultimoRegistro.keySet());
+        return null;
+    }
+
 
     private List<Map<String, Object>> crearCopiasInmutables(List<Map<String, Object>> registros, String provincia) {
         return registros.stream()
@@ -697,25 +805,42 @@ private void procesarChunk(
         totalRegistrosGlobales.addAndGet(cantidad);
     }
 
+    /**
+     * MÉTODO CORREGIDO: Guarda lastKey detectando el tipo correcto
+     *
+     * PROBLEMA ANTERIOR:
+     * - Asumía que lastKey[0] siempre era Integer
+     * - Queries de consolidación NO tienen campo 'id'
+     *
+     * SOLUCIÓN:
+     * - Guardar los valores tal como vienen
+     * - NO asumir tipos en guardarLastKey
+     * - Validar tipos en crearFiltrosParaLoteSiguiente
+     */
     private void guardarLastKey(List<Map<String, Object>> lote, String provincia) {
-        if (lote.isEmpty())
+        if (lote == null || lote.isEmpty()) {
             return;
+        }
 
         try {
             Map<String, Object> ultimo = lote.get(lote.size() - 1);
 
-            // Keyset estándar (queries normales con id)
+            // CASO 1: Query estándar con campo 'id'
             if (ultimo.containsKey("id") && ultimo.get("id") != null) {
+                Object id = ultimo.get("id");
+
                 lastKeyPerProvince.put(provincia, new Object[] {
-                        ultimo.get("id"),
+                        id,
                         ultimo.get("serie_equipo"),
                         ultimo.get("lugar")
                 });
-                log.debug("Keyset estándar guardado: id={}", ultimo.get("id"));
+
+                log.debug("🔑 Keyset estándar guardado para {}: id={} (tipo: {})",
+                        provincia, id, id.getClass().getSimpleName());
             }
-            // Keyset consolidación (primeros campos disponibles)
+            // CASO 2: Query de consolidación SIN campo 'id'
             else {
-                // Tomar los primeros 3 campos del registro
+                // Tomar los primeros 3 campos disponibles (sin asumir tipos)
                 List<Object> keyValues = new ArrayList<>();
                 int count = 0;
 
@@ -728,12 +853,17 @@ private void procesarChunk(
 
                 if (!keyValues.isEmpty()) {
                     lastKeyPerProvince.put(provincia, keyValues.toArray());
-                    log.debug("Keyset consolidación guardado: {} campos = {}",
-                            keyValues.size(), keyValues);
+
+                    log.debug("🔑 Keyset consolidación guardado para {}: {} campos (tipos: {})",
+                            provincia,
+                            keyValues.size(),
+                            keyValues.stream()
+                                    .map(v -> v.getClass().getSimpleName())
+                                    .collect(Collectors.joining(", ")));
                 }
             }
         } catch (Exception e) {
-            log.debug("Error guardando lastKey para {}: {}", provincia, e.getMessage());
+            log.warn("⚠️ Error guardando lastKey para {}: {}", provincia, e.getMessage());
         }
     }
 
@@ -795,53 +925,205 @@ private void procesarChunk(
         return Math.min(batchSizeBase, 10000);
     }
 
+    /**
+     * MÉTODO CORREGIDO: crearFiltrosParaLote
+     *
+     * CAMBIOS:
+     * 1. Primera iteración YA usa límite razonable (no Integer.MAX_VALUE)
+     * 2. Keyset se activa desde la SEGUNDA iteración
+     * 3. NUNCA usa offset (solo keyset)
+     */
     private ParametrosFiltrosDTO crearFiltrosParaLote(
             ParametrosFiltrosDTO filtrosOriginales,
             int batchSize,
             int offset,
             String provincia) {
 
-        boolean usarKeyset = offset > 0 && lastKeyPerProvince.containsKey(provincia);
+        // PRIMERA ITERACIÓN: offset=0, sin keyset aún
+        if (offset == 0 || !lastKeyPerProvince.containsKey(provincia)) {
+            log.debug("🔹 Primera iteración para {}: limite={}, keyset=INACTIVO", provincia, batchSize);
 
-        if (usarKeyset) {
-            Object[] lastKey = lastKeyPerProvince.get(provincia);
+            return filtrosOriginales.toBuilder()
+                    .limite(batchSize)  // CRÍTICO: Usar límite razonable
+                    .offset(null)       // NUNCA usar offset
+                    .lastId(null)
+                    .lastSerieEquipo(null)
+                    .lastLugar(null)
+                    .lastKeysetConsolidacion(null)
+                    .build();
+        }
 
-            // Detectar tipo de keyset
-            if (lastKey.length >= 1 && lastKey[0] instanceof Integer &&
-                    lastKey.length == 3) {
-                // Keyset estándar (id, serie_equipo, lugar)
-                return filtrosOriginales.toBuilder()
-                        .limite(batchSize)
-                        .offset(null)
-                        .lastId((Integer) lastKey[0])
-                        .lastSerieEquipo((String) lastKey[1])
-                        .lastLugar((String) lastKey[2])
-                        .build();
-            } else {
-                // Keyset consolidación genérico
-                Map<String, Object> keysetMap = new HashMap<>();
-                for (int i = 0; i < Math.min(lastKey.length, 3); i++) {
-                    if (lastKey[i] != null) {
-                        keysetMap.put("campo_" + i, lastKey[i]);
-                    }
-                }
+        // ITERACIONES SIGUIENTES: usar keyset
+        Object[] lastKey = lastKeyPerProvince.get(provincia);
 
-                return filtrosOriginales.toBuilder()
-                        .limite(batchSize)
-                        .offset(null)
-                        .lastKeysetConsolidacion(keysetMap)
-                        .build();
+        // Detectar tipo de keyset
+        if (esKeysetEstandar(lastKey)) {
+            // Keyset estándar (id, serie_equipo, lugar)
+            log.debug("🔑 Keyset estándar para {}: id={}", provincia, lastKey[0]);
+
+            return filtrosOriginales.toBuilder()
+                    .limite(batchSize)
+                    .offset(null)  // NUNCA usar offset con keyset
+                    .lastId((Integer) lastKey[0])
+                    .lastSerieEquipo(lastKey.length > 1 ? (String) lastKey[1] : null)
+                    .lastLugar(lastKey.length > 2 ? (String) lastKey[2] : null)
+                    .build();
+
+        } else {
+            // Keyset consolidación genérico
+            Map<String, Object> keysetMap = construirKeysetMap(lastKey);
+
+            log.debug("🔑 Keyset consolidación para {}: {} campos", provincia, keysetMap.size());
+
+            return filtrosOriginales.toBuilder()
+                    .limite(batchSize)
+                    .offset(null)
+                    .lastKeysetConsolidacion(keysetMap)
+                    .build();
+        }
+    }
+
+    /**
+     * Detecta si es keyset estándar (con id numérico)
+     */
+    private boolean esKeysetEstandar(Object[] lastKey) {
+        return lastKey != null
+                && lastKey.length >= 1
+                && lastKey[0] instanceof Integer;
+    }
+
+    /**
+     * Construye mapa de keyset para queries de consolidación
+     */
+    private Map<String, Object> construirKeysetMap(Object[] lastKey) {
+        Map<String, Object> keysetMap = new HashMap<>();
+
+        for (int i = 0; i < Math.min(lastKey.length, 3); i++) {
+            if (lastKey[i] != null) {
+                keysetMap.put("campo_" + i, lastKey[i]);
             }
         }
 
-        // Primera iteración: sin keyset
-        return filtrosOriginales.toBuilder()
-                .limite(batchSize)
-                .offset(null)
-                .lastId(null)
-                .lastSerieEquipo(null)
-                .lastLugar(null)
-                .lastKeysetConsolidacion(null)
-                .build();
+        return keysetMap;
     }
+
+
+
+    /**
+     * NUEVO MÉTODO: Consolidar resultados por mes/año
+     *
+     * Para agregar al BatchProcessor.java
+     *
+     * USO:
+     * List<Map<String, Object>> consolidado = consolidarPorMes(
+     *     resultados,
+     *     Arrays.asList("provincia", "mes", "anio")
+     * );
+     */
+    public List<Map<String, Object>> consolidarPorMes(
+            List<Map<String, Object>> resultados,
+            List<String> camposAgrupacion) {
+
+        if (resultados == null || resultados.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        log.info("🔧 Consolidando {} registros por: {}", resultados.size(), camposAgrupacion);
+        long inicio = System.currentTimeMillis();
+
+        // PASO 1: Enriquecer con campos calculados (mes, año)
+        List<Map<String, Object>> enriquecidos = resultados.stream()
+                .map(this::agregarCamposMesAnio)
+                .collect(Collectors.toList());
+
+        // PASO 2: Agrupar por campos solicitados
+        Map<String, List<Map<String, Object>>> grupos = enriquecidos.stream()
+                .collect(Collectors.groupingBy(registro ->
+                        generarClaveAgrupacion(registro, camposAgrupacion)
+                ));
+
+        // PASO 3: Sumar cantidades por grupo
+        List<Map<String, Object>> consolidado = grupos.entrySet().stream()
+                .map(entry -> consolidarGrupo(entry.getValue(), camposAgrupacion))
+                .collect(Collectors.toList());
+
+        long duracion = System.currentTimeMillis() - inicio;
+        log.info("✅ Consolidación completada en {}ms: {} → {} registros",
+                duracion, resultados.size(), consolidado.size());
+
+        return consolidado;
+    }
+
+    /**
+     * Agrega campos mes y año desde fecha_constatacion
+     */
+    private Map<String, Object> agregarCamposMesAnio(Map<String, Object> registro) {
+        Map<String, Object> enriquecido = new HashMap<>(registro);
+
+        Object fecha = registro.get("fecha_constatacion");
+
+        if (fecha instanceof java.sql.Date) {
+            Calendar cal = Calendar.getInstance();
+            cal.setTime((java.sql.Date) fecha);
+            enriquecido.put("mes", cal.get(Calendar.MONTH) + 1);
+            enriquecido.put("anio", cal.get(Calendar.YEAR));
+
+        } else if (fecha instanceof java.time.LocalDate) {
+            java.time.LocalDate localDate = (java.time.LocalDate) fecha;
+            enriquecido.put("mes", localDate.getMonthValue());
+            enriquecido.put("anio", localDate.getYear());
+
+        } else if (fecha instanceof java.util.Date) {
+            Calendar cal = Calendar.getInstance();
+            cal.setTime((java.util.Date) fecha);
+            enriquecido.put("mes", cal.get(Calendar.MONTH) + 1);
+            enriquecido.put("anio", cal.get(Calendar.YEAR));
+        }
+
+        return enriquecido;
+    }
+
+    /**
+     * Genera clave única para agrupar registros
+     */
+    private String generarClaveAgrupacion(
+            Map<String, Object> registro,
+            List<String> camposAgrupacion) {
+
+        return camposAgrupacion.stream()
+                .map(campo -> String.valueOf(registro.get(campo)))
+                .collect(Collectors.joining("|"));
+    }
+
+    /**
+     * Consolida un grupo sumando cantidades
+     */
+    private Map<String, Object> consolidarGrupo(
+            List<Map<String, Object>> grupo,
+            List<String> camposAgrupacion) {
+
+        Map<String, Object> consolidado = new HashMap<>();
+
+        // Tomar valores de agrupación del primer registro
+        Map<String, Object> primero = grupo.get(0);
+        for (String campo : camposAgrupacion) {
+            consolidado.put(campo, primero.get(campo));
+        }
+
+        // Sumar cantidad
+        int cantidadTotal = grupo.stream()
+                .mapToInt(r -> {
+                    Object cant = r.get("cantidad");
+                    if (cant instanceof Number) {
+                        return ((Number) cant).intValue();
+                    }
+                    return 1; // Si no hay cantidad, contar como 1
+                })
+                .sum();
+
+        consolidado.put("cantidad", cantidadTotal);
+
+        return consolidado;
+    }
+
 }
