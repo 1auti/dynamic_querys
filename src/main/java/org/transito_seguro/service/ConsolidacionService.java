@@ -299,7 +299,7 @@ public class ConsolidacionService {
 
     /**
      * 🔍 Detecta automáticamente campos numéricos en los datos
-     * MEJORADO: Maneja funciones SQL como COUNT(*), SUM(campo), etc.
+     * MEJORADO: Excluye IDs y campos de identificación
      */
     private List<String> detectarCamposNumericosDinamicos(List<Map<String, Object>> datos) {
         if (datos.isEmpty()) {
@@ -309,21 +309,38 @@ public class ConsolidacionService {
         Set<String> todosLosCampos = datos.get(0).keySet();
         List<String> camposNumericos = new ArrayList<>();
 
+        // ⭐ LISTA DE EXCLUSIÓN: Campos que nunca deben sumarse
+        Set<String> camposExcluidos = new HashSet<>(Arrays.asList(
+                "id", "ID", "Id",
+                "codigo", "legajo", "dni", "cuit", "cuil",
+                "numero_infraccion", "acta", "boleta",
+                "id_infraccion", "infraccion_id"
+        ));
+
+        log.info("🔍 Analizando campos disponibles: {}", todosLosCampos);
+
         for (String campo : todosLosCampos) {
+            // ⭐ NUEVO: Saltar campos de identificación
+            if (camposExcluidos.contains(campo.toLowerCase())) {
+                log.info("⏭️ Campo '{}' excluido (identificador)", campo);
+                continue;
+            }
+
+            String campoNormalizado = campo.toLowerCase().trim();
+
             boolean esNumericoPorNombre = org.transito_seguro.utils.SqlFieldDetector.esNumericoPorNombre(campo);
             boolean esNumericoPorDatos = esNumericoEnDatos(campo, datos);
 
+            log.debug("Campo '{}' - Por nombre: {}, Por datos: {}",
+                    campo, esNumericoPorNombre, esNumericoPorDatos);
+
             if (esNumericoPorNombre || esNumericoPorDatos) {
                 camposNumericos.add(campo);
-                log.debug("✅ Campo numérico detectado: '{}' (por nombre: {}, por datos: {})",
-                        campo, esNumericoPorNombre, esNumericoPorDatos);
-            } else {
-                log.trace("❌ Campo NO numérico: '{}' (por nombre: {}, por datos: {})",
-                        campo, esNumericoPorNombre, esNumericoPorDatos);
+                log.info("✅ Campo numérico detectado: '{}'", campo);
             }
         }
 
-        log.info("🔢 Campos numéricos detectados: {}", camposNumericos);
+        log.info("🔢 Campos numéricos finales: {}", camposNumericos);
         return camposNumericos;
     }
 
@@ -729,17 +746,23 @@ public class ConsolidacionService {
             List<String> camposAgrupacion,
             List<String> camposNumericos) {
 
-        // Usar LinkedHashMap para mantener orden
         Map<String, Object> grupo = new LinkedHashMap<>();
 
-        // Agregar campos de agrupación EN EL ORDEN ESPECIFICADO
+        // Campos de agrupación
         for (String campo : camposAgrupacion) {
             grupo.put(campo, registro.get(campo));
         }
 
-        // Inicializar campos numéricos en 0
+        // ✅ CORRECCIÓN CRÍTICA: Inicializar campos numéricos con el valor del registro actual
         for (String campo : camposNumericos) {
-            grupo.put(campo, 0L);
+            Object valorOriginal = registro.get(campo);
+            Long valorInicial = convertirALong(valorOriginal);
+
+            // ⚠️ IMPORTANTE: Usar el valor real del primer registro, no 0
+            grupo.put(campo, valorInicial != null ? valorInicial : 0L);
+
+            log.debug("Inicializado campo numérico '{}': {} -> {}",
+                    campo, valorOriginal, valorInicial);
         }
 
         return grupo;
@@ -898,35 +921,54 @@ public class ConsolidacionService {
     private void acumularCamposNumericos(Map<String, Object> grupo,
                                          Map<String, Object> registro,
                                          List<String> camposNumericos) {
+
         for (String campo : camposNumericos) {
             Object valorRegistro = registro.get(campo);
-            if (valorRegistro == null) continue;
+            Object valorGrupo = grupo.get(campo);
 
-            Long valorNumerico = convertirALong(valorRegistro);
-            if (valorNumerico == null) continue;
+            Long valorNumericoRegistro = convertirALong(valorRegistro);
+            Long valorNumericoGrupo = convertirALong(valorGrupo);
 
-            Long valorActual = obtenerValorLong(grupo.get(campo));
-            grupo.put(campo, valorActual + valorNumerico);
+            Long nuevoValor = valorNumericoGrupo + valorNumericoRegistro;
+            grupo.put(campo, nuevoValor);
+
+            // ✅ LOG DETALLADO para debugging
+            log.trace("Acumulación - Campo: '{}', Grupo: {} + Registro: {} = {}",
+                    campo, valorNumericoGrupo, valorNumericoRegistro, nuevoValor);
         }
     }
 
     private Long convertirALong(Object valor) {
+        if (valor == null) {
+            return 0L;
+        }
+
+        // ✅ MEJORA: Manejar específicamente count(*) y otros campos de agregación SQL
         if (valor instanceof Number) {
             return ((Number) valor).longValue();
         }
 
         if (valor instanceof String) {
             String str = valor.toString().trim();
-            if (!str.isEmpty()) {
-                try {
-                    return Math.round(Double.parseDouble(str));
-                } catch (NumberFormatException e) {
-                    return null;
+            if (str.isEmpty()) {
+                return 0L;
+            }
+            try {
+                // Manejar números con formato de base de datos
+                if (str.matches("^\\d+\\.\\d+$")) {
+                    return Long.parseLong(str.split("\\.")[0]);
                 }
+                return Long.parseLong(str);
+            } catch (NumberFormatException e) {
+                log.warn("Error convirtiendo '{}' a Long: {}", str, e.getMessage());
+                return 0L;
             }
         }
 
-        return null;
+        // ✅ MEJORA: Log más informativo
+        log.debug("Tipo no soportado para conversión: {} valor: {}",
+                valor.getClass().getSimpleName(), valor);
+        return 0L;
     }
 
     private Long obtenerValorLong(Object valor) {
@@ -945,26 +987,39 @@ public class ConsolidacionService {
         int contadorNoNulo = 0;
         int muestra = Math.min(TAMAÑO_MUESTRA, datos.size());
 
+        // ✅ MEJORA: Analizar muestra más grande para mayor precisión
         for (int i = 0; i < muestra; i++) {
             Object valor = datos.get(i).get(campo);
+
             if (valor != null) {
                 contadorNoNulo++;
+
                 if (esValorNumerico(valor)) {
                     contadorNumerico++;
+
+                    // ✅ MEJORA: Log detallado para debugging
+                    if (i < 5) { // Solo los primeros 5 para no saturar logs
+                        log.trace("  Muestra[{}] campo '{}' = {} (tipo: {})",
+                                i, campo, valor, valor.getClass().getSimpleName());
+                    }
                 }
             }
         }
 
+        // ✅ MEJORA: Validación más estricta
         if (contadorNoNulo < MIN_MUESTRA_NUMERICA) {
+            log.debug("  ⚠️ Campo '{}' tiene pocos valores no nulos ({} < {})",
+                    campo, contadorNoNulo, MIN_MUESTRA_NUMERICA);
             return false;
         }
 
         double porcentajeNumerico = (double) contadorNumerico / contadorNoNulo;
         boolean esNumerico = porcentajeNumerico > UMBRAL_NUMERICO;
 
-        log.debug("Análisis campo '{}': {}/{} valores numéricos ({}%) -> {}",
+        log.debug("  📊 Análisis campo '{}': {}/{} valores numéricos ({}%) → {}",
                 campo, contadorNumerico, contadorNoNulo,
-                String.format("%.1f", porcentajeNumerico * 100), esNumerico);
+                String.format("%.1f", porcentajeNumerico * 100),
+                esNumerico ? "NUMÉRICO" : "NO NUMÉRICO");
 
         return esNumerico;
     }

@@ -13,9 +13,18 @@ public final class SqlFieldDetector {
     private SqlFieldDetector() {}
 
     // Patrones para funciones SQL
-    private static final Pattern COUNT_PATTERN = Pattern.compile("count\\s*\\([^)]*\\)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern SUM_PATTERN = Pattern.compile("sum\\s*\\([^)]*\\)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern AVG_PATTERN = Pattern.compile("avg\\s*\\([^)]*\\)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern COUNT_PATTERN = Pattern.compile(
+            "count\\s*\\([^)]*\\)",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern SUM_PATTERN = Pattern.compile(
+            "sum\\s*\\([^)]*\\)",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern AVG_PATTERN = Pattern.compile(
+            "avg\\s*\\([^)]*\\)",
+            Pattern.CASE_INSENSITIVE
+    );
     private static final Pattern MAX_PATTERN = Pattern.compile("max\\s*\\([^)]*\\)", Pattern.CASE_INSENSITIVE);
     private static final Pattern MIN_PATTERN = Pattern.compile("min\\s*\\([^)]*\\)", Pattern.CASE_INSENSITIVE);
 
@@ -29,21 +38,27 @@ public final class SqlFieldDetector {
 
         String campoLimpio = campo.toLowerCase().trim();
 
-        // 1. Detectar funciones de agregación SQL
+        // ✅ MEJORA 2: Detectar "count(*)" exactamente como viene de la DB
+        if (campoLimpio.equals("count(*)")) {
+            log.debug("✅ Campo detectado como count(*): {}", campo);
+            return true;
+        }
+
+        // ✅ MEJORA 3: Detectar funciones de agregación usando .find() (busca subcadena)
         if (esFuncionAgregacion(campoLimpio)) {
-            log.debug("Campo detectado como función de agregación: {}", campo);
+            log.debug("✅ Campo detectado como función de agregación: {}", campo);
             return true;
         }
 
-        // 2. Detectar por nombres comunes
+        // Detectar por nombres comunes
         if (esNombreNumerico(campoLimpio)) {
-            log.debug("Campo detectado como numérico por nombre: {}", campo);
+            log.debug("✅ Campo detectado como numérico por nombre: {}", campo);
             return true;
         }
 
-        // 3. Detectar patrones específicos
+        // Detectar patrones específicos
         if (esPatronNumerico(campoLimpio)) {
-            log.debug("Campo detectado como numérico por patrón: {}", campo);
+            log.debug("✅ Campo detectado como numérico por patrón: {}", campo);
             return true;
         }
 
@@ -54,11 +69,11 @@ public final class SqlFieldDetector {
      * Detecta funciones de agregación SQL
      */
     private static boolean esFuncionAgregacion(String campo) {
-        return COUNT_PATTERN.matcher(campo).matches() ||
-                SUM_PATTERN.matcher(campo).matches() ||
-                AVG_PATTERN.matcher(campo).matches() ||
-                MAX_PATTERN.matcher(campo).matches() ||
-                MIN_PATTERN.matcher(campo).matches();
+        // Cambio crítico: .find() busca el patrón en cualquier parte
+        // vs .matches() que requiere coincidencia exacta de toda la cadena
+        return COUNT_PATTERN.matcher(campo).find() ||
+                SUM_PATTERN.matcher(campo).find() ||
+                AVG_PATTERN.matcher(campo).find();
     }
 
     /**
@@ -70,6 +85,11 @@ public final class SqlFieldDetector {
                 campo.equals("cantidad") ||
                 campo.equals("numero") ||
                 campo.equals("counter") ||
+                campo.equals("sum") ||           // ✅ NUEVO
+                campo.equals("promedio") ||      // ✅ NUEVO
+                campo.equals("avg") ||           // ✅ NUEVO
+                campo.contains("count(") ||      // ✅ NUEVO: detecta count(algo)
+                campo.contains("sum(") ||        // ✅ NUEVO: detecta sum(algo)
                 campo.contains("total") ||
                 campo.contains("cantidad") ||
                 campo.contains("counter") ||
@@ -80,17 +100,16 @@ public final class SqlFieldDetector {
                 campo.contains("valor");
     }
 
-    /**
-     * Detecta patrones específicos de campos numéricos
-     */
     private static boolean esPatronNumerico(String campo) {
         return campo.endsWith("_count") ||
                 campo.endsWith("_total") ||
                 campo.endsWith("_cantidad") ||
                 campo.endsWith("_num") ||
+                campo.endsWith("_sum") ||        // ✅ NUEVO
                 campo.startsWith("num_") ||
                 campo.startsWith("total_") ||
-                campo.startsWith("count_");
+                campo.startsWith("count_") ||
+                campo.startsWith("sum_");        // ✅ NUEVO
     }
 
     /**
