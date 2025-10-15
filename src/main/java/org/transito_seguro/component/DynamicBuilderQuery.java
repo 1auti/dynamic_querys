@@ -177,30 +177,273 @@ public class DynamicBuilderQuery {
      * @param analisis Análisis de paginación con estrategia determinada
      * @return SQL con paginación aplicada
      */
+    /**
+     * Aplica paginación según estrategia.
+     * UNIVERSAL: Genera row_id automáticamente cuando no hay ID.
+     */
+    /**
+     * Aplica paginación según estrategia.
+     * CORREGIDO: Queries consolidadas usan OFFSET en lugar de ROW_NUMBER.
+     */
     private String aplicarPaginacionSegunEstrategia(String sql, AnalisisPaginacion analisis) {
         EstrategiaPaginacion estrategia = analisis.getEstrategiaPaginacion();
+        boolean tieneIdReal = analisis.isTieneIdInfracciones();
+
+        log.debug("Aplicando estrategia: {} | Tiene ID: {}", estrategia, tieneIdReal);
 
         switch (estrategia) {
             case KEYSET_CON_ID:
-            case KEY_COMPUESTO:
-            case KEYSET_CONSOLIDADO:
-                // UNIFICADO: Todas las estrategias keyset usan el mismo approach simplificado
-                return aplicarKeysetSimplificado(sql, analisis.isTieneIdInfracciones());
-
-            case FALLBACK_LIMIT_ONLY:
-                return aplicarLimitSimple(sql);
+                // ✅ Query con ID real: usar keyset normal
+                log.debug("🔑 Usando KEYSET con ID real");
+                return aplicarKeysetConIdReal(sql);
 
             case SIN_PAGINACION:
-                return aplicarLimitParaConsolidacion(sql);
+            case KEYSET_CONSOLIDADO:
+            case KEY_COMPUESTO:
+            case FALLBACK_LIMIT_ONLY:
+                // ✅ Queries consolidadas: usar OFFSET simple
+                log.debug("📄 Usando OFFSET simple para query consolidada");
+                return aplicarOffsetSimple(sql);  // ← CAMBIO AQUÍ
 
             case OFFSET:
-                log.warn("Usando estrategia OFFSET (menos eficiente)");
-                return aplicarLimitSimple(sql); // Fallback a LIMIT simple
-
             default:
-                log.warn("Estrategia desconocida: {}, aplicando LIMIT simple", estrategia);
-                return aplicarLimitSimple(sql);
+                log.warn("Estrategia {} detectada, usando OFFSET por defecto", estrategia);
+                return aplicarOffsetSimple(sql);  // ← CAMBIO AQUÍ
         }
+    }
+
+
+    /**
+     * 📄 Aplica OFFSET simple para queries consolidadas.
+     * NO usa ROW_NUMBER para evitar overhead de recálculo.
+     *
+     * @param sql Query SQL consolidada
+     * @return SQL con OFFSET + LIMIT
+     */
+    private String aplicarOffsetSimple(String sql) {
+        log.debug("📄 Aplicando OFFSET simple para query consolidada");
+
+        String upper = sql.toUpperCase();
+
+        // Si ya tiene LIMIT/OFFSET, no modificar
+        if (upper.contains("LIMIT") || upper.contains("OFFSET")) {
+            log.debug("Query ya tiene LIMIT/OFFSET, no se modifica");
+            return sql;
+        }
+
+        // Agregar OFFSET + LIMIT
+        // Límite alto para consolidadas (GROUP BY produce menos registros)
+        return sql +
+                "\nOFFSET COALESCE(:offset::INTEGER, 0)" +
+                "\nLIMIT LEAST(COALESCE(:limite::INTEGER, 10000), 50000)";
+    }
+
+
+    /**
+     * 🔑 Keyset con ID REAL (query normal con i.id_infracciones)
+     */
+    private String aplicarKeysetConIdReal(String sql) {
+        log.debug("🔑 Aplicando KEYSET con ID REAL");
+
+        // Construir condición keyset usando el ID real
+        String keysetCondition = "\n  AND (:lastId::BIGINT IS NULL OR id_infracciones > :lastId::BIGINT)";
+
+        // Insertar condición keyset
+        sql = insertarCondicionKeyset(sql, keysetCondition);
+
+        // Agregar ORDER BY por id
+        sql = insertarOrderBy(sql, "\nORDER BY id_infracciones ASC");
+
+        // Agregar LIMIT
+        sql = agregarLimitSiNoExiste(sql);
+
+        return sql;
+    }
+
+    /**
+     * 🔥 KEYSET CON ROW_NUMBER VIRTUAL (universal para queries sin ID)
+     * Genera un ID secuencial para CUALQUIER query.
+     *
+     * @param sql Query original
+     * @return Query envuelta con row_id y condición keyset
+     */
+    /**
+     * 🔥 VERSIÓN MEJORADA: ROW_NUMBER respeta el ORDER BY original.
+     *
+     * Esto garantiza que todas las provincias usen el MISMO orden
+     * y que los primeros 1000 registros sean consistentes.
+     */
+    /**
+     * 🔥 KEYSET CON ROW_NUMBER - VERSIÓN CORREGIDA
+     *
+     * CRÍTICO: Extrae ORDER BY ANTES de remover del SQL original.
+     */
+    private String aplicarKeysetConRowNumber(String sql) {
+        log.debug("🔑 Aplicando KEYSET con ROW_NUMBER virtual");
+
+        // ✅ PASO 1: Extraer ORDER BY ANTES de limpiar la query
+        String orderByClause = extraerOrderBy(sql);
+
+        // ✅ PASO 2: Si no hay ORDER BY, construir uno basado en GROUP BY
+        if (orderByClause == null || orderByClause.trim().isEmpty()) {
+            orderByClause = construirOrderByDesdeGroupBy(sql);
+
+            if (orderByClause == null) {
+                // Última opción: usar ordenamiento por SELECT order
+                orderByClause = "1, 2, 3, 4, 5, 6";  // Ordenar por primeras columnas
+                log.warn("⚠️ No se detectó ORDER BY ni GROUP BY, usando orden por columnas: 1-6");
+            }
+        }
+
+        log.info("✅ ORDER BY para ROW_NUMBER: {}", orderByClause);
+
+        // ✅ PASO 3: Ahora sí, remover ORDER BY y LIMIT de la query
+        String sqlLimpia = removerOrderByYLimit(sql);
+
+        // ✅ PASO 4: Construir query con ROW_NUMBER usando el ORDER BY extraído
+        String sqlConRowNumber = String.format(
+                "SELECT * FROM (\n" +
+                        "  SELECT \n" +
+                        "    datos_originales.*,\n" +
+                        "    ROW_NUMBER() OVER (ORDER BY %s) as row_id\n" +  // ✅ USA ORDER BY EXTRAÍDO
+                        "  FROM (\n" +
+                        "%s\n" +
+                        "  ) AS datos_originales\n" +
+                        ") AS datos_con_id",
+                orderByClause,
+                identarSQL(sqlLimpia, 4)
+        );
+
+        // Agregar condición keyset
+        sqlConRowNumber += "\nWHERE (:lastId::BIGINT IS NULL OR row_id > :lastId::BIGINT)";
+
+        // Mantener ORDER BY consistente
+        sqlConRowNumber += "\nORDER BY row_id ASC";
+
+        // Límite alto para consolidadas
+        sqlConRowNumber += "\nLIMIT LEAST(COALESCE(:limite::INTEGER, 10000), 50000)";
+
+        log.debug("✅ Query con ROW_NUMBER generada");
+
+        return sqlConRowNumber;
+    }
+
+    /**
+     * Extrae la cláusula ORDER BY de una query.
+     * MEJORADO: Busca hasta encontrar GROUP BY, ORDER BY, LIMIT o final.
+     */
+    private String extraerOrderBy(String sql) {
+        // Buscar ORDER BY en la query original
+        Pattern pattern = Pattern.compile(
+                "ORDER\\s+BY\\s+([^;]+?)(?:\\s+LIMIT|\\s+OFFSET|\\s*$)",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+        );
+
+        Matcher matcher = pattern.matcher(sql);
+        if (matcher.find()) {
+            String orderBy = matcher.group(1).trim();
+
+            // Limpiar posibles restos de LIMIT
+            orderBy = orderBy.replaceAll("(?i)\\s*LIMIT.*$", "");
+
+            log.debug("📋 ORDER BY extraído: {}", orderBy);
+            return orderBy;
+        }
+
+        log.debug("⚠️ No se encontró ORDER BY explícito");
+        return null;
+    }
+
+    /**
+     * 🆕 Construye ORDER BY desde GROUP BY si no hay ORDER BY explícito.
+     *
+     * Para queries con GROUP BY 1, 2, 3, 4, 5, 6 crea ORDER BY 1, 2, 3, 4, 5, 6
+     */
+    private String construirOrderByDesdeGroupBy(String sql) {
+        // Buscar GROUP BY
+        Pattern pattern = Pattern.compile(
+                "GROUP\\s+BY\\s+([^;]+?)(?:\\s+HAVING|\\s+ORDER|\\s+LIMIT|\\s*$)",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+        );
+
+        Matcher matcher = pattern.matcher(sql);
+        if (matcher.find()) {
+            String groupBy = matcher.group(1).trim();
+
+            // Limpiar posibles restos
+            groupBy = groupBy.replaceAll("(?i)\\s*(HAVING|ORDER|LIMIT).*$", "");
+
+            log.debug("📋 GROUP BY detectado, usando para ORDER BY: {}", groupBy);
+            return groupBy;  // Usar el mismo orden que el GROUP BY
+        }
+
+        return null;
+    }
+
+    /**
+     * Remueve ORDER BY y LIMIT de una query.
+     */
+    private String removerOrderByYLimit(String sql) {
+        String sqlLimpia = sql.trim();
+
+        // Remover ORDER BY
+        sqlLimpia = sqlLimpia.replaceAll(
+                "(?i)\\s+ORDER\\s+BY[^;]*?(?=\\s+LIMIT|\\s+OFFSET|\\s*$)",
+                ""
+        );
+
+        // Remover LIMIT
+        sqlLimpia = sqlLimpia.replaceAll("(?i)\\s+LIMIT\\s+[^;]*$", "");
+
+        // Remover OFFSET
+        sqlLimpia = sqlLimpia.replaceAll("(?i)\\s+OFFSET\\s+[^;]*$", "");
+
+        return sqlLimpia.trim();
+    }
+
+    /**
+     * Identa SQL para legibilidad (compatible Java 8+).
+     */
+    private String identarSQL(String sql, int espacios) {
+        if (sql == null || sql.isEmpty()) {
+            return sql;
+        }
+
+        // Crear identación (compatible Java 8)
+        StringBuilder identacion = new StringBuilder();
+        for (int i = 0; i < espacios; i++) {
+            identacion.append(" ");
+        }
+        String indent = identacion.toString();
+
+        // Identar cada línea
+        String[] lineas = sql.split("\n");
+        StringBuilder resultado = new StringBuilder();
+
+        for (int i = 0; i < lineas.length; i++) {
+            resultado.append(indent).append(lineas[i]);
+            if (i < lineas.length - 1) {
+                resultado.append("\n");
+            }
+        }
+
+        return resultado.toString();
+    }
+
+
+    /**
+     * Agrega LIMIT solo si no existe.
+     */
+    private String agregarLimitSiNoExiste(String sql) {
+        String upper = sql.toUpperCase();
+
+        if (upper.contains("LIMIT")) {
+            log.debug("LIMIT ya existe");
+            return sql;
+        }
+
+        return sql + String.format("\nLIMIT LEAST(COALESCE(:limite::INTEGER, %d), %d)",
+                LIMITE_DEFAULT, LIMITE_MAXIMO);
     }
 
     /**
@@ -259,26 +502,6 @@ public class DynamicBuilderQuery {
         return agregarLimitSiNoExiste(sql);
     }
 
-    /**
-     * Agrega LIMIT solo si no existe ya en el SQL.
-     * Usa parámetro :limite con valor por defecto.
-     *
-     * @param sql Query SQL
-     * @return SQL con LIMIT agregado
-     */
-    private String agregarLimitSiNoExiste(String sql) {
-        String upper = sql.toUpperCase();
-
-        // Si ya tiene LIMIT, no agregar otro
-        if (upper.contains("LIMIT")) {
-            log.debug("LIMIT ya existe, no se agrega duplicado");
-            return sql;
-        }
-
-        // Agregar LIMIT con valor por defecto y máximo
-        return sql + String.format("\nLIMIT LEAST(COALESCE(:limite::INTEGER, %d), %d)",
-                LIMITE_DEFAULT, LIMITE_MAXIMO);
-    }
 
     // ==================== UTILIDADES DE INSERCIÓN ====================
 

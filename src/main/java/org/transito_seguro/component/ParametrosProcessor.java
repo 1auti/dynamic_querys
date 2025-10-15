@@ -74,36 +74,79 @@ public class ParametrosProcessor {
     }
 
     /**
+     * Mapea parámetros de paginación (OFFSET + KEYSET + LIMITE).
+     */
+    private void mapearPaginacionCompleta(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
+        if (filtros == null) {
+            params.addValue("offset", 0, Types.INTEGER);
+            params.addValue("limite", 10000, Types.INTEGER);
+            params.addValue("lastId", null, Types.BIGINT);
+            return;
+        }
+
+        // === OFFSET ===
+        Integer offset = filtros.getOffset();
+        if (offset == null || offset < 0) {
+            offset = 0;
+        }
+        params.addValue("offset", offset, Types.INTEGER);  // ✅ YA LO TIENES
+
+        // === LIMITE ===
+        Integer limite = filtros.getLimite();
+        if (limite == null || limite <= 0) {
+            limite = 10000;
+        } else if (limite > 50000) {
+            limite = 50000;
+        }
+        params.addValue("limite", limite, Types.INTEGER);  // ✅ YA LO TIENES
+
+        // === KEYSET (lastId) ===
+        Integer lastId = filtros.getLastId();
+        if (lastId != null && lastId < 0) {
+            lastId = null;
+        }
+        params.addValue("lastId", lastId, Types.BIGINT);  // ✅ YA LO TIENES
+    }
+
+    /**
      * PAGINACIÓN CORREGIDA
      * - Usa límite razonable por defecto (1000)
      * - NUNCA usa Integer.MAX_VALUE que desactiva keyset
      */
+    /**
+     * PAGINACIÓN CORREGIDA con OFFSET
+     */
     private void mapearPaginacionKeyset(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
         if (filtros == null) {
-            params.addValue("limite", 1000, Types.INTEGER);
+            params.addValue("offset", 0, Types.INTEGER);      // ✅ AGREGAR
+            params.addValue("limite", 10000, Types.INTEGER);
             return;
         }
 
-        // CRÍTICO: Validar límite para activar keyset
+        // ✅ CRÍTICO: Mapear OFFSET
+        Integer offset = filtros.getOffset();
+        if (offset == null || offset < 0) {
+            offset = 0;
+        }
+        params.addValue("offset", offset, Types.INTEGER);  // ✅ ESTO FALTABA
+
+        // LÍMITE
         Integer limiteOriginal = filtros.getLimite();
         int limiteFinal;
 
         if (limiteOriginal == null || limiteOriginal <= 0 || limiteOriginal == Integer.MAX_VALUE) {
-            // Usar límite por defecto para activar keyset
-            limiteFinal = 1000;
+            limiteFinal = 10000;
             log.debug("🔧 Límite corregido: {} → {}", limiteOriginal, limiteFinal);
-        } else if (limiteOriginal > 10000) {
-            // Límite muy alto: reducir para performance
-            limiteFinal = 1000;
-            log.debug("🔧 Límite reducido: {} → {} (optimización)", limiteOriginal, limiteFinal);
+        } else if (limiteOriginal > 50000) {
+            limiteFinal = 50000;
+            log.debug("🔧 Límite reducido: {} → {} (máximo)", limiteOriginal, limiteFinal);
         } else {
-            // Límite razonable: usar el solicitado
             limiteFinal = limiteOriginal;
         }
 
         params.addValue("limite", limiteFinal, Types.INTEGER);
 
-        log.debug("📊 Paginación Keyset: limite={}", limiteFinal);
+        log.debug("📊 Paginación: offset={}, limite={}", offset, limiteFinal);
     }
 
     // =================== MAPEO DE FECHAS ===================

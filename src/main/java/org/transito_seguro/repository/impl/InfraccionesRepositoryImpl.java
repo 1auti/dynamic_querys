@@ -19,10 +19,8 @@ import org.transito_seguro.utils.SqlUtils;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
@@ -53,28 +51,71 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         log.debug("Inicializado InfraccionesRepositoryImpl para provincia: {}", provincia);
     }
 
+    /**
+     * 🔥 VERSIÓN MEJORADA: Con streaming real y logs de progreso
+     *
+     * CAMBIOS PRINCIPALES:
+     * 1. Logs ANTES de iniciar la query
+     * 2. Logs cada 1000 registros DURANTE la lectura
+     * 3. Logs DESPUÉS con estadísticas finales
+     * 4. Manejo de streaming eficiente
+     */
     @Override
     public List<Map<String, Object>> ejecutarQueryConFiltros(String nombreQuery, ParametrosFiltrosDTO filtros) {
-        log.debug("Ejecutando query '{}' en provincia: {}", nombreQuery, provincia);
+
+        // ✅ 1. LOG INICIAL - Para saber que empezó
+        log.info("🔹 {} - Preparando query '{}'", provincia, nombreQuery);
 
         try {
             String querySQL = cargarQuery(nombreQuery);
             QueryResult resultado = parametrosProcessor.procesarQuery(querySQL, filtros);
 
-            // ✅ DEBUG 1: Query y parámetros
-            log.debug("🔍 QUERY A EJECUTAR para {}:\n{}", provincia, resultado.getQueryModificada());
-            log.debug("🔍 PARÁMETROS para {}: lastId={}, limite={}",
+            // ✅ 2. LOG DE QUERY Y PARÁMETROS
+            log.debug("🔍 QUERY para {}:\n{}", provincia, resultado.getQueryModificada());
+            log.info("🔍 {} - Parámetros: lastId={}, limite={}",
                     provincia,
                     filtros != null ? filtros.getLastId() : "null",
                     filtros != null ? filtros.getLimite() : "null");
 
+            // ✅ 3. CONTADORES PARA PROGRESO EN TIEMPO REAL
+            AtomicInteger registrosLeidos = new AtomicInteger(0);
+            long inicioQuery = System.currentTimeMillis();
+
+            // ✅ 4. LOG ANTES DE EJECUTAR
+            log.info("🚀 {} - INICIANDO lectura de datos...", provincia);
+
             List<Map<String, Object>> resultados;
             try {
+                // ✅ 5. EJECUTAR CON CALLBACK DE PROGRESO
                 resultados = jdbcTemplate.query(
                         resultado.getQueryModificada(),
                         resultado.getParametros(),
-                        this::mapearFila
+                        rs -> {
+                            List<Map<String, Object>> lista = new ArrayList<>();
+                            ResultSetMetaData metaData = rs.getMetaData();
+                            int columnCount = metaData.getColumnCount();
+
+                            // ✅ 6. LEER FILA POR FILA (STREAMING REAL)
+                            while (rs.next()) {
+                                Map<String, Object> row = mapearFila(rs, metaData, columnCount);
+                                lista.add(row);
+
+                                int leidos = registrosLeidos.incrementAndGet();
+
+                                // ✅ 7. LOG DE PROGRESO cada 1000 registros
+                                if (leidos % 1000 == 0) {
+                                    long transcurrido = System.currentTimeMillis() - inicioQuery;
+                                    double velocidad = leidos * 1000.0 / Math.max(transcurrido, 1);
+
+                                    log.info("📊 {} - Leyendo: {} registros en {}ms ({:.0f} reg/s)",
+                                            provincia, leidos, transcurrido, velocidad);
+                                }
+                            }
+
+                            return lista;
+                        }
                 );
+
             } catch (DataAccessException e) {
                 SQLExecutionException executionException = SQLExceptionParser.parse(
                         e,
@@ -83,90 +124,77 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
                         provincia
                 );
 
-                // Log con sugerencias específicas
                 log.error(SQLExceptionParser.obtenerSugerencias(e, querySQL));
                 log.error("{}", executionException.getMessageDetallado());
 
                 throw executionException;
             }
 
-            // ✅ DEBUG 2: Verificar QUÉ CAMPOS retornan los registros
-            if (!resultados.isEmpty()) {
-                Map<String, Object> primerRegistro = resultados.get(0);
-                Map<String, Object> ultimoRegistro = resultados.get(resultados.size() - 1);
+            // ✅ 8. ESTADÍSTICAS FINALES
+            long duracionTotal = System.currentTimeMillis() - inicioQuery;
+            double velocidadPromedio = resultados.size() * 1000.0 / Math.max(duracionTotal, 1);
 
-                log.debug("🔍 PRIMER REGISTRO {} - Campos: {}", provincia, primerRegistro.keySet());
-                log.debug("🔍 PRIMER REGISTRO {} - Valores: {}", provincia, primerRegistro);
+            log.info("✅ {} - Query completada: {} registros en {}ms ({:.0f} reg/s)",
+                    provincia, resultados.size(), duracionTotal, velocidadPromedio);
 
-                log.debug("🔍 ÚLTIMO REGISTRO {} - Campos: {}", provincia, ultimoRegistro.keySet());
-                log.debug("🔍 ÚLTIMO REGISTRO {} - Valores: {}", provincia, ultimoRegistro);
-
-                // ✅ DEBUG 3: Buscar específicamente el campo 'id'
-                if (primerRegistro.containsKey("id")) {
-                    log.debug("✅ CAMPO 'id' ENCONTRADO en {}: valor={}", provincia, primerRegistro.get("id"));
-                } else {
-                    log.warn("⚠️ CAMPO 'id' NO ENCONTRADO en {}. Buscando alternativas...", provincia);
-
-                    // Buscar cualquier campo que contenga "id"
-                    for (String campo : primerRegistro.keySet()) {
-                        if (campo.toLowerCase().contains("id")) {
-                            log.debug("🔍 Campo similar a ID encontrado: {} = {}", campo, primerRegistro.get(campo));
-                        }
-                    }
-                }
-            } else {
-                log.debug("🔍 {}: No hay resultados para analizar", provincia);
+            // ✅ 9. ANÁLISIS DE ESTRUCTURA (solo para debugging)
+            if (log.isDebugEnabled() && !resultados.isEmpty()) {
+                analizarEstructuraResultados(resultados);
             }
 
-            log.debug("Query '{}' completada. Resultados: {} registros", nombreQuery, resultados.size());
             return resultados;
 
         } catch (Exception e) {
-            log.error("Error ejecutando query '{}' en provincia {}: {}",
-                    nombreQuery, provincia, e.getMessage(), e);
+            log.error("❌ {} - Error ejecutando query '{}': {}",
+                    provincia, nombreQuery, e.getMessage(), e);
             throw new RuntimeException("Error ejecutando query: " + nombreQuery, e);
         }
     }
 
 
 
-    private Map<String, Object> mapearFila(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
-        Map<String, Object> row = new HashMap<>();
-        ResultSetMetaData metaData = rs.getMetaData();
-        int columnCount = metaData.getColumnCount();
+    /**
+     * 📊 Analiza estructura de resultados (solo en modo DEBUG)
+     */
+    private void analizarEstructuraResultados(List<Map<String, Object>> resultados) {
+        Map<String, Object> primerRegistro = resultados.get(0);
+        Map<String, Object> ultimoRegistro = resultados.get(resultados.size() - 1);
 
-        // ✅ DEBUG: Ver TODOS los campos del ResultSet
-        if (rowNum == 0) { // Solo debug para el primer registro
-            log.debug("🔍 CAMPOS EN RESULTSET para fila {}:", rowNum);
-            for (int i = 1; i <= columnCount; i++) {
-                String columnName = metaData.getColumnLabel(i);
-                String columnType = metaData.getColumnTypeName(i);
-                log.debug("   - {} ({})", columnName, columnType);
+        log.debug("🔍 PRIMER REGISTRO {} - Campos: {}", provincia, primerRegistro.keySet());
+        log.debug("🔍 PRIMER REGISTRO {} - Valores: {}", provincia, primerRegistro);
+
+        log.debug("🔍 ÚLTIMO REGISTRO {} - Campos: {}", provincia, ultimoRegistro.keySet());
+        log.debug("🔍 ÚLTIMO REGISTRO {} - Valores: {}", provincia, ultimoRegistro);
+
+        // Buscar campo 'id'
+        if (primerRegistro.containsKey("id")) {
+            log.debug("✅ Campo 'id' encontrado en {}: valor={}",
+                    provincia, primerRegistro.get("id"));
+        } else {
+            log.warn("⚠️ Campo 'id' NO encontrado en {}. Campos similares:", provincia);
+
+            for (String campo : primerRegistro.keySet()) {
+                if (campo.toLowerCase().contains("id")) {
+                    log.debug("   🔍 {} = {}", campo, primerRegistro.get(campo));
+                }
             }
         }
+    }
+
+
+    /**
+     * 🔧 Mapea una fila del ResultSet a Map
+     * (Versión optimizada del método original mapearFila)
+     */
+    private Map<String, Object> mapearFila(ResultSet rs, ResultSetMetaData metaData, int columnCount)
+            throws SQLException {
+
+        Map<String, Object> row = new LinkedHashMap<>();
 
         for (int i = 1; i <= columnCount; i++) {
             String columnName = metaData.getColumnLabel(i);
-            Object columnValue = rs.getObject(i);
-
-            // ✅ DEBUG: Campo 'id' específico
-            if ("id".equalsIgnoreCase(columnName)) {
-                log.debug("🎯 MAPEANDO CAMPO 'id': {}", columnValue);
-            }
-
-            // Verificar si estás filtrando algún campo
-            // ❌ SI TIENES ESTO, QUÍTALO:
-            // if (!"provincia".equalsIgnoreCase(columnName)) {
-            //     row.put(columnName, columnValue);
-            // }
-
-            // ✅ DEBERÍA SER SIMPLEMENTE:
-            row.put(columnName, columnValue);
-        }
-
-        // Solo agregar provincia si no existe
-        if (!row.containsKey("provincia")) {
-            row.put("provincia", this.provincia);
+            Object value = rs.getObject(i);
+            row.put(columnName, value);
         }
 
         return row;
@@ -223,7 +251,6 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
     @Override
     public Integer ejecutarQueryConteo(String nombreQuery, ParametrosFiltrosDTO filtros) {
       try{
-
          QueryResult queryResult = parametrosProcessor.procesarQuery(nombreQuery,filtros);
 
          String queryFiltros = queryResult.getQueryModificada();
@@ -257,129 +284,133 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
 
 
     /**
- * Ejecuta una query usando streaming (cursor JDBC).
- * Procesa resultados uno por uno sin cargar todo en memoria.
- * 
- * IMPORTANTE: Solo usar para queries que pueden retornar muchos registros.
- * 
- * @param nombreQuery Código de la query
- * @param filtros Filtros aplicados
- * @param procesarRegistro Callback ejecutado por cada registro
- */
-public void ejecutarQueryConStreaming(
-        String nombreQuery,
-        ParametrosFiltrosDTO filtros,
-        Consumer<Map<String, Object>> procesarRegistro) {
-    
-    try {
-        // Obtener query
-        Optional<QueryStorage> queryOpt = queryStorageRepository.findByCodigo(nombreQuery);
-        
-        if (!queryOpt.isPresent()) {
-            throw new RuntimeException("Query no encontrada: " + nombreQuery);
-        }
-        
-        String sql = queryOpt.get().getSqlQuery();
-        QueryResult queryResult = parametrosProcessor.procesarQuery(sql, filtros);
-        String sqlModificada = queryResult.getQueryModificada();
-        
-        // ✅ CORRECCIÓN 1: getParametros() retorna MapSqlParameterSource, no Map
-        org.springframework.jdbc.core.namedparam.MapSqlParameterSource parametros = 
-            queryResult.getParametros();
-        
-        log.debug("Ejecutando query con streaming para provincia {}: {}", provincia, nombreQuery);
-        
-        // Convertir named parameters a posicionales
-        org.springframework.jdbc.core.namedparam.ParsedSql parsedSql = 
-            org.springframework.jdbc.core.namedparam.NamedParameterUtils.parseSqlStatement(sqlModificada);
-        
-        // ✅ CORRECCIÓN 2: Pasar 'parametros' directamente, no crear nuevo MapSqlParameterSource
-        String sqlPosicional = org.springframework.jdbc.core.namedparam.NamedParameterUtils
-            .substituteNamedParameters(parsedSql, parametros);
-        
-        // ✅ CORRECCIÓN 3: Pasar 'parametros' directamente
-        Object[] args = org.springframework.jdbc.core.namedparam.NamedParameterUtils
-            .buildValueArray(parsedSql, parametros, null);
-        
-        // Contador para logging
-        final int[] contador = {0};
-        
-        // Usar JdbcTemplate nativo para tener control del PreparedStatement
-        jdbcTemplate.getJdbcTemplate().query(
-            connection -> {
-                // Crear PreparedStatement con configuración de streaming
-                java.sql.PreparedStatement ps = connection.prepareStatement(
-                    sqlPosicional,
-                    java.sql.ResultSet.TYPE_FORWARD_ONLY,
-                    java.sql.ResultSet.CONCUR_READ_ONLY
-                );
-                
-                // CRÍTICO: Configurar fetch size para streaming
-                ps.setFetchSize(1000);
-                
-                // Establecer parámetros
-                for (int i = 0; i < args.length; i++) {
-                    ps.setObject(i + 1, args[i]);
-                }
-                
-                return ps;
-            },
-            rs -> {
-                // Este callback se ejecuta por cada fila
-                Map<String, Object> registro = mapearResultSetStreaming(rs);
-                procesarRegistro.accept(registro);
-                
-                // ✅ CORRECCIÓN 4: Agregar contador para logging
-                contador[0]++;
-                
-                // Log cada 10,000 registros
-                if (contador[0] % 10000 == 0) {
-                    log.debug("Streaming provincia {}: {} registros procesados", 
-                              provincia, contador[0]);
-                }
-            }
-        );
-        
-        // ✅ CORRECCIÓN 5: Log con total de registros procesados
-        log.debug("Query con streaming completada para provincia {}: {} registros totales", 
-                  provincia, contador[0]);
-        
-    } catch (Exception e) {
-        log.error("Error en streaming para provincia {}: {}", provincia, e.getMessage());
-        throw new RuntimeException("Error en streaming: " + e.getMessage(), e);
-    }
-}
+     * 🌊 Ejecuta query con streaming real usando NamedParameterJdbcTemplate.
+     *
+     * SIMPLIFICADO: Usa directamente NamedParameterJdbcTemplate que maneja
+     * automáticamente los parámetros nombrados.
+     *
+     * @param nombreQuery Código de la query
+     * @param filtros Filtros aplicados
+     * @param procesarRegistro Callback ejecutado por cada registro
+     */
+    public void ejecutarQueryConStreaming(
+            String nombreQuery,
+            ParametrosFiltrosDTO filtros,
+            Consumer<Map<String, Object>> procesarRegistro) {
 
-/**
- * Mapea una fila del ResultSet a un Map (versión para streaming).
- * 
- * @param rs ResultSet posicionado en la fila actual
- * @return Map con columnas y valores
- */
-private Map<String, Object> mapearResultSetStreaming(ResultSet rs) {
-    try {
-        Map<String, Object> registro = new HashMap<>();
-        ResultSetMetaData metaData = rs.getMetaData();
-        
-        for (int i = 1; i <= metaData.getColumnCount(); i++) {
-            String columna = metaData.getColumnName(i);
-            Object valor = rs.getObject(i);
-            
-            // No incluir provincia si ya existe en el resultado
-            if (!"provincia".equalsIgnoreCase(columna)) {
+        try {
+            // 1. Cargar y preparar query
+            String sql = cargarQuery(nombreQuery);
+            QueryResult queryResult = parametrosProcessor.procesarQuery(sql, filtros);
+            String sqlModificada = queryResult.getQueryModificada();
+            MapSqlParameterSource parametros = queryResult.getParametros();
+
+            log.info("🌊 STREAMING INICIADO para {} - Query: {}", provincia, nombreQuery);
+
+            // 2. Contadores
+            AtomicInteger contador = new AtomicInteger(0);
+            long inicioStreaming = System.currentTimeMillis();
+            long ultimoLog = inicioStreaming;
+
+            // 3. ✅ SOLUCIÓN SIMPLE: Usar NamedParameterJdbcTemplate directamente
+            jdbcTemplate.query(
+                    sqlModificada,
+                    parametros,
+                    rs -> {
+                        try {
+                            // Mapear fila
+                            Map<String, Object> registro = mapearResultSetStreaming(rs);
+
+                            // Procesar inmediatamente
+                            procesarRegistro.accept(registro);
+
+                            // Incrementar contador
+                            int count = contador.incrementAndGet();
+
+                            // Log cada 10,000 registros
+                            if (count % 10000 == 0) {
+                                long ahora = System.currentTimeMillis();
+                                long transcurrido = ahora - inicioStreaming;
+                                double velocidad = count * 1000.0 / Math.max(transcurrido, 1);
+
+                                log.info("🌊 Streaming {}: {} registros ({:.0f} reg/s)",
+                                        provincia, count, velocidad);
+                            }
+
+                        } catch (Exception e) {
+                            log.error("❌ Error procesando registro en streaming: {}", e.getMessage());
+                            // Continuar con siguiente registro
+                        }
+                    }
+            );
+
+            // 4. Estadísticas finales
+            long duracionTotal = System.currentTimeMillis() - inicioStreaming;
+            double velocidadPromedio = contador.get() * 1000.0 / Math.max(duracionTotal, 1);
+
+            log.info("✅ STREAMING COMPLETADO para {}: {} registros en {}ms ({:.0f} reg/s)",
+                    provincia, contador.get(), duracionTotal, velocidadPromedio);
+
+        } catch (DataAccessException e) {
+            SQLExecutionException executionException = SQLExceptionParser.parse(
+                    e,
+                    nombreQuery,
+                    nombreQuery,
+                    provincia
+            );
+
+            log.error("💥 Error en streaming para {}: {}",
+                    provincia, executionException.getMessageDetallado());
+            throw new RuntimeException("Error en streaming: " + e.getMessage(), e);
+
+        } catch (Exception e) {
+            log.error("💥 Error inesperado en streaming para {}: {}", provincia, e.getMessage(), e);
+            throw new RuntimeException("Error en streaming: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Mapea una fila del ResultSet a Map (versión para streaming).
+     *
+     * @param rs ResultSet posicionado en la fila actual
+     * @return Map con columnas y valores
+     */
+    private Map<String, Object> mapearResultSetStreaming(ResultSet rs) {
+        try {
+            ResultSetMetaData metaData = rs.getMetaData();
+            int columnCount = metaData.getColumnCount();
+
+            // Pre-dimensionar HashMap para performance
+            Map<String, Object> registro = new HashMap<>((int)((columnCount + 1) / 0.75f) + 1);
+
+            boolean tieneColumnaProvinciaEnResultSet = false;
+
+            for (int i = 1; i <= columnCount; i++) {
+                String columna = metaData.getColumnLabel(i);
+                Object valor = rs.getObject(i);
+
+                // Detectar si hay columna "provincia" en el ResultSet
+                if ("provincia".equalsIgnoreCase(columna)) {
+                    tieneColumnaProvinciaEnResultSet = true;
+                    registro.put("provincia", valor != null ? valor : this.provincia);
+                    continue;
+                }
+
+                // Agregar columna (incluso si es null)
                 registro.put(columna, valor);
             }
+
+            // Agregar provincia si NO estaba en el ResultSet
+            if (!tieneColumnaProvinciaEnResultSet) {
+                registro.put("provincia", this.provincia);
+            }
+
+            return registro;
+
+        } catch (SQLException e) {
+            log.error("❌ Error mapeando ResultSet: {}", e.getMessage());
+            throw new RuntimeException("Error mapeando fila", e);
         }
-        
-        // Agregar provincia del repositorio
-        registro.put("provincia", this.provincia);
-        
-        return registro;
-        
-    } catch (SQLException e) {
-        log.error("Error mapeando ResultSet en streaming: {}", e.getMessage());
-        throw new RuntimeException("Error mapeando fila", e);
     }
-}
 
 }

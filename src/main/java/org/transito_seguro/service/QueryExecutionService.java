@@ -79,7 +79,7 @@ public class QueryExecutionService {
             String nombreQuery) {
         try {
 
-
+            log.info("QUERY. {}",nombreQuery);
             // Construir query COUNT(*) envolviendo en subquery
             String queryConteo = construirQueryConteo(nombreQuery);
 
@@ -108,12 +108,44 @@ public class QueryExecutionService {
      * @param queryOriginal Query SQL original
      * @return Query COUNT(*) válida
      */
+    /**
+     * Construye query de conteo envolviendo la original en subquery.
+     *
+     * VENTAJA: No necesita remover LIMIT/OFFSET manualmente.
+     * El COUNT se ejecuta sobre el resultado ya limitado.
+     *
+     * @param queryOriginal Query SQL completa
+     * @return Query que retorna COUNT(*)
+     */
     private String construirQueryConteo(String queryOriginal) {
-        // Remover ORDER BY si existe (no necesario para contar)
-        String querySinOrder = queryOriginal.replaceAll("(?i)ORDER BY[^;]*", "").trim();
+        if (queryOriginal == null || queryOriginal.trim().isEmpty()) {
+            throw new IllegalArgumentException("Query original no puede estar vacía");
+        }
 
-        // Envolver en subquery para COUNT(*)
-        return String.format("SELECT COUNT(*) as total FROM (%s) AS subquery", querySinOrder);
+        // 1. Limpiar query
+        String queryLimpia = queryOriginal.trim()
+                .replaceAll(";\\s*$", "");  // Remover ; final si existe
+
+        // 2. Remover ORDER BY (innecesario para contar y mejora performance)
+        String querySinOrder = queryLimpia
+                .replaceAll("(?i)ORDER\\s+BY[^;]*", "")
+                .trim();
+
+        // 3. Envolver en COUNT(*)
+        String queryConteo = String.format(
+                "SELECT COUNT(*) as total FROM (%s) AS subquery_count",
+                querySinOrder
+        );
+
+        // 4. ✅ CRÍTICO: Log para debugging
+        if (log.isDebugEnabled()) {
+            log.debug("🔢 Query de conteo generada:");
+            log.debug("   Original: {} caracteres", queryOriginal.length());
+            log.debug("   Sin ORDER BY: {} caracteres", querySinOrder.length());
+            log.debug("   Final: {}", queryConteo);
+        }
+
+        return queryConteo;
     }
 
     /**

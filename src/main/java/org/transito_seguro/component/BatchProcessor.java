@@ -12,11 +12,13 @@ import org.transito_seguro.enums.TipoConsolidacion;
 import org.transito_seguro.model.EstimacionDataset;
 import org.transito_seguro.model.query.QueryStorage;
 import org.transito_seguro.model.ContextoProcesamiento;
+import org.transito_seguro.repository.QueryStorageRepository;
 import org.transito_seguro.repository.impl.InfraccionesRepositoryImpl;
 import org.transito_seguro.service.QueryRegistryService;
 import org.transito_seguro.utils.LogFileWriter;
 
 import javax.annotation.PreDestroy;
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -49,6 +51,15 @@ public class BatchProcessor {
     @Value("${app.batch.thread-pool-size:6}")
     private int threadPoolSize;
 
+    @Value("${consolidacion.agregacion.umbral-error:10}")
+    private int umbralErrorEstimacion;
+
+    @Value("${consolidacion.agregacion.limite-validacion:10000}")
+    private int limiteValidacion;
+
+    @Value("${consolidacion.agregacion.limite-absoluto:100000}")
+    private int limiteAbsoluto;
+
     @Autowired
     private QueryRegistryService queryRegistryService;;
 
@@ -61,10 +72,14 @@ public class BatchProcessor {
     private final Map<String, Integer> contadoresPorProvincia = new ConcurrentHashMap<>();
     private final AtomicLong ultimoHeartbeat = new AtomicLong(0);
     private final Map<String, Boolean> cacheQueryConsolidable = new ConcurrentHashMap<>();
+    private final AtomicInteger cambiosEstrategiaPorOOM = new AtomicInteger(0);
 
     private static final long HEARTBEAT_INTERVAL_MS = 30000;
 
     private long tiempoInicioGlobal;
+
+    @Autowired
+    private QueryStorageRepository queryStorageRepository;
 
     @Autowired
     public void init() {
@@ -80,18 +95,86 @@ public class BatchProcessor {
     @PreDestroy
     public void shutdown() {
         log.info("Cerrando BatchProcessor...");
+
+        // 1. CERRAR EXECUTOR
         if (parallelExecutor != null && !parallelExecutor.isShutdown()) {
             parallelExecutor.shutdown();
             try {
                 if (!parallelExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
+                    log.warn("⏱️ Executor no terminó en 60s, forzando shutdown");
                     parallelExecutor.shutdownNow();
+
+                    // Dar 30s más para terminar forzadamente
+                    if (!parallelExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                        log.error("❌ Executor no se pudo cerrar completamente");
+                    }
+                } else {
+                    log.info("✅ Executor cerrado correctamente");
                 }
             } catch (InterruptedException e) {
+                log.warn("⚠️ Shutdown interrumpido, forzando cierre");
                 parallelExecutor.shutdownNow();
                 Thread.currentThread().interrupt();
             }
         }
+
+        // 2. LIMPIAR CACHES
         cacheQueryConsolidable.clear();
+
+        // 3. REPORTAR MÉTRICAS (SIEMPRE, al final)
+        reportarMetricasFinales();
+
+        log.info("✅ BatchProcessor cerrado completamente");
+    }
+
+    /**
+     * 📊 Reporta métricas finales del ciclo de vida del BatchProcessor.
+     * Se llama al final del shutdown, SIEMPRE.
+     */
+    private void reportarMetricasFinales() {
+        log.info("═══════════════════════════════════════════════════════════");
+        log.info("📊 MÉTRICAS FINALES DE BATCHPROCESSOR");
+        log.info("═══════════════════════════════════════════════════════════");
+
+        // Cambios de estrategia por OOM
+        int cambios = cambiosEstrategiaPorOOM.get();
+        if (cambios > 0) {
+            log.warn("⚠️ Cambios de estrategia AGREGACION→CRUDO: {}", cambios);
+            log.info("💡 Recomendación: Revisar queries con GROUP BY para mejorar estimaciones");
+            log.info("   - Ejecutar ANALYZE en las tablas");
+            log.info("   - Revisar cardinalidad de campos en GROUP BY");
+            log.info("   - Considerar pre-agregar datos en vistas materializadas");
+        } else {
+            log.info("✅ Sin cambios de estrategia por OOM detectados");
+        }
+
+        // Total de registros procesados globalmente
+        int totalRegistros = totalRegistrosGlobales.get();
+        if (totalRegistros > 0) {
+            log.info("📈 Total de registros procesados: {}", totalRegistros);
+        }
+
+        // Provincias procesadas
+        if (!contadoresPorProvincia.isEmpty()) {
+            log.info("🗺️ Provincias procesadas: {}", contadoresPorProvincia.size());
+
+            // Top 5 provincias con más registros
+            List<Map.Entry<String, Integer>> top5 = contadoresPorProvincia.entrySet().stream()
+                    .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+                    .limit(5)
+                    .collect(Collectors.toList());
+
+            if (!top5.isEmpty()) {
+                log.info("📊 Top 5 provincias por volumen:");
+                for (int i = 0; i < top5.size(); i++) {
+                    Map.Entry<String, Integer> entry = top5.get(i);
+                    log.info("   {}. {}: {} registros",
+                            i + 1, entry.getKey(), entry.getValue());
+                }
+            }
+        }
+
+        log.info("═══════════════════════════════════════════════════════════");
     }
 
     public void procesarEnLotes(
@@ -251,6 +334,18 @@ private int obtenerConteoReal(
      * @param queryOriginal Query SQL original
      * @return Query modificada para contar registros
      */
+    /**
+     * Construye query de conteo removiendo ORDER BY y LIMIT.
+     *
+     * MEJORADO: Remueve LIMIT de cualquier formato usando substring
+     * para evitar problemas con expresiones complejas.
+     *
+     * @param queryOriginal Query SQL original
+     * @return Query envuelta en SELECT COUNT(*)
+     */
+    /**
+     * ALTERNATIVA SIMPLE: Regex mejorado que funciona con funciones.
+     */
     private String construirQueryConteo(String queryOriginal) {
         if (queryOriginal == null || queryOriginal.trim().isEmpty()) {
             throw new IllegalArgumentException("Query original no puede estar vacía");
@@ -258,18 +353,25 @@ private int obtenerConteoReal(
 
         String queryLimpia = queryOriginal.trim();
 
-        // 1. Remover el ; final si existe
+        // 1. Remover ; final
         queryLimpia = queryLimpia.replaceAll(";\\s*$", "");
 
-        // 2. Remover ORDER BY (innecesario para contar y puede afectar performance)
-        queryLimpia = queryLimpia.replaceAll("(?i)\\s+ORDER\\s+BY\\s+[^;]+$", "");
+        // 2. Remover ORDER BY hasta el final
+        queryLimpia = queryLimpia.replaceAll("(?i)\\s+ORDER\\s+BY[^;]*$", "");
 
-        // 3. Remover LIMIT/OFFSET si existen (afectarían el conteo)
-        queryLimpia = queryLimpia.replaceAll("(?i)\\s+LIMIT\\s+\\d+", "");
-        queryLimpia = queryLimpia.replaceAll("(?i)\\s+OFFSET\\s+\\d+", "");
+        // 3. ✅ CRÍTICO: Remover LIMIT con CUALQUIER contenido hasta el final
+        //    Este regex captura desde LIMIT hasta el fin, incluyendo funciones
+        queryLimpia = queryLimpia.replaceAll("(?i)\\s+LIMIT\\s+[^;]*$", "");
 
-        // 4. Envolver en subquery
-        return String.format("SELECT COUNT(*) as total FROM (%s) AS subquery", queryLimpia.trim());
+        // 4. Remover OFFSET si queda
+        queryLimpia = queryLimpia.replaceAll("(?i)\\s+OFFSET\\s+[^;]*$", "");
+
+        // 5. Envolver en COUNT(*)
+        String queryConteo = String.format("SELECT COUNT(*) as total FROM (%s) AS subquery", queryLimpia.trim());
+
+        log.debug("✅ Query conteo: {} chars", queryConteo.length());
+
+        return queryConteo;
     }
 
     private EstrategiaProcessing decidirEstrategia(EstimacionDataset estimacion) {
@@ -283,6 +385,9 @@ private int obtenerConteoReal(
         return EstrategiaProcessing.HIBRIDO;
     }
 
+    /**
+     * 🔥 VERSIÓN MEJORADA con monitoreo de progreso
+     */
     private void procesarParalelo(
             List<InfraccionesRepositoryImpl> repositories,
             ParametrosFiltrosDTO filtros,
@@ -290,16 +395,105 @@ private int obtenerConteoReal(
             ContextoProcesamiento contexto,
             QueryStorage queryStorage) {
 
-        log.info("Ejecutando modo PARALELO");
+        log.info("🚀 Ejecutando modo PARALELO - {} provincias simultáneas", repositories.size());
 
-        List<CompletableFuture<Void>> futures = repositories.stream()
-                .map(repo -> CompletableFuture.runAsync(
-                        () -> ejecutarProvincia(repo, filtros, nombreQuery, contexto,queryStorage),
-                        parallelExecutor))
-                .collect(Collectors.toList());
+        // ✅ Contadores atómicos para seguimiento en tiempo real
+        AtomicInteger provinciasCompletadas = new AtomicInteger(0);
+        AtomicInteger provinciasEnProceso = new AtomicInteger(0);
+        Map<String, String> estadoPorProvincia = new ConcurrentHashMap<>();
 
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-        contexto.procesarTodosResultados();
+        // ✅ Thread de monitoreo en background
+        ScheduledExecutorService monitor = Executors.newSingleThreadScheduledExecutor();
+        ScheduledFuture<?> tareaMonitoreo = monitor.scheduleAtFixedRate(() -> {
+            reportarProgresoParalelo(
+                    repositories.size(),
+                    provinciasCompletadas.get(),
+                    provinciasEnProceso.get(),
+                    estadoPorProvincia
+            );
+        }, 2, 3, TimeUnit.SECONDS); // Reporta cada 3 segundos
+
+        try {
+            // Crear futures con seguimiento individual
+            List<CompletableFuture<Void>> futures = repositories.stream()
+                    .map(repo -> CompletableFuture.runAsync(() -> {
+                        String provincia = repo.getProvincia();
+
+                        try {
+                            // ✅ Marcar inicio
+                            provinciasEnProceso.incrementAndGet();
+                            estadoPorProvincia.put(provincia, "🔄 PROCESANDO");
+                            log.info("▶️  Iniciando procesamiento de {}", provincia);
+
+                            // Ejecutar provincia
+                            ejecutarProvincia(repo, filtros, nombreQuery, contexto, queryStorage);
+
+                            // ✅ Marcar completado
+                            estadoPorProvincia.put(provincia, "✅ COMPLETADO");
+                            int completadas = provinciasCompletadas.incrementAndGet();
+                            provinciasEnProceso.decrementAndGet();
+
+                            log.info("✅ {} completada ({}/{})",
+                                    provincia, completadas, repositories.size());
+
+                        } catch (Exception e) {
+                            estadoPorProvincia.put(provincia, "❌ ERROR: " + e.getMessage());
+                            provinciasEnProceso.decrementAndGet();
+                            log.error("❌ Error en {}: {}", provincia, e.getMessage(), e);
+                        }
+
+                    }, parallelExecutor))
+                    .collect(Collectors.toList());
+
+            // Esperar a que todas terminen
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        } finally {
+            // ✅ Detener monitoreo
+            tareaMonitoreo.cancel(false);
+            monitor.shutdown();
+
+            // ✅ Reporte final
+            log.info("═══════════════════════════════════════════════════════════");
+            log.info("🎯 PROCESAMIENTO PARALELO COMPLETADO");
+            log.info("   Total: {}/{} provincias",
+                    provinciasCompletadas.get(), repositories.size());
+            log.info("═══════════════════════════════════════════════════════════");
+
+            contexto.procesarTodosResultados();
+        }
+    }
+
+    /**
+     * 📊 Reporta progreso cada N segundos
+     */
+    private void reportarProgresoParalelo(
+            int total,
+            int completadas,
+            int enProceso,
+            Map<String, String> estados) {
+
+        if (completadas >= total) {
+            return; // Ya terminó
+        }
+
+        double progreso = (double) completadas / total * 100;
+        int registrosActuales = totalRegistrosGlobales.get();
+
+        log.info("═══════════════════════════════════════════════════════════");
+        log.info("📊 PROGRESO PARALELO: {}/{} provincias ({:.1f}%)",
+                completadas, total, progreso);
+        log.info("   En proceso: {} | Registros: {} | Memoria: {:.1f}%",
+                enProceso, registrosActuales, obtenerPorcentajeMemoriaUsada());
+
+        // Mostrar estado detallado
+        estados.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry ->
+                        log.info("   {} - {}", entry.getKey(), entry.getValue())
+                );
+
+        log.info("═══════════════════════════════════════════════════════════");
     }
 
     private void procesarHibrido(
@@ -467,67 +661,228 @@ private void ejecutarProvincia(
 
 
     /**
- * Ejecuta query consolidable AGREGACION (bien diseñada).
- * La query YA hace GROUP BY en la BD y retorna pocos registros.
- * Es seguro cargar todo en memoria de una vez.
- * 
- * Ejemplo: SELECT provincia, COUNT(*) FROM infracciones GROUP BY provincia
- * Retorna: ~24 registros
- * 
- * @param repo Repositorio de la provincia
- * @param filtros Filtros aplicados
- * @param nombreQuery Código de la query
- * @param provincia Nombre de la provincia
- * @param contexto Contexto de procesamiento
- * @param info Información de la query
- */
-private void ejecutarQueryConsolidableAgregacion(
-        InfraccionesRepositoryImpl repo,
-        ParametrosFiltrosDTO filtros,
-        String nombreQuery,
-        String provincia,
-        ContextoProcesamiento contexto,
-        QueryStorage info) {
+     * 🛡️ VERSIÓN PROTEGIDA contra OOM
+     *
+     * Ejecuta query consolidable AGREGACION con validación de tamaño.
+     * Si detecta que el resultado es mucho mayor que lo estimado,
+     * cambia automáticamente a estrategia CRUDO (streaming).
+     */
+    private void ejecutarQueryConsolidableAgregacion(
+            InfraccionesRepositoryImpl repo,
+            ParametrosFiltrosDTO filtros,
+            String nombreQuery,
+            String provincia,
+            ContextoProcesamiento contexto,
+            QueryStorage info) {
 
-    try {
-        log.debug("Ejecutando query consolidable AGREGACION para {}: {} registros estimados", 
-                  provincia, info.getRegistrosEstimados());
+        try {
+            log.debug("🔍 Ejecutando query AGREGACION para {}: {} registros estimados",
+                    provincia, info.getRegistrosEstimados());
 
-        // Ejecutar sin límite ni offset (query ya está agregada)
-        ParametrosFiltrosDTO filtrosSinLimite = filtros.toBuilder()
-                .limite(null)
-                .offset(null)
-                .build();
+            // ===== CAPA 1: VALIDACIÓN PRE-EJECUCIÓN =====
+            Integer estimacion = info.getRegistrosEstimados();
 
-        // Carga directa en memoria (seguro porque retorna pocos registros)
-        List<Map<String, Object>> resultado = repo.ejecutarQueryConFiltros(nombreQuery, filtrosSinLimite);
-
-        if (resultado != null && !resultado.isEmpty()) {
-            // Verificar que la estimación era correcta
-            if (info.getRegistrosEstimados() != null && resultado.size() > info.getRegistrosEstimados() * 10) {
-                log.warn(" Query {} retornó {} registros pero se estimaban {}. Considerar cambiar a CRUDO",
-                         nombreQuery, resultado.size(), info.getRegistrosEstimados());
+            if (estimacion == null || estimacion == 0) {
+                log.warn("⚠️ Sin estimación confiable para query {}, usando estrategia CRUDO por seguridad",
+                        nombreQuery);
+                ejecutarQueryConsolidableCrudo(repo, filtros, nombreQuery, provincia, contexto, info);
+                return;
             }
-            
-            // Procesar resultados
-            List<Map<String, Object>> resultadoInmutable = crearCopiasInmutables(resultado, provincia);
+
+            // Si la estimación es muy alta, ir directo a CRUDO
+            if (estimacion > limiteValidacion) {
+                log.info("📊 Estimación alta ({} registros), usando estrategia CRUDO directamente",
+                        estimacion);
+                ejecutarQueryConsolidableCrudo(repo, filtros, nombreQuery, provincia, contexto, info);
+                return;
+            }
+
+            // ===== CAPA 2: EJECUCIÓN CON LÍMITE DE VALIDACIÓN =====
+
+            // Crear filtros con límite de seguridad para la primera validación
+            ParametrosFiltrosDTO filtrosValidacion = filtros.toBuilder()
+                    .limite(limiteValidacion)  // Límite temporal para validar
+                    .offset(null)
+                    .build();
+
+            log.debug("🧪 Validando con límite de {} registros", limiteValidacion);
+
+            List<Map<String, Object>> muestraValidacion =
+                    repo.ejecutarQueryConFiltros(nombreQuery, filtrosValidacion);
+
+            if (muestraValidacion == null) {
+                log.warn("⚠️ Query retornó null para {}", provincia);
+                return;
+            }
+
+            int tamanoMuestra = muestraValidacion.size();
+
+            // ===== CAPA 3: ANÁLISIS Y DECISIÓN =====
+
+            // CASO 1: La muestra está incompleta (hay más datos)
+            if (tamanoMuestra >= limiteValidacion) {
+                log.warn("⚠️ Query retornó {} registros (límite de validación alcanzado)", tamanoMuestra);
+                log.warn("📊 Estimación era {} pero hay al menos {}+ registros", estimacion, limiteValidacion);
+
+                // Verificar si supera el umbral de error
+                if (tamanoMuestra > estimacion * umbralErrorEstimacion) {
+                    log.error("❌ ERROR DE ESTIMACIÓN DETECTADO: {}x más registros de lo estimado",
+                            tamanoMuestra / Math.max(estimacion, 1));
+                    log.info("🔄 Cambiando automáticamente a estrategia CRUDO (streaming)");
+
+                    // Actualizar estimación en base de datos para futuras ejecuciones
+                    actualizarEstimacionQuery(info, tamanoMuestra * 2);
+
+                    // Cambiar a estrategia segura
+                    ejecutarQueryConsolidableCrudo(repo, filtros, nombreQuery, provincia, contexto, info);
+                    return;
+                }
+
+                // Si está dentro del umbral pero es grande, usar paginación
+                log.info("📄 Usando paginación para procesar todos los registros");
+                ejecutarConPaginacionSegura(repo, filtros, nombreQuery, provincia, contexto, limiteValidacion);
+                return;
+            }
+
+            // CASO 2: La muestra es completa (caben todos los datos)
+            log.debug("✅ Muestra completa: {} registros (dentro de límite)", tamanoMuestra);
+
+            // Verificar si la diferencia con la estimación es razonable
+            if (estimacion > 0 && tamanoMuestra > estimacion * umbralErrorEstimacion) {
+                log.warn("⚠️ Discrepancia con estimación: esperados={}, reales={}",
+                        estimacion, tamanoMuestra);
+
+                // Actualizar estimación para la próxima vez
+                actualizarEstimacionQuery(info, tamanoMuestra);
+            }
+
+            // ===== PROCESAMIENTO NORMAL =====
+
+            if (tamanoMuestra == 0) {
+                log.debug("📭 Query no retornó resultados para {}", provincia);
+                return;
+            }
+
+            // Procesar resultados (ya están todos en memoria y son manejables)
+            List<Map<String, Object>> resultadoInmutable = crearCopiasInmutables(muestraValidacion, provincia);
             contexto.agregarResultados(resultadoInmutable);
-            actualizarContadores(provincia, resultado.size());
-            
-            log.info(" Query consolidable AGREGACION completada para {}: {} registros | Memoria: {:.1f}%", 
-                     provincia, resultado.size(), obtenerPorcentajeMemoriaUsada());
-        } else {
-            log.debug("Query consolidable AGREGACION para {} no retornó resultados", provincia);
+            actualizarContadores(provincia, tamanoMuestra);
+
+            log.info("✅ Query AGREGACION completada para {}: {} registros | Memoria: {:.1f}%",
+                    provincia, tamanoMuestra, obtenerPorcentajeMemoriaUsada());
+
+        } catch (OutOfMemoryError oom) {
+            log.error("💥 OOM en query AGREGACION para {}. Esto NO debería pasar con las validaciones.",
+                    provincia);
+            log.error("🔧 Considera reducir consolidacion.agregacion.limite-validacion en properties");
+
+            // Intentar recuperación
+            System.gc();
+            throw new RuntimeException("OutOfMemoryError en consolidación AGREGACION", oom);
+
+        } catch (Exception e) {
+            log.error("❌ Error en query AGREGACION {} para {}: {}",
+                    nombreQuery, provincia, e.getMessage(), e);
         }
-        
-    } catch (OutOfMemoryError oom) {
-        log.error(" OOM en query consolidable AGREGACION para {}. La query debería ser CRUDO", provincia);
-        throw oom;
-    } catch (Exception e) {
-        log.error("Error en query consolidable AGREGACION {} para {}: {}", 
-                  nombreQuery, provincia, e.getMessage());
     }
-}
+
+    /**
+     * 🔄 Ejecuta query con paginación segura cuando el resultado es grande pero manejable.
+     *
+     * Usado cuando la validación detecta que hay más de 10K registros pero menos de 100K.
+     */
+    private void ejecutarConPaginacionSegura(
+            InfraccionesRepositoryImpl repo,
+            ParametrosFiltrosDTO filtros,
+            String nombreQuery,
+            String provincia,
+            ContextoProcesamiento contexto,
+            int tamanoPagina) {
+
+        log.info("📄 Iniciando paginación segura para {}: páginas de {} registros",
+                provincia, tamanoPagina);
+
+        int offset = 0;
+        int totalProcesados = 0;
+        int iteracion = 0;
+        int maxIteraciones = limiteAbsoluto / tamanoPagina; // Límite de seguridad
+
+        while (iteracion < maxIteraciones) {
+            try {
+                // Crear filtros para esta página
+                ParametrosFiltrosDTO filtrosPagina = filtros.toBuilder()
+                        .limite(tamanoPagina)
+                        .offset(offset)
+                        .build();
+
+                // Ejecutar query
+                List<Map<String, Object>> pagina =
+                        repo.ejecutarQueryConFiltros(nombreQuery, filtrosPagina);
+
+                // Verificar si terminamos
+                if (pagina == null || pagina.isEmpty()) {
+                    log.debug("✅ Paginación completada en iteración {}", iteracion);
+                    break;
+                }
+
+                // Procesar página
+                List<Map<String, Object>> paginaInmutable = crearCopiasInmutables(pagina, provincia);
+                contexto.agregarResultados(paginaInmutable);
+
+                totalProcesados += pagina.size();
+                offset += tamanoPagina;
+                iteracion++;
+
+                log.debug("📄 Página {}: {} registros (total: {})", iteracion, pagina.size(), totalProcesados);
+
+                // Si la página no está llena, es la última
+                if (pagina.size() < tamanoPagina) {
+                    break;
+                }
+
+                // Pausa si la memoria está alta
+                if (esMemoriaAlta()) {
+                    pausarSiNecesario();
+                }
+
+            } catch (Exception e) {
+                log.error("❌ Error en iteración {} de paginación: {}", iteracion, e.getMessage());
+                break;
+            }
+        }
+
+        if (iteracion >= maxIteraciones) {
+            log.error("⚠️ Límite de iteraciones alcanzado ({}) para {}. Posible loop infinito evitado.",
+                    maxIteraciones, provincia);
+        }
+
+        actualizarContadores(provincia, totalProcesados);
+        log.info("✅ Paginación segura completada para {}: {} registros en {} páginas",
+                provincia, totalProcesados, iteracion);
+    }
+
+    /**
+     * 📊 Actualiza la estimación de registros en QueryStorage.
+     *
+     * Cuando detectamos que la estimación estaba incorrecta,
+     * actualizamos el registro en BD para mejorar futuras ejecuciones.
+     */
+    private void actualizarEstimacionQuery(QueryStorage info, int registrosReales) {
+        try {
+            log.info("🔄 Actualizando estimación para query {}: {} → {}",
+                    info.getCodigo(), info.getRegistrosEstimados(), registrosReales);
+
+            info.setRegistrosEstimados(registrosReales);
+            queryStorageRepository.save(info);
+
+            log.debug("✅ Estimación actualizada en base de datos");
+
+        } catch (Exception e) {
+            log.warn("⚠️ Error actualizando estimación para {}: {}",
+                    info.getCodigo(), e.getMessage());
+            // No fallar por esto, es solo metadata
+        }
+    }
 
 
 
@@ -653,19 +1008,12 @@ private void procesarChunk(
 }
 
     /**
-     * Ejecuta query paginada usando un contador externo simulado.
-     * Para queries con GROUP BY que no tienen campo ID y queremos evitar OFFSET.
-     *
-     * ESTRATEGIA:
-     * - Usa un contador incremental como "pseudo-ID"
-     * - La query debe retornar TODOS los registros ordenados consistentemente
-     * - El procesamiento se hace por chunks en memoria
-     *
-     * @param repo Repositorio de la provincia
-     * @param filtros Filtros aplicados
-     * @param nombreQuery Código de la query
-     * @param provincia Nombre de la provincia
-     * @param contexto Contexto de procesamiento
+     * 🔄 Ejecuta query paginada usando ROW_NUMBER.
+     * CORREGIDO: Actualiza lastId correctamente entre iteraciones.
+     */
+    /**
+     * 🔄 Ejecuta query paginada usando OFFSET.
+     * CORREGIDO: Usa OFFSET en lugar de ROW_NUMBER para consolidadas.
      */
     private void ejecutarQueryPaginada(
             InfraccionesRepositoryImpl repo,
@@ -677,81 +1025,212 @@ private void procesarChunk(
         String provinciaRepo = repo.getProvincia();
         int procesados = 0;
         int iteracion = 0;
-        final int batchSize = 1000;
+        final int batchSize = 10000;  // ✅ Límite alto para consolidadas
+        int offset = 0;  // ✅ Usar OFFSET en lugar de lastId
 
-        // ✅ Contador externo que simula el "lastId"
-        int contadorPaginacion = 0;
+        Integer estimacion = obtenerEstimacionProvincia(nombreQuery, provinciaRepo);
 
-        log.debug("🚀 Iniciando paginación con contador externo para {}", provinciaRepo);
+        log.info("🔄 {} - Iniciando paginación OFFSET (estimado: {} registros)",
+                provinciaRepo, estimacion != null ? estimacion : "desconocido");
 
         while (true) {
             try {
-                // ✅ Crear filtros usando el contador como si fuera un ID
+                // ✅ Log ANTES
+                log.info("🔹 {} - Iteración {}: OFFSET={}, procesados: {}/{}",
+                        provinciaRepo, iteracion, offset, procesados,
+                        estimacion != null ? estimacion : "?");
+
+                long inicioIteracion = System.currentTimeMillis();
+
+                // ✅ Crear filtros con OFFSET
                 ParametrosFiltrosDTO filtrosLote = filtros.toBuilder()
                         .limite(batchSize)
-                        .offset(null)  // ❌ NO usar offset
-                        .lastId(contadorPaginacion)  // ✅ Usar contador como "pseudo-ID"
+                        .offset(offset)      // ✅ CAMBIO: Usar OFFSET
+                        .lastId(null)        // ✅ CAMBIO: No usar lastId
                         .lastSerieEquipo(null)
                         .lastLugar(null)
                         .lastKeysetConsolidacion(null)
                         .build();
 
-                log.debug("📄 Iteración {}: LIMIT {} con contador={}",
-                        iteracion, batchSize, contadorPaginacion);
-
                 // Ejecutar query
                 List<Map<String, Object>> lote = repo.ejecutarQueryConFiltros(nombreQuery, filtrosLote);
 
+                long duracionIteracion = System.currentTimeMillis() - inicioIteracion;
+
+                // ✅ Log DESPUÉS
+                log.info("✅ {} - Iteración {}: Recibidos {} registros en {}ms",
+                        provinciaRepo, iteracion,
+                        lote != null ? lote.size() : 0,
+                        duracionIteracion);
+
                 // Verificar si hay datos
                 if (lote == null || lote.isEmpty()) {
-                    log.debug("✅ Fin de datos para {} en iteración {}", provinciaRepo, iteracion);
+                    log.info("🏁 {} - Fin de datos en iteración {}", provinciaRepo, iteracion);
                     break;
                 }
 
-                // Procesar resultados
-                List<Map<String, Object>> loteInmutable = crearCopiasInmutables(lote, provinciaRepo);
+                // ✅ CAMBIO: Ya no necesitas extraer lastId
+
+                // Procesar resultados (sin incluir row_id en resultados finales)
+                List<Map<String, Object>> loteInmutable = crearCopiasInmutablesLimpio(lote, provinciaRepo);
                 contexto.agregarResultados(loteInmutable);
+
+                actualizarContadores(provinciaRepo,lote.size());
 
                 // Actualizar contadores
                 procesados += lote.size();
-                contadorPaginacion += lote.size();  // ✅ Incrementar contador externo
+                offset += batchSize;  // ✅ CAMBIO: Incrementar offset en lugar de lastId
                 iteracion++;
 
-                log.debug("📦 Lote {} procesado: {} registros (contador: {} → {}, total: {})",
-                        iteracion, lote.size(), contadorPaginacion - lote.size(),
-                        contadorPaginacion, procesados);
+                // ✅ Log de progreso
+                if (estimacion != null && estimacion > 0) {
+                    double progreso = (double) procesados / estimacion * 100;
+                    log.info("📊 {} - Progreso: {}/{} registros ({:.1f}%) en {} iteraciones",
+                            provinciaRepo, procesados, estimacion, progreso, iteracion);
+                }
 
-                // ✅ Condición de salida: lote incompleto indica última página
+                actualizarContadores(provinciaRepo,lote.size());
+
+                // ✅ Condición de salida: lote incompleto
                 if (lote.size() < batchSize) {
-                    log.debug("✅ Último lote para {}: {} < {}", provinciaRepo, lote.size(), batchSize);
+                    log.info("🏁 {} - Última página (lote incompleto: {})",
+                            provinciaRepo, lote.size());
                     break;
                 }
 
-                // Control de seguridad
-                if (iteracion >= 1000) {
-                    log.warn("⚠️ Límite de iteraciones alcanzado para {}: {} iteraciones",
-                            provinciaRepo, iteracion);
+                // Límite de seguridad
+                if (iteracion >= 100) {
+                    log.warn("⚠️ {} - Límite de iteraciones alcanzado", provinciaRepo);
                     break;
                 }
 
-                // Pausa si memoria alta
                 if (esMemoriaAlta()) {
                     pausarSiNecesario();
                 }
 
             } catch (Exception e) {
-                log.error("❌ Error en iteración {} para {}: {}", iteracion, provinciaRepo, e.getMessage(), e);
+                log.error("❌ {} - Error en iteración {}: {}",
+                        provinciaRepo, iteracion, e.getMessage(), e);
                 break;
             }
         }
 
-        log.info("✅ Paginación completada para {}: {} registros en {} iteraciones",
-                provinciaRepo, procesados, iteracion);
+        log.info("✅ {} - Paginación completada: {} registros en {} iteraciones | Memoria: {:.1f}%",
+                provinciaRepo, procesados, iteracion, obtenerPorcentajeMemoriaUsada());
 
-        // Actualizar contadores globales
         actualizarContadores(provinciaRepo, procesados);
     }
 
+    /**
+     * 🔑 Extrae el ID del último registro (row_id o id_infracciones).
+     * MEJORADO: Con mejor logging para debugging.
+     */
+    private Integer extraerUltimoId(Map<String, Object> registro, String provincia) {
+        // PRIORIDAD 1: Buscar row_id (generado por ROW_NUMBER)
+        Object rowId = registro.get("row_id");
+        if (rowId != null) {
+            try {
+                Integer id = convertirAInteger(rowId);
+                log.debug("🔑 {} - Usando row_id: {}", provincia, id);
+                return id;
+            } catch (Exception e) {
+                log.warn("⚠️ {} - Error convirtiendo row_id: {}", provincia, e.getMessage());
+            }
+        }
+
+        // PRIORIDAD 2: Buscar id_infracciones (ID real)
+        Object idInfracciones = registro.get("id_infracciones");
+        if (idInfracciones != null) {
+            try {
+                Integer id = convertirAInteger(idInfracciones);
+                log.debug("🔑 {} - Usando id_infracciones: {}", provincia, id);
+                return id;
+            } catch (Exception e) {
+                log.warn("⚠️ {} - Error convirtiendo id_infracciones: {}", provincia, e.getMessage());
+            }
+        }
+
+        // PRIORIDAD 3: Buscar otros campos ID posibles
+        String[] otrosCamposId = {"id", "infraccion_id", "registro_id"};
+        for (String campo : otrosCamposId) {
+            Object valor = registro.get(campo);
+            if (valor != null) {
+                try {
+                    Integer id = convertirAInteger(valor);
+                    log.debug("🔑 {} - Usando campo {}: {}", provincia, campo, id);
+                    return id;
+                } catch (Exception e) {
+                    // Continuar con siguiente campo
+                }
+            }
+        }
+
+        // ❌ No se encontró ningún ID
+        log.error("❌ {} - No se encontró ningún campo ID válido", provincia);
+        log.error("Campos disponibles en el registro: {}", registro.keySet());
+        log.error("Valores del registro: {}", registro);
+
+        return null;
+    }
+
+    /**
+     * Convierte un Object a Integer de forma segura.
+     */
+    private Integer convertirAInteger(Object valor) {
+        if (valor instanceof Integer) {
+            return (Integer) valor;
+        } else if (valor instanceof Long) {
+            return ((Long) valor).intValue();
+        } else if (valor instanceof BigDecimal) {
+            return ((BigDecimal) valor).intValue();
+        } else if (valor instanceof String) {
+            return Integer.parseInt((String) valor);
+        } else {
+            throw new IllegalArgumentException("Tipo no soportado: " + valor.getClass());
+        }
+    }
+
+    /**
+     * Crea copias inmutables SIN incluir row_id (campo técnico).
+     *
+     * @param registros Lista de registros
+     * @param provincia Nombre de la provincia
+     * @return Lista de copias limpias
+     */
+    private List<Map<String, Object>> crearCopiasInmutablesLimpio(
+            List<Map<String, Object>> registros,
+            String provincia) {
+
+        return registros.stream()
+                .map(registro -> {
+                    Map<String, Object> copia = new HashMap<>();
+
+                    // Copiar todos los campos EXCEPTO row_id
+                    registro.entrySet().stream()
+                            .filter(e -> !"row_id".equals(e.getKey()))  // ✅ Excluir row_id
+                            .filter(e -> !"provincia".equals(e.getKey()))
+                            .forEach(e -> copia.put(e.getKey(), e.getValue()));
+
+                    // Agregar provincia
+                    copia.put("provincia", provincia);
+
+                    return copia;
+                })
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Obtiene estimación de registros para una provincia.
+     */
+    private Integer obtenerEstimacionProvincia(String nombreQuery, String provincia) {
+        try {
+            return queryRegistryService.buscarQuery(nombreQuery)
+                    .map(QueryStorage::getRegistrosEstimados)
+                    .orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
 
     /**
      * Obtiene el último ID del lote actual
@@ -801,8 +1280,17 @@ private void procesarChunk(
     }
 
     private void actualizarContadores(String provincia, int cantidad) {
-        contadoresPorProvincia.put(provincia, cantidad);
+        // ✅ SUMAR al contador de la provincia (no reemplazar)
+        contadoresPorProvincia.merge(provincia, cantidad, Integer::sum);
+
+        // ✅ SUMAR al contador global
         totalRegistrosGlobales.addAndGet(cantidad);
+
+        log.debug("📊 Contadores actualizados - {}: +{} → Total provincia: {}, Total global: {}",
+                provincia,
+                cantidad,
+                contadoresPorProvincia.get(provincia),
+                totalRegistrosGlobales.get());
     }
 
     /**

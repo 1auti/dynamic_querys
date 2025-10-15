@@ -118,8 +118,8 @@ public class DatabaseQueryController {
     @GetMapping
     public ResponseEntity<Map<String, Object>> listarQueries(
             @RequestParam(required = false) String categoria,
-            @RequestParam(required = false) Boolean consolidable,
-            @RequestParam(required = false, defaultValue = "20") int limite) {
+            @RequestParam(required = false) Boolean consolidable
+           ) {
 
         try {
             List<QueryStorage> queries;
@@ -130,11 +130,6 @@ public class DatabaseQueryController {
                 queries = databaseQueryService.obtenerQueriesConsolidables();
             } else {
                 queries = databaseQueryService.obtenerQueriesActivas();
-            }
-
-            // Aplicar límite
-            if (limite > 0 && queries.size() > limite) {
-                queries = queries.subList(0, limite);
             }
 
             // Respuesta enriquecida
