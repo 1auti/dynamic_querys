@@ -1,11 +1,8 @@
 # ===============================================
-# CONFIGURACIÓN DESARROLLO - Dynamic Querys
-# ===============================================
-# Este archivo es para ambiente de DESARROLLO
-# Incluye conexiones a PostgreSQL de desarrollo
+# CONFIGURACIÓN PRODUCTION - Dynamic Querys
 # ===============================================
 
-# =============== MAPEO DE PROVINCIAS ===============
+# ========== MAPEO DE PROVINCIAS ==========
 provincia:
   mapping:
     "Buenos Aires": pba
@@ -15,17 +12,23 @@ provincia:
     "Entre Ríos": entre-rios
     "Formosa": formosa
 
-# =============== CONFIGURACIÓN H2 (METADATA) ===============
+# ============ CONFIGURACIÓN H2 (METADATA) ==============
 spring:
+  # === PROFILE ===
+  config:
+    activate:
+      on-profile: production
+
+  # === H2 DATABASE - RUTAS ABSOLUTAS PRODUCCIÓN ===
   datasource:
-    jdbc-url: jdbc:h2:file:./data/query_metadata
-    username: sa
-    password:
+    jdbc-url: jdbc:h2:file:/opt/dynamic-querys/data/query_metadata;DB_CLOSE_ON_EXIT=FALSE;AUTO_SERVER=FALSE
+    username: ${H2_USERNAME}
+    password: ${H2_PASSWORD}
     driver-class-name: org.h2.Driver
     hikari:
-      pool-name: "H2-QueryMetadata-Pool-Dev"
-      maximum-pool-size: 10
-      minimum-idle: 2
+      pool-name: "H2-QueryMetadata-Pool-Prod"
+      maximum-pool-size: 20  # ⬆️ Aumentado para producción
+      minimum-idle: 5
       connection-timeout: 10000
       idle-timeout: 600000
       max-lifetime: 1800000
@@ -33,8 +36,8 @@ spring:
   # === JPA/H2 ===
   jpa:
     hibernate:
-      ddl-auto: update  # Crea/actualiza tablas automáticamente en dev
-    show-sql: true      # Muestra SQL en consola para debugging
+      ddl-auto: update
+    show-sql: false  #  Desactivado en producción
     properties:
       hibernate:
         jdbc:
@@ -43,17 +46,17 @@ spring:
           order_inserts: true
           order_updates: true
         dialect: org.hibernate.dialect.H2Dialect
-        format_sql: true  # SQL formateado para legibilidad
-        use_sql_comments: true
+        format_sql: false  #  Desactivado en producción
+        use_sql_comments: false
     database-platform: org.hibernate.dialect.H2Dialect
 
-  # === CONSOLA H2 - HABILITADA EN DESARROLLO ===
+  # === CONSOLA H2 - DESACTIVADA EN PRODUCCIÓN ===
   h2:
     console:
-      enabled: true  # ✅ Permite acceder a http://localhost:8080/h2-console
+      enabled: false
       path: /h2-console
       settings:
-        web-allow-others: false  # Solo localhost
+        web-allow-others: false
         trace: false
 
   # === HTTP/MULTIPART ===
@@ -67,7 +70,7 @@ spring:
     deserialization:
       fail-on-unknown-properties: false
 
-# =============== POSTGRESQL DATASOURCES - DESARROLLO ===============
+# =============== POSTGRESQL - SOLO EN PRODUCCIÓN ===============
 postgresql:
   datasources:
     # ========== BUENOS AIRES (PBA) ==========
@@ -77,9 +80,9 @@ postgresql:
       password: ${PBA_PASSWORD}
       driver-class-name: org.postgresql.Driver
       hikari:
-        pool-name: "PostgreSQL-PBA-Pool-Dev"
-        maximum-pool-size: 3  # ⬇️ Pool pequeño para dev
-        minimum-idle: 1
+        pool-name: "PostgreSQL-PBA-Pool"
+        maximum-pool-size: 5  # Cantidad de conexiones para produccion
+        minimum-idle: 2
         connection-timeout: 60000
         idle-timeout: 600000
         max-lifetime: 1800000
@@ -108,9 +111,9 @@ postgresql:
       password: ${MDA_PASSWORD}
       driver-class-name: org.postgresql.Driver
       hikari:
-        pool-name: "PostgreSQL-MDA-Pool-Dev"
-        maximum-pool-size: 3
-        minimum-idle: 1
+        pool-name: "PostgreSQL-MDA-Pool"
+        maximum-pool-size: 5
+        minimum-idle: 2
         connection-timeout: 60000
         idle-timeout: 600000
         max-lifetime: 1800000
@@ -139,9 +142,9 @@ postgresql:
       password: ${SANTA_ROSA_PASSWORD}
       driver-class-name: org.postgresql.Driver
       hikari:
-        pool-name: "PostgreSQL-SantaRosa-Pool-Dev"
-        maximum-pool-size: 3
-        minimum-idle: 1
+        pool-name: "PostgreSQL-SantaRosa-Pool"
+        maximum-pool-size: 5
+        minimum-idle: 2
         connection-timeout: 60000
         idle-timeout: 600000
         max-lifetime: 1800000
@@ -170,9 +173,9 @@ postgresql:
       password: ${CHACO_PASSWORD}
       driver-class-name: org.postgresql.Driver
       hikari:
-        pool-name: "PostgreSQL-Chaco-Pool-Dev"
-        maximum-pool-size: 3
-        minimum-idle: 1
+        pool-name: "PostgreSQL-Chaco-Pool"
+        maximum-pool-size: 5
+        minimum-idle: 2
         connection-timeout: 60000
         idle-timeout: 600000
         max-lifetime: 1800000
@@ -201,9 +204,9 @@ postgresql:
       password: ${ENTRE_RIOS_PASSWORD}
       driver-class-name: org.postgresql.Driver
       hikari:
-        pool-name: "PostgreSQL-EntreRios-Pool-Dev"
-        maximum-pool-size: 3
-        minimum-idle: 1
+        pool-name: "PostgreSQL-EntreRios-Pool"
+        maximum-pool-size: 5
+        minimum-idle: 2
         connection-timeout: 60000
         idle-timeout: 600000
         max-lifetime: 1800000
@@ -232,9 +235,9 @@ postgresql:
       password: ${FORMOSA_PASSWORD}
       driver-class-name: org.postgresql.Driver
       hikari:
-        pool-name: "PostgreSQL-Formosa-Pool-Dev"
-        maximum-pool-size: 3
-        minimum-idle: 1
+        pool-name: "PostgreSQL-Formosa-Pool"
+        maximum-pool-size: 5
+        minimum-idle: 2
         connection-timeout: 60000
         idle-timeout: 600000
         max-lifetime: 1800000
@@ -260,32 +263,32 @@ postgresql:
 server:
   port: 8080
   tomcat:
-    max-connections: 20  # Menos conexiones en dev
+    max-connections: 50
     threads:
-      max: 10           # Menos threads en dev
-      min-spare: 2
+      max: 20
+      min-spare: 5
     connection-timeout: 30000
     max-http-post-size: 52428800
   error:
     include-message: always
     include-binding-errors: always
-    include-stacktrace: always  # ✅ Stacktrace completo en dev
+    include-stacktrace: on_param  # Solo con parámetro ?trace=true
 
-# =============== CONFIGURACIÓN APLICACIÓN ===============
+# =============== CONFIGURACIÓN APLICACIÓN - PRODUCCIÓN ===============
 app:
   # === QUERY REGISTRY ===
   query-registry:
     auto-scan-enabled: true
-    queries-path: classpath:querys/  # Lee queries desde resources/querys/
+    queries-path: classpath:querys/
     file-extensions: sql
     auto-analyze-on-startup: true
-    scan-on-startup: true
-    update-existing: true
-    h2-file-path: ./data/query_metadata  # Ruta relativa para dev
-    backup-enabled: false  # ❌ No necesario en dev
-    backup-interval-hours: 24
-    upload-enabled: true   # ✅ Permite subir queries en dev
-    upload-path: ./uploads/queries/
+    scan-on-startup: true  # Escanea la aplicación al iniciar
+    update-existing: true  # Permite actualizaciones de registros
+    h2-file-path: /opt/dynamic-querys/data/query_metadata
+    backup-enabled: true
+    backup-interval-hours: 12
+    upload-enabled: false  # 🔒 Desactivado por seguridad en producción
+    upload-path: /opt/dynamic-querys/uploads/queries/
     max-file-size: 1MB
     allowed-extensions: sql
 
@@ -305,7 +308,7 @@ app:
     umbral:
       memoria: 500000
     cache:
-      dir: ${java.io.tmpdir}/consolidacion  # Usa directorio temporal del sistema
+      dir: /opt/dynamic-querys/data/temp/consolidacion
     default-strategy: "inteligente"
     max-grouping-fields: 5
     min-numeric-fields: 1
@@ -319,45 +322,48 @@ app:
 
   # === BATCH PROCESSING ===
   batch:
-    size: 100  # ⬇️ Lotes pequeños para debugging en dev
+    size: 500  # Optimizado para producción
     memory-critical-threshold: 0.85
     parallel-threshold-per-province: 50000
     parallel-threshold-total: 300000
     massive-threshold-per-province: 200000
-    max-parallel-provinces: 2  # ⬇️ Menos paralelismo en dev
-    thread-pool-size: 4        # ⬇️ Menos threads en dev
+    max-parallel-provinces: 3
+    thread-pool-size: 6
 
   # === ASYNC ===
   async:
-    thread-pool-size: 5  # ⬇️ Menos threads en dev
+    thread-pool-size: 10
 
-# =============== LOGGING - DESARROLLO ===============
+# =============== LOGGING - PRODUCCIÓN ===============
 logging:
+  file:
+    name: /opt/dynamic-querys/logs/application.log
+    max-size: 50MB
+    max-history: 30
+    total-size-cap: 1GB
   level:
-    # Nivel general - DEBUG para ver todo
-    org.transito_seguro: DEBUG
+    # Niveles reducidos para producción
+    org.transito_seguro: INFO
+    org.transito_seguro.component.BatchProcessor: INFO
+    org.transito_seguro.repository.impl.InfraccionesRepositoryImpl: INFO
+    org.transito_seguro.component.ParametrosProcessor: INFO
+    org.transito_seguro.component.StreamingFormatoConverter: INFO
+    org.transito_seguro.service.InfraccionesService: INFO
 
-    # Componentes clave - DEBUG detallado
-    org.transito_seguro.component.BatchProcessor: DEBUG
-    org.transito_seguro.repository.impl.InfraccionesRepositoryImpl: DEBUG
-    org.transito_seguro.component.ParametrosProcessor: DEBUG
-    org.transito_seguro.component.StreamingFormatoConverter: DEBUG
-    org.transito_seguro.service.InfraccionesService: DEBUG
-
-    # Spring/Hibernate - Ver SQL ejecutado
-    org.springframework.jdbc: DEBUG
-    org.springframework.jdbc.core.JdbcTemplate: DEBUG
-    org.springframework.jdbc.datasource: DEBUG
-    org.hibernate.SQL: DEBUG  # ✅ Ver todas las queries
-    org.hibernate.type: DEBUG # ✅ Ver valores de parámetros
-    org.hibernate.type.descriptor.sql.BasicBinder: TRACE  # ✅ Ver binding de parámetros
+    # Spring/Hibernate
+    org.springframework.jdbc: WARN
+    org.springframework.jdbc.core.JdbcTemplate: WARN
+    org.springframework.jdbc.datasource: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.type: WARN
 
     # Otros
-    com.zaxxer.hikari: DEBUG  # ✅ Ver gestión del pool de conexiones
-    org.postgresql: DEBUG     # ✅ Ver detalles de PostgreSQL
-    org.h2: INFO
+    com.zaxxer.hikari: INFO
+    org.postgresql: WARN
+    org.h2: WARN
 
   pattern:
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
     console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
 
 # =============== ACTUATOR ===============
@@ -365,11 +371,16 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,metrics,info,h2,query-registry
+        include: health,metrics,info,query-registry
+        exclude: h2  # No exponer H2 en producción
   endpoint:
     health:
-      show-details: always  # ✅ Muestra detalles completos en dev
+      show-details: when_authorized  # Solo con autenticación
     metrics:
       enabled: true
     query-registry:
       enabled: true
+  metrics:
+    export:
+      simple:
+        enabled: true
