@@ -210,16 +210,6 @@ public class InfraccionesService {
                 .collect(Collectors.toList());
     }
 
-    /**
-     * Verifica si una consulta puede ser consolidada.
-     * Delega validación al ConsolidacionService.
-     *
-     * @param filtros Parámetros de la consulta
-     * @return true si puede consolidarse, false en caso contrario
-     */
-    public boolean puedeSerConsolidada(ParametrosFiltrosDTO filtros) {
-        return consolidacionService.validarConsolidacion(filtros);
-    }
 
     // =============== CORE: EJECUCIÓN DESDE BASE DE DATOS ===============
 

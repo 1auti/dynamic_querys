@@ -344,7 +344,7 @@ private int obtenerConteoReal(
      * @return Query envuelta en SELECT COUNT(*)
      */
     /**
-     * ALTERNATIVA SIMPLE: Regex mejorado que funciona con funciones.
+     *  Regex mejorado que funciona con funciones.
      */
     private String construirQueryConteo(String queryOriginal) {
         if (queryOriginal == null || queryOriginal.trim().isEmpty()) {
@@ -386,7 +386,7 @@ private int obtenerConteoReal(
     }
 
     /**
-     * 🔥 VERSIÓN MEJORADA con monitoreo de progreso
+     * VERSIÓN MEJORADA con monitoreo de progreso
      */
     private void procesarParalelo(
             List<InfraccionesRepositoryImpl> repositories,
@@ -455,7 +455,7 @@ private int obtenerConteoReal(
 
             // ✅ Reporte final
             log.info("═══════════════════════════════════════════════════════════");
-            log.info("🎯 PROCESAMIENTO PARALELO COMPLETADO");
+            log.info(" PROCESAMIENTO PARALELO COMPLETADO");
             log.info("   Total: {}/{} provincias",
                     provinciasCompletadas.get(), repositories.size());
             log.info("═══════════════════════════════════════════════════════════");
@@ -1121,57 +1121,7 @@ private void procesarChunk(
         actualizarContadores(provinciaRepo, procesados);
     }
 
-    /**
-     * 🔑 Extrae el ID del último registro (row_id o id_infracciones).
-     * MEJORADO: Con mejor logging para debugging.
-     */
-    private Integer extraerUltimoId(Map<String, Object> registro, String provincia) {
-        // PRIORIDAD 1: Buscar row_id (generado por ROW_NUMBER)
-        Object rowId = registro.get("row_id");
-        if (rowId != null) {
-            try {
-                Integer id = convertirAInteger(rowId);
-                log.debug("🔑 {} - Usando row_id: {}", provincia, id);
-                return id;
-            } catch (Exception e) {
-                log.warn("⚠️ {} - Error convirtiendo row_id: {}", provincia, e.getMessage());
-            }
-        }
 
-        // PRIORIDAD 2: Buscar id_infracciones (ID real)
-        Object idInfracciones = registro.get("id_infracciones");
-        if (idInfracciones != null) {
-            try {
-                Integer id = convertirAInteger(idInfracciones);
-                log.debug("🔑 {} - Usando id_infracciones: {}", provincia, id);
-                return id;
-            } catch (Exception e) {
-                log.warn("⚠️ {} - Error convirtiendo id_infracciones: {}", provincia, e.getMessage());
-            }
-        }
-
-        // PRIORIDAD 3: Buscar otros campos ID posibles
-        String[] otrosCamposId = {"id", "infraccion_id", "registro_id"};
-        for (String campo : otrosCamposId) {
-            Object valor = registro.get(campo);
-            if (valor != null) {
-                try {
-                    Integer id = convertirAInteger(valor);
-                    log.debug("🔑 {} - Usando campo {}: {}", provincia, campo, id);
-                    return id;
-                } catch (Exception e) {
-                    // Continuar con siguiente campo
-                }
-            }
-        }
-
-        // ❌ No se encontró ningún ID
-        log.error("❌ {} - No se encontró ningún campo ID válido", provincia);
-        log.error("Campos disponibles en el registro: {}", registro.keySet());
-        log.error("Valores del registro: {}", registro);
-
-        return null;
-    }
 
     /**
      * Convierte un Object a Integer de forma segura.
@@ -1235,6 +1185,7 @@ private void procesarChunk(
     /**
      * Obtiene el último ID del lote actual
      */
+    @Deprecated
     private Integer obtenerUltimoIdDelLote(List<Map<String, Object>> lote) {
         if (lote == null || lote.isEmpty()) {
             return null;
@@ -1493,125 +1444,6 @@ private void procesarChunk(
         }
 
         return keysetMap;
-    }
-
-
-
-    /**
-     * NUEVO MÉTODO: Consolidar resultados por mes/año
-     *
-     * Para agregar al BatchProcessor.java
-     *
-     * USO:
-     * List<Map<String, Object>> consolidado = consolidarPorMes(
-     *     resultados,
-     *     Arrays.asList("provincia", "mes", "anio")
-     * );
-     */
-    public List<Map<String, Object>> consolidarPorMes(
-            List<Map<String, Object>> resultados,
-            List<String> camposAgrupacion) {
-
-        if (resultados == null || resultados.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        log.info("🔧 Consolidando {} registros por: {}", resultados.size(), camposAgrupacion);
-        long inicio = System.currentTimeMillis();
-
-        // PASO 1: Enriquecer con campos calculados (mes, año)
-        List<Map<String, Object>> enriquecidos = resultados.stream()
-                .map(this::agregarCamposMesAnio)
-                .collect(Collectors.toList());
-
-        // PASO 2: Agrupar por campos solicitados
-        Map<String, List<Map<String, Object>>> grupos = enriquecidos.stream()
-                .collect(Collectors.groupingBy(registro ->
-                        generarClaveAgrupacion(registro, camposAgrupacion)
-                ));
-
-        // PASO 3: Sumar cantidades por grupo
-        List<Map<String, Object>> consolidado = grupos.entrySet().stream()
-                .map(entry -> consolidarGrupo(entry.getValue(), camposAgrupacion))
-                .collect(Collectors.toList());
-
-        long duracion = System.currentTimeMillis() - inicio;
-        log.info("✅ Consolidación completada en {}ms: {} → {} registros",
-                duracion, resultados.size(), consolidado.size());
-
-        return consolidado;
-    }
-
-    /**
-     * Agrega campos mes y año desde fecha_constatacion
-     */
-    private Map<String, Object> agregarCamposMesAnio(Map<String, Object> registro) {
-        Map<String, Object> enriquecido = new HashMap<>(registro);
-
-        Object fecha = registro.get("fecha_constatacion");
-
-        if (fecha instanceof java.sql.Date) {
-            Calendar cal = Calendar.getInstance();
-            cal.setTime((java.sql.Date) fecha);
-            enriquecido.put("mes", cal.get(Calendar.MONTH) + 1);
-            enriquecido.put("anio", cal.get(Calendar.YEAR));
-
-        } else if (fecha instanceof java.time.LocalDate) {
-            java.time.LocalDate localDate = (java.time.LocalDate) fecha;
-            enriquecido.put("mes", localDate.getMonthValue());
-            enriquecido.put("anio", localDate.getYear());
-
-        } else if (fecha instanceof java.util.Date) {
-            Calendar cal = Calendar.getInstance();
-            cal.setTime((java.util.Date) fecha);
-            enriquecido.put("mes", cal.get(Calendar.MONTH) + 1);
-            enriquecido.put("anio", cal.get(Calendar.YEAR));
-        }
-
-        return enriquecido;
-    }
-
-    /**
-     * Genera clave única para agrupar registros
-     */
-    private String generarClaveAgrupacion(
-            Map<String, Object> registro,
-            List<String> camposAgrupacion) {
-
-        return camposAgrupacion.stream()
-                .map(campo -> String.valueOf(registro.get(campo)))
-                .collect(Collectors.joining("|"));
-    }
-
-    /**
-     * Consolida un grupo sumando cantidades
-     */
-    private Map<String, Object> consolidarGrupo(
-            List<Map<String, Object>> grupo,
-            List<String> camposAgrupacion) {
-
-        Map<String, Object> consolidado = new HashMap<>();
-
-        // Tomar valores de agrupación del primer registro
-        Map<String, Object> primero = grupo.get(0);
-        for (String campo : camposAgrupacion) {
-            consolidado.put(campo, primero.get(campo));
-        }
-
-        // Sumar cantidad
-        int cantidadTotal = grupo.stream()
-                .mapToInt(r -> {
-                    Object cant = r.get("cantidad");
-                    if (cant instanceof Number) {
-                        return ((Number) cant).intValue();
-                    }
-                    return 1; // Si no hay cantidad, contar como 1
-                })
-                .sum();
-
-        consolidado.put("cantidad", cantidadTotal);
-
-        return consolidado;
     }
 
 }

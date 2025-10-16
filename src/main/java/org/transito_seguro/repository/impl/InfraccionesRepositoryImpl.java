@@ -51,15 +51,7 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
         log.debug("Inicializado InfraccionesRepositoryImpl para provincia: {}", provincia);
     }
 
-    /**
-     * 🔥 VERSIÓN MEJORADA: Con streaming real y logs de progreso
-     *
-     * CAMBIOS PRINCIPALES:
-     * 1. Logs ANTES de iniciar la query
-     * 2. Logs cada 1000 registros DURANTE la lectura
-     * 3. Logs DESPUÉS con estadísticas finales
-     * 4. Manejo de streaming eficiente
-     */
+
     @Override
     public List<Map<String, Object>> ejecutarQueryConFiltros(String nombreQuery, ParametrosFiltrosDTO filtros) {
 
@@ -72,8 +64,9 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
 
             // ✅ 2. LOG DE QUERY Y PARÁMETROS
             log.debug("🔍 QUERY para {}:\n{}", provincia, resultado.getQueryModificada());
-            log.info("🔍 {} - Parámetros: lastId={}, limite={}",
+            log.info("🔍 {} - Parámetros: offset={}, lastId={}, limite={}",
                     provincia,
+                    filtros != null ? filtros.getOffset() : "null",
                     filtros != null ? filtros.getLastId() : "null",
                     filtros != null ? filtros.getLimite() : "null");
 
@@ -305,14 +298,14 @@ public class InfraccionesRepositoryImpl implements InfraccionesRepository {
             String sqlModificada = queryResult.getQueryModificada();
             MapSqlParameterSource parametros = queryResult.getParametros();
 
-            log.info("🌊 STREAMING INICIADO para {} - Query: {}", provincia, nombreQuery);
+            log.info(" STREAMING INICIADO para {} - Query: {}", provincia, nombreQuery);
 
             // 2. Contadores
             AtomicInteger contador = new AtomicInteger(0);
             long inicioStreaming = System.currentTimeMillis();
             long ultimoLog = inicioStreaming;
 
-            // 3. ✅ SOLUCIÓN SIMPLE: Usar NamedParameterJdbcTemplate directamente
+
             jdbcTemplate.query(
                     sqlModificada,
                     parametros,

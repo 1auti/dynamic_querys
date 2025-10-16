@@ -391,14 +391,14 @@ app:
 logging:
   level:
     # Nivel general
-    org.transito_seguro: INFO
+    org.transito_seguro: DEBUG
 
     # Componentes clave
-    org.transito_seguro.component.BatchProcessor: INFO
-    org.transito_seguro.repository.impl.InfraccionesRepositoryImpl: INFO
-    org.transito_seguro.component.ParametrosProcessor: INFO
-    org.transito_seguro.component.StreamingFormatoConverter: INFO
-    org.transito_seguro.service.InfraccionesService: INFO
+    org.transito_seguro.component.BatchProcessor: DEBUG
+    org.transito_seguro.repository.impl.InfraccionesRepositoryImpl: DEBUG
+    org.transito_seguro.component.ParametrosProcessor: DEBUG
+    org.transito_seguro.component.StreamingFormatoConverter: DEBUG
+    org.transito_seguro.service.InfraccionesService: DEBUG
 
     # Spring/Hibernate
     org.springframework.jdbc: WARN

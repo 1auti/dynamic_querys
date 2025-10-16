@@ -35,14 +35,33 @@ public class ParametrosProcessor {
         mapearKeysetSimplificado(parametros, filtros);
         mapearPaginacionKeyset(parametros, filtros);
 
-        // 3. Detectar estado de keyset para logging
+        // 3. ✅ NUEVO: Detectar modo streaming y modificar SQL si es necesario
+        String sqlFinal = queryOriginal;
+        Object limiteParam = parametros.getValue("limite");
+        boolean esModoStreaming = limiteParam != null &&
+                (Integer) limiteParam == Integer.MAX_VALUE;
+
+        if (esModoStreaming) {
+            // Remover LIMIT y OFFSET del SQL para streaming sin límite
+            sqlFinal = sqlFinal.replaceAll("(?i)\\s+LIMIT\\s+[^;]*$", "");
+            sqlFinal = sqlFinal.replaceAll("(?i)\\s+OFFSET\\s+[^;]*$", "");
+
+            log.info("🌊 Modo STREAMING activado: LIMIT/OFFSET removidos del SQL");
+            metadata.put("modo_streaming", true);
+        } else {
+            metadata.put("modo_streaming", false);
+        }
+
+        // 4. Detectar estado de keyset para logging
         boolean keysetActivo = filtros != null && filtros.getLastId() != null;
 
-        log.debug("Query procesada. Parámetros: {} | Keyset: {}",
+        log.debug("Query procesada. Parámetros: {} | Keyset: {} | Streaming: {}",
                 parametros.getParameterNames().length,
-                keysetActivo ? "ACTIVO(id=" + filtros.getLastId() + ")" : "INACTIVO");
+                keysetActivo ? "ACTIVO(id=" + filtros.getLastId() + ")" : "INACTIVO",
+                esModoStreaming ? "SÍ" : "NO");
 
-        return new QueryResult(queryOriginal, parametros, metadata);
+        // ✅ CRÍTICO: Retornar con el SQL modificado
+        return new QueryResult(sqlFinal, parametros, metadata);
     }
 
     // =================== KEYSET SIMPLIFICADO ===================
@@ -76,37 +95,37 @@ public class ParametrosProcessor {
     /**
      * Mapea parámetros de paginación (OFFSET + KEYSET + LIMITE).
      */
-    private void mapearPaginacionCompleta(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
-        if (filtros == null) {
-            params.addValue("offset", 0, Types.INTEGER);
-            params.addValue("limite", 10000, Types.INTEGER);
-            params.addValue("lastId", null, Types.BIGINT);
-            return;
-        }
-
-        // === OFFSET ===
-        Integer offset = filtros.getOffset();
-        if (offset == null || offset < 0) {
-            offset = 0;
-        }
-        params.addValue("offset", offset, Types.INTEGER);  // ✅ YA LO TIENES
-
-        // === LIMITE ===
-        Integer limite = filtros.getLimite();
-        if (limite == null || limite <= 0) {
-            limite = 10000;
-        } else if (limite > 50000) {
-            limite = 50000;
-        }
-        params.addValue("limite", limite, Types.INTEGER);  // ✅ YA LO TIENES
-
-        // === KEYSET (lastId) ===
-        Integer lastId = filtros.getLastId();
-        if (lastId != null && lastId < 0) {
-            lastId = null;
-        }
-        params.addValue("lastId", lastId, Types.BIGINT);  // ✅ YA LO TIENES
-    }
+//    private void mapearPaginacionCompleta(MapSqlParameterSource params, ParametrosFiltrosDTO filtros) {
+//        if (filtros == null) {
+//            params.addValue("offset", 0, Types.INTEGER);
+//            params.addValue("limite", 10000, Types.INTEGER);
+//            params.addValue("lastId", null, Types.BIGINT);
+//            return;
+//        }
+//
+//        // === OFFSET ===
+//        Integer offset = filtros.getOffset();
+//        if (offset == null || offset < 0) {
+//            offset = 0;
+//        }
+//        params.addValue("offset", offset, Types.INTEGER);  // ✅ YA LO TIENES
+//
+//        // === LIMITE ===
+//        Integer limite = filtros.getLimite();
+//        if (limite == null || limite <= 0) {
+//            limite = 10000;
+//        } else if (limite > 50000) {
+//            limite = 50000;
+//        }
+//        params.addValue("limite", limite, Types.INTEGER);  // ✅ YA LO TIENES
+//
+//        // === KEYSET (lastId) ===
+//        Integer lastId = filtros.getLastId();
+//        if (lastId != null && lastId < 0) {
+//            lastId = null;
+//        }
+//        params.addValue("lastId", lastId, Types.BIGINT);  // ✅ YA LO TIENES
+//    }
 
     /**
      * PAGINACIÓN CORREGIDA
@@ -135,7 +154,7 @@ public class ParametrosProcessor {
         int limiteFinal;
 
         if (limiteOriginal == null || limiteOriginal <= 0 || limiteOriginal == Integer.MAX_VALUE) {
-            limiteFinal = 10000;
+            limiteFinal = Integer.MAX_VALUE;
             log.debug("🔧 Límite corregido: {} → {}", limiteOriginal, limiteFinal);
         } else if (limiteOriginal > 50000) {
             limiteFinal = 50000;
