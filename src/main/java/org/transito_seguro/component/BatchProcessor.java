@@ -347,32 +347,101 @@ private int obtenerConteoReal(
      *  Regex mejorado que funciona con funciones.
      */
     private String construirQueryConteo(String queryOriginal) {
+        // Validación de entrada
         if (queryOriginal == null || queryOriginal.trim().isEmpty()) {
             throw new IllegalArgumentException("Query original no puede estar vacía");
         }
 
+        log.debug("🔢 Construyendo query de conteo para: {}",
+                queryOriginal.substring(0, Math.min(100, queryOriginal.length())));
+
         String queryLimpia = queryOriginal.trim();
 
-        // 1. Remover ; final
-        queryLimpia = queryLimpia.replaceAll(";\\s*$", "");
+        // 1. Remover punto y coma final si existe
+        if (queryLimpia.endsWith(";")) {
+            queryLimpia = queryLimpia.substring(0, queryLimpia.length() - 1).trim();
+        }
 
-        // 2. Remover ORDER BY hasta el final
-        queryLimpia = queryLimpia.replaceAll("(?i)\\s+ORDER\\s+BY[^;]*$", "");
+        // 2. Remover ORDER BY del nivel más externo (no afecta COUNT)
+        //    CRÍTICO: Solo remover el ORDER BY que está fuera de paréntesis
+        queryLimpia = removerClausulaExterna(queryLimpia, "ORDER BY");
 
-        // 3. ✅ CRÍTICO: Remover LIMIT con CUALQUIER contenido hasta el final
-        //    Este regex captura desde LIMIT hasta el fin, incluyendo funciones
-        queryLimpia = queryLimpia.replaceAll("(?i)\\s+LIMIT\\s+[^;]*$", "");
+        // 3. Remover LIMIT del nivel externo
+        queryLimpia = removerClausulaExterna(queryLimpia, "LIMIT");
 
-        // 4. Remover OFFSET si queda
-        queryLimpia = queryLimpia.replaceAll("(?i)\\s+OFFSET\\s+[^;]*$", "");
+        // 4. Remover OFFSET del nivel externo
+        queryLimpia = removerClausulaExterna(queryLimpia, "OFFSET");
 
-        // 5. Envolver en COUNT(*)
-        String queryConteo = String.format("SELECT COUNT(*) as total FROM (%s) AS subquery", queryLimpia.trim());
+        // 5. Envolver en COUNT preservando toda la estructura interna
+        String queryConteo = String.format("SELECT COUNT(*) as total FROM (%s) AS conteo_wrapper",
+                queryLimpia.trim());
 
-        log.debug("✅ Query conteo: {} chars", queryConteo.length());
+        log.debug("✅ Query de conteo construida: {} caracteres", queryConteo.length());
 
         return queryConteo;
     }
+
+    private String removerClausulaExterna(String query, String clausula) {
+        int nivelParentesis = 0;
+        int posClausula = -1;
+        String upper = query.toUpperCase();
+        String clausulaUpper = clausula.toUpperCase();
+
+        // Recorrer desde el final hacia el inicio
+        for (int i = query.length() - 1; i >= 0; i--) {
+            char c = query.charAt(i);
+
+            // Actualizar nivel de paréntesis (invertido porque vamos hacia atrás)
+            if (c == ')') {
+                nivelParentesis++;
+            } else if (c == '(') {
+                nivelParentesis--;
+            }
+
+            // Buscar la cláusula solo en nivel 0 (fuera de paréntesis)
+            if (nivelParentesis == 0 && i >= clausulaUpper.length()) {
+                // Buscar hacia atrás si coincide con la cláusula
+                boolean coincide = true;
+                for (int j = 0; j < clausulaUpper.length(); j++) {
+                    if (upper.charAt(i - clausulaUpper.length() + j) != clausulaUpper.charAt(j)) {
+                        coincide = false;
+                        break;
+                    }
+                }
+
+                if (coincide) {
+                    // Verificar que sea límite de palabra (no parte de otra palabra)
+                    int posInicio = i - clausulaUpper.length();
+                    boolean esLimitePalabra = true;
+
+                    // Verificar antes de la cláusula
+                    if (posInicio > 0 && Character.isLetterOrDigit(query.charAt(posInicio - 1))) {
+                        esLimitePalabra = false;
+                    }
+
+                    // Verificar después de la cláusula
+                    if (i < query.length() && Character.isLetterOrDigit(query.charAt(i))) {
+                        esLimitePalabra = false;
+                    }
+
+                    if (esLimitePalabra) {
+                        posClausula = posInicio;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Si encontramos la cláusula externa, removerla
+        if (posClausula >= 0) {
+            log.debug("🔧 Removiendo {} externo en posición {}", clausula, posClausula);
+            return query.substring(0, posClausula).trim();
+        }
+
+        log.debug("⚠️ No se encontró {} externo, query sin cambios", clausula);
+        return query;
+    }
+
 
     private EstrategiaProcessing decidirEstrategia(EstimacionDataset estimacion) {
         if (estimacion.getPromedioPorProvincia() < parallelThresholdPerProvince &&
