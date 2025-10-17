@@ -421,39 +421,48 @@ public class DatabaseQueryService {
         return consolidarPorCampos(datos, camposAgrupacion, camposNumericos);
     }
 
-    private List<String> determinarCamposAgrupacionDesdeBD(ParametrosFiltrosDTO filtros, QueryStorage queryStorage) {
+    private List<String> determinarCamposAgrupacionDesdeBD(
+            ParametrosFiltrosDTO filtros,
+            QueryStorage queryStorage) {
 
         List<String> camposAgrupacion = new ArrayList<>();
         List<String> consolidacionUsuario = filtros.getConsolidacionSeguro();
 
+        // ⭐ CASO 1: Usuario especificó campos - USAR EXACTAMENTE ESOS
         if (!consolidacionUsuario.isEmpty()) {
-            // Usuario especificó campos - validar contra BD
             List<String> camposValidosBD = queryStorage.getCamposAgrupacionList();
 
             for (String campo : consolidacionUsuario) {
                 if (camposValidosBD.contains(campo)) {
                     camposAgrupacion.add(campo);
-                    log.debug("Campo '{}' válido desde BD para query '{}'", campo, queryStorage.getCodigo());
+                    log.debug("✅ Campo '{}' válido para query '{}'", campo, queryStorage.getCodigo());
                 } else {
-                    log.warn("Campo '{}' NO válido según BD para query '{}'", campo, queryStorage.getCodigo());
+                    log.warn("⚠️ Campo '{}' NO válido según BD para query '{}'",
+                            campo, queryStorage.getCodigo());
                 }
+            }
+
+            // ⭐ CORRECCIÓN: Si usuario especificó campos, NO agregar "provincia" automáticamente
+            if (!camposAgrupacion.isEmpty()) {
+                log.info("🎯 Usando campos especificados por usuario: {}", camposAgrupacion);
+                return camposAgrupacion.stream().distinct().collect(Collectors.toList());
             }
         }
 
-        // Si no hay campos válidos del usuario, usar los de BD
-        if (camposAgrupacion.isEmpty()) {
-            camposAgrupacion.addAll(queryStorage.getCamposAgrupacionList());
-            log.info("Usando campos de agrupación de BD para query '{}': {}",
-                    queryStorage.getCodigo(), camposAgrupacion);
-        }
+        // ⭐ CASO 2: Usuario NO especificó campos - usar los de BD
+        camposAgrupacion.addAll(queryStorage.getCamposAgrupacionList());
+        log.info("📋 Usando campos de agrupación de BD para query '{}': {}",
+                queryStorage.getCodigo(), camposAgrupacion);
 
-        // Garantizar que siempre haya "provincia"
+        // ⭐ CASO 3: Solo en modo automático, garantizar "provincia"
         if (!camposAgrupacion.contains("provincia")) {
             camposAgrupacion.add(0, "provincia");
+            log.info("➕ Agregada 'provincia' en modo automático");
         }
 
         return camposAgrupacion.stream().distinct().collect(Collectors.toList());
     }
+
 
     private List<Map<String, Object>> consolidarPorCampos(
             List<Map<String, Object>> datos,

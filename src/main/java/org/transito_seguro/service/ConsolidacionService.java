@@ -16,14 +16,17 @@ import java.util.stream.Collectors;
 import static org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion.crearAnalisisVacio;
 
 /**
- * Servicio especializado en consolidación automática de datos multi-provincia MEJORADO.
+ * Servicio especializado en consolidación automática de datos multi-provincia.
  *
- * NUEVAS CARACTERÍSTICAS:
- * - Consolidación jerárquica inteligente basada en prioridades del usuario
+ * CARACTERÍSTICAS PRINCIPALES:
+ * - Consolidación jerárquica inteligente basada en campos del usuario
  * - Agrupación dinámica que respeta el orden de campos solicitados
- * - Soporte para consolidación por ubicación geográfica automática
+ * - Soporte para consolidación geográfica automática
  * - Detección automática de campos numéricos en tiempo real
- * - Consolidación adaptativa según el contexto de los datos
+ * - Consolidación temporal por día, mes o año
+ *
+ * @author Sistema Tránsito Seguro
+ * @version 2.0 - Corregida consolidación por campos únicos
  */
 @Slf4j
 @Service
@@ -37,7 +40,7 @@ public class ConsolidacionService {
     @Autowired
     private QueryRegistryService queryRegistryService;
 
-    // =============== CONFIGURACIÓN MEJORADA ===============
+    // =============== CONFIGURACIÓN ===============
 
     /** Mínimo de registros no nulos para considerar un campo como numérico */
     private static final int MIN_MUESTRA_NUMERICA = 3;
@@ -48,38 +51,45 @@ public class ConsolidacionService {
     /** Tamaño de muestra para análisis dinámico de campos */
     private static final int TAMAÑO_MUESTRA = 50;
 
-    // =============== ENUMS PARA ESTRATEGIAS ===============
-
-    public enum EstrategiaConsolidacion {
-        JERARQUICA_USUARIO,      // Prioriza campos solicitados por usuario
-        GEOGRAFICA_AUTOMATICA,   // Agrupa por ubicación geográfica
-        INTELIGENTE_MIXTA        // Combina ambas estrategias
-    }
-
-
-
-    // =============== API PRINCIPAL MEJORADA ===============
+    // =============== ENUMS ===============
 
     /**
-     * 🚀 MÉTODO PRINCIPAL MEJORADO: Consolida datos con estrategia inteligente
+     * Estrategias de consolidación disponibles
+     */
+    public enum EstrategiaConsolidacion {
+        JERARQUICA_USUARIO,      // Usa exactamente los campos solicitados por el usuario
+        GEOGRAFICA_AUTOMATICA,   // Agrupa por ubicación geográfica (provincia, municipio, etc.)
+        INTELIGENTE_MIXTA        // Combina campos categóricos y geográficos
+    }
+
+    // =============== API PRINCIPAL ===============
+
+    /**
+     * Consolida datos de múltiples provincias según los parámetros solicitados.
      *
-     * MEJORAS IMPLEMENTADAS:
-     * 1. Respeta el ORDEN de campos solicitados por el usuario
-     * 2. Implementa consolidación JERÁRQUICA (descripcion + provincia + lugar)
-     * 3. Detecta automáticamente campos numéricos en tiempo real
-     * 4. Aplica estrategias adaptativas según el tipo de datos
-     * 5. Mantiene compatibilidad con el sistema existente
+     * Proceso:
+     * 1. Determina estrategia de consolidación según campos solicitados
+     * 2. Recopila datos de todas las provincias
+     * 3. Normaliza nombres de provincias
+     * 4. Aplica consolidación temporal si se solicita
+     * 5. Aplica consolidación por campos
+     * 6. Retorna resultados con límites aplicados
+     *
+     * @param repositories Lista de repositorios por provincia
+     * @param nombreQuery Nombre de la query a ejecutar
+     * @param filtros Parámetros de filtrado y consolidación
+     * @return Lista de registros consolidados
      */
     public List<Map<String, Object>> consolidarDatos(
             List<InfraccionesRepositoryImpl> repositories,
             String nombreQuery,
             ParametrosFiltrosDTO filtros) {
 
-        log.info("=== CONSOLIDACIÓN MEJORADA INICIADA ===");
-        log.info("Provincias: {}, Query: {}, Consolidación: {}",
+        log.info("=== CONSOLIDACIÓN INICIADA ===");
+        log.info("Provincias: {}, Query: {}, Campos solicitados: {}",
                 repositories.size(), nombreQuery, filtros.getConsolidacionSeguro());
 
-        // 1. Determinar estrategia base
+        // 1. Determinar estrategia de consolidación
         EstrategiaConsolidacion estrategia = determinarEstrategia(filtros);
         log.info("Estrategia seleccionada: {}", estrategia);
 
@@ -96,7 +106,7 @@ public class ConsolidacionService {
         // 4. Normalizar provincias
         todosLosDatos = normalizarProvinciasEnDatos(todosLosDatos);
 
-        // 5. ⭐ NUEVO: Detectar y aplicar consolidación temporal si se solicita
+        // 5. Detectar y aplicar consolidación temporal si se solicita
         PeriodoTemporal periodoTemporal = detectarPeriodoTemporal(filtros);
 
         List<Map<String, Object>> datosConsolidados;
@@ -117,36 +127,52 @@ public class ConsolidacionService {
         return resultado;
     }
 
-    // =============== NUEVOS MÉTODOS: ESTRATEGIAS DE CONSOLIDACIÓN ===============
+    // =============== ESTRATEGIAS DE CONSOLIDACIÓN ===============
 
     /**
-     * 🧠 Determina la estrategia de consolidación basada en la solicitud del usuario
+     * Determina qué estrategia de consolidación usar según los campos solicitados.
+     *
+     * Lógica:
+     * - Sin campos → GEOGRAFICA_AUTOMATICA (agrupa por provincia, municipio)
+     * - Con campos mixtos → INTELIGENTE_MIXTA (combina categóricos y geográficos)
+     * - Con cualquier campo(s) del usuario → JERARQUICA_USUARIO (usa exactamente esos campos)
+     *
+     * @param filtros Parámetros de filtrado con campos de consolidación
+     * @return Estrategia a aplicar
      */
     private EstrategiaConsolidacion determinarEstrategia(ParametrosFiltrosDTO filtros) {
         List<String> camposUsuario = filtros.getConsolidacionSeguro();
 
+        // CASO 1: Sin campos especificados → modo automático
         if (camposUsuario.isEmpty()) {
+            log.info("🤖 Sin campos especificados → AUTOMÁTICO (provincia + municipio)");
             return EstrategiaConsolidacion.GEOGRAFICA_AUTOMATICA;
         }
 
-        // Si el usuario especificó campos, priorizar su solicitud
+        log.info("👤 Usuario especificó {} campo(s): {}",
+                camposUsuario.size(), camposUsuario);
+
+        // Clasificar tipos de campos
         boolean tieneGeograficos = camposUsuario.stream()
-                .anyMatch(campo -> esGeografico(campo));
+                .anyMatch(this::esGeografico);
 
         boolean tieneCategoricos = camposUsuario.stream()
-                .anyMatch(campo -> esCategorico(campo));
+                .anyMatch(this::esCategorico);
 
+        // CASO 2: Campos mixtos (geográficos + categóricos)
         if (tieneGeograficos && tieneCategoricos) {
+            log.info("🎯 Campos mixtos detectados → MIXTA");
             return EstrategiaConsolidacion.INTELIGENTE_MIXTA;
-        } else if (camposUsuario.size() > 1) {
-            return EstrategiaConsolidacion.JERARQUICA_USUARIO;
-        } else {
-            return EstrategiaConsolidacion.GEOGRAFICA_AUTOMATICA;
         }
+
+        // CASO 3: Cualquier cantidad de campos del usuario (1 o más)
+        // ⭐ CORRECCIÓN: Siempre usar JERARQUICA_USUARIO para respetar la solicitud
+        log.info("✅ Usando campos del usuario → JERÁRQUICA");
+        return EstrategiaConsolidacion.JERARQUICA_USUARIO;
     }
 
     /**
-     * 🎯 Aplica la estrategia de consolidación determinada
+     * Aplica la estrategia de consolidación determinada.
      */
     private List<Map<String, Object>> aplicarEstrategiaConsolidacion(
             List<Map<String, Object>> datos,
@@ -175,10 +201,18 @@ public class ConsolidacionService {
     // =============== IMPLEMENTACIÓN DE ESTRATEGIAS ===============
 
     /**
-     * 🏗️ NUEVA ESTRATEGIA: Consolidación Jerárquica Usuario
+     * ESTRATEGIA JERÁRQUICA USUARIO
      *
-     * Ejemplo: usuario solicita ["descripcion", "provincia"]
-     * Resultado: Agrupa por descripcion + provincia + lugar (si existe)
+     * Usa EXACTAMENTE los campos solicitados por el usuario, sin agregar campos adicionales.
+     *
+     * Ejemplo:
+     * - Usuario solicita: ["descripcion"]
+     * - Resultado: Agrupa solo por "descripcion" (suma todas las provincias)
+     *
+     * @param datos Datos a consolidar
+     * @param filtros Filtros con campos solicitados
+     * @param analisis Análisis de la query
+     * @return Datos consolidados por los campos del usuario
      */
     private List<Map<String, Object>> aplicarConsolidacionJerarquicaUsuario(
             List<Map<String, Object>> datos,
@@ -189,7 +223,7 @@ public class ConsolidacionService {
 
         List<String> camposUsuario = new ArrayList<>(filtros.getConsolidacionSeguro());
 
-        // PASO 1: Validar que los campos solicitados existen en los datos
+        // Validar que los campos solicitados existen en los datos
         Set<String> camposDisponibles = datos.isEmpty() ?
                 Collections.emptySet() : datos.get(0).keySet();
 
@@ -198,32 +232,44 @@ public class ConsolidacionService {
                 .collect(Collectors.toList());
 
         if (camposValidos.isEmpty()) {
-            log.warn("Ningún campo solicitado por el usuario está disponible en los datos");
+            log.warn("Ningún campo solicitado está disponible en los datos");
             return aplicarConsolidacionGeograficaAutomatica(datos, analisis);
         }
 
-        // PASO 2: Agregar campos de ubicación automáticamente si no están
+        // ⭐ CORRECCIÓN CRÍTICA: Usar EXACTAMENTE los campos del usuario
+        // NO agregar campos adicionales automáticamente
         List<String> camposFinales = new ArrayList<>(camposValidos);
-        agregarCamposUbicacionSiNecesario(camposFinales, camposDisponibles);
 
-        // PASO 3: Detectar campos numéricos dinámicamente
+        log.info("🎯 Consolidación EXACTA por: {}", camposFinales);
+        log.info("   → Sin campos automáticos adicionales");
+
+        // Detectar campos numéricos dinámicamente
         List<String> camposNumericos = detectarCamposNumericosDinamicos(datos);
 
-        log.info("Consolidación jerárquica - Agrupación: {}, Numéricos: {}",
-                camposFinales, camposNumericos);
+        log.info("📊 Configuración final:");
+        log.info("   🔑 Agrupación: {}", camposFinales);
+        log.info("   🔢 Numéricos: {}", camposNumericos);
 
-        // PASO 4: Aplicar consolidación con los campos ordenados
+        // Aplicar consolidación
         return consolidarPorCamposOrdenados(datos, camposFinales, camposNumericos);
     }
 
     /**
-     * 🌍 NUEVA ESTRATEGIA: Consolidación Geográfica Automática
+     * ESTRATEGIA GEOGRÁFICA AUTOMÁTICA
+     *
+     * Se ejecuta cuando el usuario NO especificó campos.
+     * Agrupa automáticamente por ubicación geográfica (provincia, municipio, etc.)
+     *
+     * @param datos Datos a consolidar
+     * @param analisis Análisis de la query
+     * @return Datos consolidados por geografía
      */
     private List<Map<String, Object>> aplicarConsolidacionGeograficaAutomatica(
             List<Map<String, Object>> datos,
             AnalisisConsolidacion analisis) {
 
         log.info("🌍 Aplicando CONSOLIDACIÓN GEOGRÁFICA AUTOMÁTICA");
+        log.info("   ℹ️ Usuario NO especificó campos → usando geografía por defecto");
 
         // Priorizar campos geográficos en orden lógico
         List<String> camposGeograficos = Arrays.asList(
@@ -238,21 +284,30 @@ public class ConsolidacionService {
                 .limit(3) // Máximo 3 niveles geográficos
                 .collect(Collectors.toList());
 
-        // Asegurar que siempre haya al menos "provincia"
+        // Asegurar que siempre haya al menos "provincia" en modo automático
         if (!camposAgrupacion.contains("provincia") && camposDisponibles.contains("provincia")) {
             camposAgrupacion.add(0, "provincia");
         }
 
         List<String> camposNumericos = detectarCamposNumericosDinamicos(datos);
 
-        log.info("Consolidación geográfica - Agrupación: {}, Numéricos: {}",
-                camposAgrupacion, camposNumericos);
+        log.info("Consolidación geográfica automática:");
+        log.info("   🔑 Agrupación: {}", camposAgrupacion);
+        log.info("   🔢 Numéricos: {}", camposNumericos);
 
         return consolidarPorCamposOrdenados(datos, camposAgrupacion, camposNumericos);
     }
 
     /**
-     * 🧠 NUEVA ESTRATEGIA: Consolidación Inteligente Mixta
+     * ESTRATEGIA INTELIGENTE MIXTA
+     *
+     * Combina campos categóricos y geográficos del usuario,
+     * agregando campos de ubicación complementarios si es necesario.
+     *
+     * @param datos Datos a consolidar
+     * @param filtros Filtros con campos solicitados
+     * @param analisis Análisis de la query
+     * @return Datos consolidados de forma mixta
      */
     private List<Map<String, Object>> aplicarConsolidacionInteligenteMixta(
             List<Map<String, Object>> datos,
@@ -281,139 +336,75 @@ public class ConsolidacionService {
 
         // Construir jerarquía: Categóricos → Geográficos → Ubicación adicional
         List<String> camposFinales = new ArrayList<>();
-        camposFinales.addAll(camposCategoricos);  // Prioridad a campos categóricos del usuario
-        camposFinales.addAll(camposGeograficos);  // Luego geográficos del usuario
+        camposFinales.addAll(camposCategoricos);  // Prioridad a campos categóricos
+        camposFinales.addAll(camposGeograficos);  // Luego geográficos
 
         // Agregar campos de ubicación adicionales si no están
         agregarCamposUbicacionSiNecesario(camposFinales, camposDisponibles);
 
         List<String> camposNumericos = detectarCamposNumericosDinamicos(datos);
 
-        log.info("Consolidación mixta - Agrupación: {}, Numéricos: {}",
-                camposFinales, camposNumericos);
+        log.info("Consolidación mixta:");
+        log.info("   🔑 Agrupación: {}", camposFinales);
+        log.info("   🔢 Numéricos: {}", camposNumericos);
 
         return consolidarPorCamposOrdenados(datos, camposFinales, camposNumericos);
     }
 
-    // =============== MÉTODOS AUXILIARES NUEVOS ===============
+    // =============== CONSOLIDACIÓN TEMPORAL ===============
 
     /**
-     * 🔍 Detecta automáticamente campos numéricos en los datos
-     * MEJORADO: Excluye IDs y campos de identificación
+     * Detecta si se solicita consolidación temporal (día, mes, año).
+     *
+     * @param filtros Filtros con campos de consolidación
+     * @return Período temporal detectado o null
      */
-    private List<String> detectarCamposNumericosDinamicos(List<Map<String, Object>> datos) {
-        if (datos.isEmpty()) {
-            return Collections.emptyList();
-        }
+    private PeriodoTemporal detectarPeriodoTemporal(ParametrosFiltrosDTO filtros) {
+        List<String> camposUsuario = filtros.getConsolidacionSeguro();
 
-        Set<String> todosLosCampos = datos.get(0).keySet();
-        List<String> camposNumericos = new ArrayList<>();
-
-        // ⭐ LISTA DE EXCLUSIÓN: Campos que nunca deben sumarse
-        Set<String> camposExcluidos = new HashSet<>(Arrays.asList(
-                "id", "ID", "Id",
-                "codigo", "legajo", "dni", "cuit", "cuil",
-                "numero_infraccion", "acta", "boleta",
-                "id_infraccion", "infraccion_id"
-        ));
-
-        log.info("🔍 Analizando campos disponibles: {}", todosLosCampos);
-
-        for (String campo : todosLosCampos) {
-            // ⭐ NUEVO: Saltar campos de identificación
-            if (camposExcluidos.contains(campo.toLowerCase())) {
-                log.info("⏭️ Campo '{}' excluido (identificador)", campo);
-                continue;
-            }
-
+        for (String campo : camposUsuario) {
             String campoNormalizado = campo.toLowerCase().trim();
 
-            boolean esNumericoPorNombre = org.transito_seguro.utils.SqlFieldDetector.esNumericoPorNombre(campo);
-            boolean esNumericoPorDatos = esNumericoEnDatos(campo, datos);
+            // Detectar MES
+            if (campoNormalizado.equals("mes") ||
+                    campoNormalizado.equals("mes_anio") ||
+                    campoNormalizado.contains("mensual")) {
+                return PeriodoTemporal.MES;
+            }
 
-            log.debug("Campo '{}' - Por nombre: {}, Por datos: {}",
-                    campo, esNumericoPorNombre, esNumericoPorDatos);
+            // Detectar AÑO
+            if (campoNormalizado.equals("anio") ||
+                    campoNormalizado.equals("año") ||
+                    campoNormalizado.equals("fecha_anio") ||
+                    campoNormalizado.contains("anual")) {
+                return PeriodoTemporal.ANIO;
+            }
 
-            if (esNumericoPorNombre || esNumericoPorDatos) {
-                camposNumericos.add(campo);
-                log.info("✅ Campo numérico detectado: '{}'", campo);
+            // Detectar DÍA
+            if (campoNormalizado.equals("dia") ||
+                    campoNormalizado.equals("día") ||
+                    campoNormalizado.equals("diario")) {
+                return PeriodoTemporal.DIA;
             }
         }
 
-        log.info("🔢 Campos numéricos finales: {}", camposNumericos);
-        return camposNumericos;
+        return null;
     }
 
     /**
-     * 📍 Agrega campos de ubicación automáticamente si son necesarios
-     */
-    private void agregarCamposUbicacionSiNecesario(List<String> camposActuales,
-                                                   Set<String> camposDisponibles) {
-
-        // Lista de campos de ubicación en orden de prioridad
-        String[] camposUbicacion = {"provincia", "municipio", "lugar", "contexto"};
-
-        for (String campo : camposUbicacion) {
-            if (!camposActuales.contains(campo) && camposDisponibles.contains(campo)) {
-                camposActuales.add(campo);
-                log.debug("Campo de ubicación agregado automáticamente: {}", campo);
-
-                // Limitar a máximo 2 campos de ubicación adicionales
-                if (camposActuales.stream().mapToLong(c -> esGeografico(c) ? 1 : 0).sum() >= 3) {
-                    break;
-                }
-            }
-        }
-    }
-
-    /**
-     * 🧮 NUEVO: Consolidación respetando el orden de campos
-     */
-    private List<Map<String, Object>> consolidarPorCamposOrdenados(
-            List<Map<String, Object>> datos,
-            List<String> camposAgrupacion,
-            List<String> camposNumericos) {
-
-        if (camposAgrupacion.isEmpty()) {
-            log.warn("Sin campos de agrupación válidos");
-            return datos;
-        }
-
-        log.info("🧮 Procesando consolidación ordenada: {} registros → agrupación por {}",
-                datos.size(), camposAgrupacion);
-
-        // Usar LinkedHashMap para mantener orden de inserción
-        Map<String, Map<String, Object>> grupos = new LinkedHashMap<>();
-        int registrosProcesados = 0;
-
-        for (Map<String, Object> registro : datos) {
-            // Crear clave respetando el ORDEN especificado por el usuario
-            String claveGrupo = crearClaveGrupoOrdenada(registro, camposAgrupacion);
-
-            Map<String, Object> grupo = grupos.computeIfAbsent(claveGrupo,
-                    k -> inicializarNuevoGrupoOrdenado(registro, camposAgrupacion, camposNumericos));
-
-            acumularCamposNumericos(grupo, registro, camposNumericos);
-
-            registrosProcesados++;
-
-            // Log de progreso cada 10,000 registros
-            if (registrosProcesados % 10000 == 0) {
-                log.debug("Procesados {} registros, {} grupos creados",
-                        registrosProcesados, grupos.size());
-            }
-        }
-
-        List<Map<String, Object>> resultado = new ArrayList<>(grupos.values());
-
-        log.info("✅ Consolidación ordenada completada: {} registros → {} grupos únicos",
-                datos.size(), resultado.size());
-
-        return resultado;
-    }
-
-    /**
-     * 📅 Aplica consolidación temporal según el período solicitado
+     * Aplica consolidación temporal según el período solicitado.
+     *
+     * Proceso:
+     * 1. Preprocesa datos agregando campos temporales derivados (mes_anio, fecha_anio)
+     * 2. Construye campos de agrupación temporal
+     * 3. Consolida datos
+     * 4. Ordena por período (más reciente primero)
+     *
+     * @param datos Datos a consolidar
+     * @param periodo Período temporal (DIA, MES, ANIO)
+     * @param filtros Filtros con configuración
+     * @param analisis Análisis de la query
+     * @return Datos consolidados temporalmente
      */
     private List<Map<String, Object>> aplicarConsolidacionTemporal(
             List<Map<String, Object>> datos,
@@ -423,24 +414,25 @@ public class ConsolidacionService {
 
         log.info("📅 Iniciando consolidación temporal por {}", periodo.getDescripcion());
 
-        // PASO 1: Preprocesar datos agregando campos temporales
+        // Preprocesar datos agregando campos temporales
         datos = preprocesarCamposTemporales(datos, periodo);
 
-        // PASO 2: Construir lista de campos de agrupación
+        // Construir lista de campos de agrupación
         List<String> camposAgrupacion = construirCamposAgrupacionTemporal(
                 datos, periodo, filtros);
 
-        // PASO 3: Detectar campos numéricos para consolidación
+        // Detectar campos numéricos
         List<String> camposNumericos = detectarCamposNumericosDinamicos(datos);
 
-        log.info("Agrupación temporal: {}, Campos numéricos: {}",
-                camposAgrupacion, camposNumericos);
+        log.info("Configuración temporal:");
+        log.info("   🔑 Agrupación: {}", camposAgrupacion);
+        log.info("   🔢 Numéricos: {}", camposNumericos);
 
-        // PASO 4: Consolidar
+        // Consolidar
         List<Map<String, Object>> resultado = consolidarPorCamposOrdenados(
                 datos, camposAgrupacion, camposNumericos);
 
-        // PASO 5: Ordenar por período (más reciente primero)
+        // Ordenar por período (más reciente primero)
         resultado = ordenarPorPeriodoTemporal(resultado, camposAgrupacion.get(0));
 
         log.info("✅ Consolidación temporal completada: {} períodos únicos", resultado.size());
@@ -449,7 +441,7 @@ public class ConsolidacionService {
     }
 
     /**
-     * 🏗️ Construye la lista de campos de agrupación para consolidación temporal
+     * Construye los campos de agrupación para consolidación temporal.
      */
     private List<String> construirCamposAgrupacionTemporal(
             List<Map<String, Object>> datos,
@@ -460,7 +452,7 @@ public class ConsolidacionService {
         Set<String> camposDisponibles = datos.isEmpty() ?
                 Collections.emptySet() : datos.get(0).keySet();
 
-        // PASO 1: Agregar campo temporal según el período
+        // Agregar campo temporal según el período
         switch (periodo) {
             case MES:
                 if (camposDisponibles.contains("mes_anio")) {
@@ -475,7 +467,6 @@ public class ConsolidacionService {
                 break;
 
             case DIA:
-                // Buscar primera columna de fecha disponible
                 Set<String> columnasFecha = detectarColumnasFecha(camposDisponibles);
                 if (!columnasFecha.isEmpty()) {
                     camposAgrupacion.add(columnasFecha.iterator().next());
@@ -483,17 +474,13 @@ public class ConsolidacionService {
                 break;
         }
 
-        // PASO 2: Agregar otros campos solicitados por el usuario (excluir el temporal)
+        // Agregar otros campos solicitados por el usuario (excluir indicadores temporales)
         List<String> camposUsuario = filtros.getConsolidacionSeguro();
         for (String campo : camposUsuario) {
             String campoNormalizado = campo.toLowerCase().trim();
 
             // Saltar indicadores temporales ya procesados
-            if (campoNormalizado.equals("mes") ||
-                    campoNormalizado.equals("anio") ||
-                    campoNormalizado.equals("año") ||
-                    campoNormalizado.equals("dia") ||
-                    campoNormalizado.equals("día")) {
+            if (campoNormalizado.matches("(mes|anio|año|dia|día|mensual|anual|diario)")) {
                 continue;
             }
 
@@ -503,8 +490,8 @@ public class ConsolidacionService {
             }
         }
 
-        // PASO 3: Si no hay otros campos, agregar ubicación geográfica por defecto
-        if (camposAgrupacion.size() == 1) { // Solo tiene el campo temporal
+        // Si solo tiene el campo temporal, agregar ubicación geográfica por defecto
+        if (camposAgrupacion.size() == 1) {
             agregarCamposUbicacionSiNecesario(camposAgrupacion, camposDisponibles);
         }
 
@@ -512,7 +499,7 @@ public class ConsolidacionService {
     }
 
     /**
-     * 🔧 Preprocesa datos agregando campos temporales derivados
+     * Preprocesa datos agregando campos temporales derivados (mes_anio, fecha_anio).
      */
     private List<Map<String, Object>> preprocesarCamposTemporales(
             List<Map<String, Object>> datos,
@@ -525,7 +512,6 @@ public class ConsolidacionService {
         log.info("🔧 Preprocesando {} registros para período: {}",
                 datos.size(), periodo.getDescripcion());
 
-        // Detectar columnas de fecha
         Set<String> columnasFecha = detectarColumnasFecha(datos.get(0).keySet());
 
         if (columnasFecha.isEmpty()) {
@@ -544,7 +530,7 @@ public class ConsolidacionService {
                 if (valorFecha != null) {
                     procesarCampoFecha(registro, valorFecha, periodo);
                     procesados++;
-                    break; // Usar solo la primera fecha encontrada
+                    break;
                 }
             }
         }
@@ -554,7 +540,7 @@ public class ConsolidacionService {
     }
 
     /**
-     * 📆 Procesa un campo de fecha y agrega campos derivados
+     * Procesa un campo de fecha y agrega campos derivados según el período.
      */
     private void procesarCampoFecha(Map<String, Object> registro,
                                     Object valorFecha,
@@ -576,13 +562,13 @@ public class ConsolidacionService {
                 break;
 
             case DIA:
-                // La fecha original ya existe, no requiere procesamiento
+                // La fecha original ya existe
                 break;
         }
     }
 
     /**
-     * 🔍 Detecta columnas que contienen fechas
+     * Detecta columnas que contienen fechas.
      */
     private Set<String> detectarColumnasFecha(Set<String> columnas) {
         return columnas.stream()
@@ -597,21 +583,13 @@ public class ConsolidacionService {
     }
 
     /**
-     * 📆 Extrae mes-año en formato "YYYY-MM"
+     * Extrae mes-año en formato "YYYY-MM".
      */
     private String extraerMesAnio(Object fecha) {
         try {
-            if (fecha instanceof java.sql.Date) {
-                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM");
-                return sdf.format((java.sql.Date) fecha);
-            }
-
-            if (fecha instanceof java.sql.Timestamp) {
-                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM");
-                return sdf.format((java.sql.Timestamp) fecha);
-            }
-
-            if (fecha instanceof java.util.Date) {
+            if (fecha instanceof java.sql.Date ||
+                    fecha instanceof java.sql.Timestamp ||
+                    fecha instanceof java.util.Date) {
                 java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM");
                 return sdf.format((java.util.Date) fecha);
             }
@@ -619,16 +597,16 @@ public class ConsolidacionService {
             if (fecha instanceof String) {
                 String strFecha = fecha.toString().trim();
 
-                // Formato ISO: "2025-01-15" o "2025-01-15 10:30:00"
+                // Formato ISO: "2025-01-15"
                 if (strFecha.matches("\\d{4}-\\d{2}-\\d{2}.*")) {
-                    return strFecha.substring(0, 7); // "2025-01"
+                    return strFecha.substring(0, 7);
                 }
 
                 // Formato español: "15/01/2025"
                 if (strFecha.matches("\\d{2}/\\d{2}/\\d{4}.*")) {
                     String anio = strFecha.substring(6, 10);
                     String mes = strFecha.substring(3, 5);
-                    return anio + "-" + mes; // "2025-01"
+                    return anio + "-" + mes;
                 }
             }
         } catch (Exception e) {
@@ -638,17 +616,16 @@ public class ConsolidacionService {
     }
 
     /**
-     * 📆 Extrae mes (1-12)
+     * Extrae mes (1-12).
      */
     private Integer extraerMes(Object fecha) {
         try {
             if (fecha instanceof java.sql.Date ||
                     fecha instanceof java.sql.Timestamp ||
                     fecha instanceof java.util.Date) {
-
                 java.util.Calendar cal = java.util.Calendar.getInstance();
                 cal.setTime((java.util.Date) fecha);
-                return cal.get(java.util.Calendar.MONTH) + 1; // 0-based
+                return cal.get(java.util.Calendar.MONTH) + 1;
             }
 
             if (fecha instanceof String) {
@@ -671,14 +648,13 @@ public class ConsolidacionService {
     }
 
     /**
-     * 📆 Extrae año
+     * Extrae año.
      */
     private Integer extraerAnio(Object fecha) {
         try {
             if (fecha instanceof java.sql.Date ||
                     fecha instanceof java.sql.Timestamp ||
                     fecha instanceof java.util.Date) {
-
                 java.util.Calendar cal = java.util.Calendar.getInstance();
                 cal.setTime((java.util.Date) fecha);
                 return cal.get(java.util.Calendar.YEAR);
@@ -704,7 +680,7 @@ public class ConsolidacionService {
     }
 
     /**
-     * 📊 Ordena resultados por período temporal (más reciente primero)
+     * Ordena resultados por período temporal (más reciente primero).
      */
     private List<Map<String, Object>> ordenarPorPeriodoTemporal(
             List<Map<String, Object>> datos,
@@ -725,8 +701,309 @@ public class ConsolidacionService {
         return datos;
     }
 
+    // =============== DETECCIÓN DE CAMPOS ===============
+
     /**
-     * 🔑 Crea clave de grupo manteniendo el orden especificado
+     * Detecta automáticamente campos numéricos en los datos.
+     * Excluye campos de identificación (id, codigo, dni, etc.)
+     *
+     * @param datos Datos a analizar
+     * @return Lista de campos numéricos detectados
+     */
+    private List<String> detectarCamposNumericosDinamicos(List<Map<String, Object>> datos) {
+        if (datos.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        Set<String> todosLosCampos = datos.get(0).keySet();
+        List<String> camposNumericos = new ArrayList<>();
+
+        // Campos que nunca deben sumarse
+        Set<String> camposExcluidos = new HashSet<>(Arrays.asList(
+                "id", "ID", "Id",
+                "codigo", "legajo", "dni", "cuit", "cuil",
+                "numero_infraccion", "acta", "boleta",
+                "id_infraccion", "infraccion_id"
+        ));
+
+        log.info("🔍 Analizando campos disponibles: {}", todosLosCampos);
+
+        for (String campo : todosLosCampos) {
+            // Saltar campos de identificación
+            if (camposExcluidos.contains(campo.toLowerCase())) {
+                log.info("⏭️ Campo '{}' excluido (identificador)", campo);
+                continue;
+            }
+
+            boolean esNumericoPorNombre = org.transito_seguro.utils.SqlFieldDetector.esNumericoPorNombre(campo);
+            boolean esNumericoPorDatos = esNumericoEnDatos(campo, datos);
+
+            log.debug("Campo '{}' - Por nombre: {}, Por datos: {}",
+                    campo, esNumericoPorNombre, esNumericoPorDatos);
+
+            if (esNumericoPorNombre || esNumericoPorDatos) {
+                camposNumericos.add(campo);
+                log.info("✅ Campo numérico detectado: '{}'", campo);
+            }
+        }
+
+        log.info("🔢 Campos numéricos finales: {}", camposNumericos);
+        return camposNumericos;
+    }
+
+    /**
+     * Verifica si un campo es numérico analizando sus valores en los datos.
+     *
+     * @param campo Nombre del campo
+     * @param datos Datos a analizar
+     * @return true si el campo es numérico
+     */
+    private boolean esNumericoEnDatos(String campo, List<Map<String, Object>> datos) {
+        if (datos.isEmpty()) {
+            return false;
+        }
+
+        int contadorNumerico = 0;
+        int contadorNoNulo = 0;
+        int muestra = Math.min(TAMAÑO_MUESTRA, datos.size());
+
+        for (int i = 0; i < muestra; i++) {
+            Object valor = datos.get(i).get(campo);
+
+            if (valor != null) {
+                contadorNoNulo++;
+
+                if (esValorNumerico(valor)) {
+                    contadorNumerico++;
+
+                    if (i < 5) {
+                        log.trace("  Muestra[{}] campo '{}' = {} (tipo: {})",
+                                i, campo, valor, valor.getClass().getSimpleName());
+                    }
+                }
+            }
+        }
+
+        if (contadorNoNulo < MIN_MUESTRA_NUMERICA) {
+            log.debug("  ⚠️ Campo '{}' tiene pocos valores no nulos ({} < {})",
+                    campo, contadorNoNulo, MIN_MUESTRA_NUMERICA);
+            return false;
+        }
+
+        double porcentajeNumerico = (double) contadorNumerico / contadorNoNulo;
+        boolean esNumerico = porcentajeNumerico > UMBRAL_NUMERICO;
+
+        log.debug("  📊 Análisis campo '{}': {}/{} valores numéricos ({}%) → {}",
+                campo, contadorNumerico, contadorNoNulo,
+                String.format("%.1f", porcentajeNumerico * 100),
+                esNumerico ? "NUMÉRICO" : "NO NUMÉRICO");
+
+        return esNumerico;
+    }
+
+    /**
+     * Verifica si un valor individual es numérico.
+     */
+    private boolean esValorNumerico(Object valor) {
+        if (valor instanceof Number) {
+            return true;
+        }
+
+        if (valor instanceof String) {
+            try {
+                Double.parseDouble(valor.toString().trim());
+                return true;
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Verifica si un campo es geográfico.
+     */
+    private boolean esGeografico(String campo) {
+        return org.transito_seguro.utils.SqlFieldDetector.esGeografico(campo);
+    }
+
+    /**
+     * Verifica si un campo es categórico.
+     */
+    private boolean esCategorico(String campo) {
+        return org.transito_seguro.utils.SqlFieldDetector.esCategorico(campo);
+    }
+
+    /**
+     * Verifica si un campo es categórico puro (no geográfico).
+     */
+    private boolean esCategoricoPuro(String campo) {
+        if (campo == null || campo.trim().isEmpty()) {
+            return false;
+        }
+
+        String campoNormalizado = campo.toLowerCase().trim();
+
+        Set<String> camposCategoricos = new HashSet<>(Arrays.asList(
+                "descripcion", "descripción",
+                "estado", "status",
+                "tipo", "type",
+                "categoria", "category",
+                "clase", "class",
+                "articulo", "artículo",
+                "infraccion", "infracción",
+                "gravedad",
+                "tipo_vehiculo", "tipo_vehículo"
+        ));
+
+        if (esGeografico(campo)) {
+            return false;
+        }
+
+        return camposCategoricos.contains(campoNormalizado);
+    }
+
+    /**
+     * Agrega campos de ubicación complementarios si son necesarios.
+     * Se usa en estrategia MIXTA para completar la jerarquía geográfica.
+     *
+     * @param camposActuales Lista actual de campos
+     * @param camposDisponibles Campos disponibles en los datos
+     */
+    private void agregarCamposUbicacionSiNecesario(List<String> camposActuales,
+                                                   Set<String> camposDisponibles) {
+
+        // Si ya tiene suficientes campos geográficos, no agregar más
+        long camposGeograficosActuales = camposActuales.stream()
+                .filter(this::esGeografico)
+                .count();
+
+        if (camposGeograficosActuales >= 2) {
+            log.debug("Ya tiene {} campos geográficos, no se agregarán más",
+                    camposGeograficosActuales);
+            return;
+        }
+
+        String[] camposUbicacion = {"provincia", "municipio", "lugar", "contexto"};
+
+        int camposAgregados = 0;
+        int maxCamposAgregar = 2 - (int) camposGeograficosActuales;
+
+        for (String campo : camposUbicacion) {
+            if (!camposActuales.contains(campo) && camposDisponibles.contains(campo)) {
+                camposActuales.add(campo);
+                camposAgregados++;
+                log.debug("Campo de ubicación agregado automáticamente: {}", campo);
+
+                if (camposAgregados >= maxCamposAgregar) {
+                    break;
+                }
+            }
+        }
+
+        if (camposAgregados > 0) {
+            log.info("✅ Agregados {} campos geográficos complementarios", camposAgregados);
+        }
+    }
+
+    // =============== CONSOLIDACIÓN CORE ===============
+
+    /**
+     * Consolida datos respetando el orden de campos especificado.
+     *
+     * Proceso:
+     * 1. Agrupa registros por los campos de agrupación
+     * 2. Suma los valores de los campos numéricos
+     * 3. Mantiene el primer valor de los campos de agrupación
+     *
+     * @param datos Datos a consolidar
+     * @param camposAgrupacion Campos por los que agrupar
+     * @param camposNumericos Campos a sumar
+     * @return Datos consolidados
+     */
+    private List<Map<String, Object>> consolidarPorCamposOrdenados(
+            List<Map<String, Object>> datos,
+            List<String> camposAgrupacion,
+            List<String> camposNumericos) {
+
+        if (camposAgrupacion.isEmpty()) {
+            log.warn("Sin campos de agrupación válidos");
+            return datos;
+        }
+
+        log.info("🧮 ==================== INICIO CONSOLIDACIÓN ====================");
+        log.info("   📊 Total registros de entrada: {}", datos.size());
+        log.info("   🔑 Campos de agrupación: {}", camposAgrupacion);
+        log.info("   🔢 Campos numéricos a sumar: {}", camposNumericos);
+
+        if (!datos.isEmpty()) {
+            log.info("   📋 Campos disponibles en datos: {}", datos.get(0).keySet());
+        }
+
+        // Usar LinkedHashMap para mantener orden de inserción
+        Map<String, Map<String, Object>> grupos = new LinkedHashMap<>();
+        int registrosProcesados = 0;
+
+        for (Map<String, Object> registro : datos) {
+            // Crear clave respetando el ORDEN especificado
+            String claveGrupo = crearClaveGrupoOrdenada(registro, camposAgrupacion);
+
+            // Si es el primer registro del grupo, inicializar
+            if (!grupos.containsKey(claveGrupo)) {
+                Map<String, Object> nuevoGrupo = inicializarNuevoGrupoOrdenado(
+                        registro, camposAgrupacion, camposNumericos);
+                grupos.put(claveGrupo, nuevoGrupo);
+
+                // Log de los primeros 3 grupos
+                if (grupos.size() <= 3) {
+                    log.info("   📦 Grupo #{} creado:", grupos.size());
+                    log.info("      🔑 Clave: {}", claveGrupo);
+                    log.info("      📄 Contenido: {}", nuevoGrupo);
+                }
+            } else {
+                // Acumular valores numéricos
+                Map<String, Object> grupoExistente = grupos.get(claveGrupo);
+                acumularCamposNumericos(grupoExistente, registro, camposNumericos);
+            }
+
+            registrosProcesados++;
+
+            // Log de progreso cada 10,000 registros
+            if (registrosProcesados % 10000 == 0) {
+                log.debug("   ⏳ Procesados {} registros, {} grupos creados",
+                        registrosProcesados, grupos.size());
+            }
+        }
+
+        List<Map<String, Object>> resultado = new ArrayList<>(grupos.values());
+
+        log.info("✅ ==================== FIN CONSOLIDACIÓN ====================");
+        log.info("   📥 Registros originales: {}", datos.size());
+        log.info("   📤 Grupos consolidados: {}", resultado.size());
+        log.info("   📉 Factor de reducción: {}x",
+                String.format("%.2f", datos.size() > 0 ? (double) datos.size() / resultado.size() : 0));
+
+        if (!resultado.isEmpty()) {
+            log.info("   📋 Campos en resultado final: {}", resultado.get(0).keySet());
+            if (resultado.size() <= 5) {
+                log.info("   📊 Muestra de resultados:");
+                for (int i = 0; i < Math.min(3, resultado.size()); i++) {
+                    log.info("      Resultado #{}: {}", i + 1, resultado.get(i));
+                }
+            }
+        }
+        log.info("================================================================");
+
+        return resultado;
+    }
+
+    /**
+     * Crea una clave única para agrupar registros.
+     *
+     * @param registro Registro a procesar
+     * @param camposAgrupacion Campos que forman la clave
+     * @return Clave concatenada
      */
     private String crearClaveGrupoOrdenada(Map<String, Object> registro,
                                            List<String> camposAgrupacion) {
@@ -735,11 +1012,16 @@ public class ConsolidacionService {
                     Object valor = registro.get(campo);
                     return valor != null ? valor.toString() : "NULL";
                 })
-                .collect(Collectors.joining("||")); // Separador más distintivo
+                .collect(Collectors.joining("||"));
     }
 
     /**
-     * 🏗️ Inicializa grupo manteniendo el orden de campos
+     * Inicializa un nuevo grupo con los campos de agrupación y numéricos.
+     *
+     * @param registro Primer registro del grupo
+     * @param camposAgrupacion Campos de agrupación
+     * @param camposNumericos Campos numéricos
+     * @return Nuevo grupo inicializado
      */
     private Map<String, Object> inicializarNuevoGrupoOrdenado(
             Map<String, Object> registro,
@@ -748,37 +1030,218 @@ public class ConsolidacionService {
 
         Map<String, Object> grupo = new LinkedHashMap<>();
 
-        // Campos de agrupación
+        // Agregar campos de agrupación
         for (String campo : camposAgrupacion) {
-            grupo.put(campo, registro.get(campo));
+            Object valor = registro.get(campo);
+            grupo.put(campo, valor);
+            log.trace("   📋 Campo agrupación '{}' = {}", campo, valor);
         }
 
-        // ✅ CORRECCIÓN CRÍTICA: Inicializar campos numéricos con el valor del registro actual
+        // Inicializar campos numéricos con el valor del registro actual
         for (String campo : camposNumericos) {
             Object valorOriginal = registro.get(campo);
             Long valorInicial = convertirALong(valorOriginal);
 
-            // ⚠️ IMPORTANTE: Usar el valor real del primer registro, no 0
             grupo.put(campo, valorInicial != null ? valorInicial : 0L);
 
-            log.debug("Inicializado campo numérico '{}': {} -> {}",
+            log.trace("   🔢 Campo numérico '{}': {} -> {}",
                     campo, valorOriginal, valorInicial);
         }
 
         return grupo;
     }
 
-    // =============== MÉTODOS DE CLASIFICACIÓN MEJORADOS ===============
+    /**
+     * Acumula valores numéricos de un registro en un grupo existente.
+     *
+     * @param grupo Grupo existente
+     * @param registro Registro a acumular
+     * @param camposNumericos Campos a sumar
+     */
+    private void acumularCamposNumericos(Map<String, Object> grupo,
+                                         Map<String, Object> registro,
+                                         List<String> camposNumericos) {
 
-    private boolean esGeografico(String campo) {
-        return org.transito_seguro.utils.SqlFieldDetector.esGeografico(campo);
+        for (String campo : camposNumericos) {
+            Object valorRegistro = registro.get(campo);
+            Object valorGrupo = grupo.get(campo);
+
+            Long valorNumericoRegistro = convertirALong(valorRegistro);
+            Long valorNumericoGrupo = convertirALong(valorGrupo);
+
+            Long nuevoValor = valorNumericoGrupo + valorNumericoRegistro;
+            grupo.put(campo, nuevoValor);
+
+            log.trace("Acumulación - Campo: '{}', Grupo: {} + Registro: {} = {}",
+                    campo, valorNumericoGrupo, valorNumericoRegistro, nuevoValor);
+        }
     }
 
-    private boolean esCategorico(String campo) {
-        return org.transito_seguro.utils.SqlFieldDetector.esCategorico(campo);
+    /**
+     * Convierte un valor a Long para operaciones numéricas.
+     *
+     * @param valor Valor a convertir
+     * @return Valor como Long o 0L si no es convertible
+     */
+    private Long convertirALong(Object valor) {
+        if (valor == null) {
+            return 0L;
+        }
+
+        if (valor instanceof Number) {
+            return ((Number) valor).longValue();
+        }
+
+        if (valor instanceof String) {
+            String str = valor.toString().trim();
+            if (str.isEmpty()) {
+                return 0L;
+            }
+            try {
+                // Manejar números con decimales
+                if (str.matches("^\\d+\\.\\d+$")) {
+                    return Long.parseLong(str.split("\\.")[0]);
+                }
+                return Long.parseLong(str);
+            } catch (NumberFormatException e) {
+                log.warn("Error convirtiendo '{}' a Long: {}", str, e.getMessage());
+                return 0L;
+            }
+        }
+
+        log.debug("Tipo no soportado para conversión: {} valor: {}",
+                valor.getClass().getSimpleName(), valor);
+        return 0L;
     }
 
-    // =============== MÉTODOS EXISTENTES (MANTENIDOS PARA COMPATIBILIDAD) ===============
+    // =============== MÉTODOS DE RECOPILACIÓN Y NORMALIZACIÓN ===============
+
+    /**
+     * Recopila datos de todos los repositorios (provincias).
+     *
+     * @param repositories Lista de repositorios
+     * @param nombreQuery Nombre de la query
+     * @param filtros Filtros a aplicar
+     * @return Lista consolidada de datos de todas las provincias
+     */
+    private List<Map<String, Object>> recopilarDatos(List<InfraccionesRepositoryImpl> repositories,
+                                                     String nombreQuery,
+                                                     ParametrosFiltrosDTO filtros) {
+
+        log.info("Recopilando datos para consolidación de {} provincias", repositories.size());
+        List<Map<String, Object>> todosLosDatos = new ArrayList<>();
+
+        for (InfraccionesRepositoryImpl repo : repositories) {
+            String provincia = repo.getProvincia();
+
+            try {
+                List<Map<String, Object>> datosProvider = repo.ejecutarQueryConFiltros(nombreQuery, filtros);
+
+                if (datosProvider != null && !datosProvider.isEmpty()) {
+                    // Agregar provincia a cada registro
+                    for (Map<String, Object> registro : datosProvider) {
+                        registro.put("provincia", provincia);
+                        registro.put("provincia_origen", provincia);
+                    }
+
+                    todosLosDatos.addAll(datosProvider);
+                    log.debug("Provincia {}: {} registros recopilados", provincia, datosProvider.size());
+                }
+
+            } catch (Exception e) {
+                log.error("Error recopilando datos de provincia {}: {}", provincia, e.getMessage());
+            }
+        }
+
+        log.info("Recopilación completada: {} registros de {} provincias",
+                todosLosDatos.size(), repositories.size());
+
+        return todosLosDatos;
+    }
+
+    /**
+     * Normaliza nombres de provincias en todos los registros.
+     *
+     * @param datos Datos a normalizar
+     * @return Datos con provincias normalizadas
+     */
+    private List<Map<String, Object>> normalizarProvinciasEnDatos(List<Map<String, Object>> datos) {
+        log.debug("Normalizando nombres de provincias en {} registros", datos.size());
+
+        for (Map<String, Object> registro : datos) {
+            String provincia = obtenerProvinciaDelRegistro(registro);
+            String provinciaNormalizada = NormalizadorProvincias.normalizar(provincia);
+
+            registro.put("provincia", provinciaNormalizada);
+            registro.put("provincia_origen", provinciaNormalizada);
+        }
+
+        return datos;
+    }
+
+    /**
+     * Obtiene el nombre de provincia de un registro.
+     *
+     * @param registro Registro a procesar
+     * @return Nombre de la provincia
+     */
+    private String obtenerProvinciaDelRegistro(Map<String, Object> registro) {
+        String[] camposProvincia = {"provincia", "provincia_origen", "contexto"};
+
+        for (String campo : camposProvincia) {
+            Object valor = registro.get(campo);
+            if (valor != null && !valor.toString().trim().isEmpty()) {
+                return valor.toString().trim();
+            }
+        }
+
+        return "SIN_PROVINCIA";
+    }
+
+    /**
+     * Aplica límites de paginación a los resultados.
+     *
+     * @param datos Datos a limitar
+     * @param filtros Filtros con configuración de límites
+     * @return Datos con límites aplicados
+     */
+    private List<Map<String, Object>> aplicarLimites(List<Map<String, Object>> datos,
+                                                     ParametrosFiltrosDTO filtros) {
+
+        int limite = filtros.getLimiteEfectivo();
+        int offset = filtros.calcularOffset();
+
+        log.debug("Aplicando límites - Offset: {}, Límite: {}, Datos disponibles: {}",
+                offset, limite, datos.size());
+
+        if (offset > 0 && offset < datos.size()) {
+            datos = datos.subList(offset, datos.size());
+        }
+
+        if (limite > 0 && limite < datos.size()) {
+            datos = datos.subList(0, limite);
+        }
+
+        log.debug("Límites aplicados - Registros finales: {}", datos.size());
+        return datos;
+    }
+
+    /**
+     * Obtiene el análisis de consolidación para una query.
+     *
+     * @param nombreQuery Nombre de la query
+     * @return Análisis de consolidación
+     */
+    private AnalisisConsolidacion obtenerAnalisisConsolidacion(String nombreQuery) {
+        try {
+            return queryRegistryService.obtenerAnalisisConsolidacion(nombreQuery);
+        } catch (Exception e) {
+            log.error("Error obteniendo análisis para query '{}': {}", nombreQuery, e.getMessage());
+            return crearAnalisisVacio();
+        }
+    }
+
+    // =============== MÉTODOS LEGACY (COMPATIBILIDAD) ===============
 
     /**
      * Valida si una consulta puede ser consolidada.
@@ -794,7 +1257,7 @@ public class ConsolidacionService {
     }
 
     /**
-     * Valida si una query específica puede ser consolidada consultando el Registry.
+     * Valida si una query específica puede ser consolidada.
      */
     public boolean puedeSerConsolidada(String nombreQuery) {
         try {
@@ -825,224 +1288,9 @@ public class ConsolidacionService {
         return datos;
     }
 
-    // =============== MÉTODOS INTERNOS EXISTENTES (SIMPLIFICADOS) ===============
-
-    private AnalisisConsolidacion obtenerAnalisisConsolidacion(String nombreQuery) {
-        try {
-            return queryRegistryService.obtenerAnalisisConsolidacion(nombreQuery);
-        } catch (Exception e) {
-            log.error("Error obteniendo análisis para query '{}': {}", nombreQuery, e.getMessage());
-            return crearAnalisisVacio();
-        }
-    }
-
-    private List<Map<String, Object>> recopilarDatos(List<InfraccionesRepositoryImpl> repositories,
-                                                     String nombreQuery,
-                                                     ParametrosFiltrosDTO filtros) {
-
-        log.info("Recopilando datos para consolidación de {} provincias", repositories.size());
-        List<Map<String, Object>> todosLosDatos = new ArrayList<>();
-
-        for (InfraccionesRepositoryImpl repo : repositories) {
-            String provincia = repo.getProvincia();
-
-            try {
-                List<Map<String, Object>> datosProvider = repo.ejecutarQueryConFiltros(nombreQuery, filtros);
-
-                if (datosProvider != null && !datosProvider.isEmpty()) {
-                    for (Map<String, Object> registro : datosProvider) {
-                        registro.put("provincia", provincia);
-                        registro.put("provincia_origen", provincia);
-                    }
-
-                    todosLosDatos.addAll(datosProvider);
-                    log.debug("Provincia {}: {} registros recopilados", provincia, datosProvider.size());
-                }
-
-            } catch (Exception e) {
-                log.error("Error recopilando datos de provincia {}: {}", provincia, e.getMessage());
-            }
-        }
-
-        log.info("Recopilación completada: {} registros de {} provincias",
-                todosLosDatos.size(), repositories.size());
-
-        return todosLosDatos;
-    }
-
-    private List<Map<String, Object>> normalizarProvinciasEnDatos(List<Map<String, Object>> datos) {
-        log.debug("Normalizando nombres de provincias en {} registros", datos.size());
-
-        for (Map<String, Object> registro : datos) {
-            String provincia = obtenerProvinciaDelRegistro(registro);
-            String provinciaNormalizada = NormalizadorProvincias.normalizar(provincia);
-
-            registro.put("provincia", provinciaNormalizada);
-            registro.put("provincia_origen", provinciaNormalizada);
-        }
-
-        return datos;
-    }
-
-    private String obtenerProvinciaDelRegistro(Map<String, Object> registro) {
-        String[] camposProvincia = {"provincia", "provincia_origen", "contexto"};
-
-        for (String campo : camposProvincia) {
-            Object valor = registro.get(campo);
-            if (valor != null && !valor.toString().trim().isEmpty()) {
-                return valor.toString().trim();
-            }
-        }
-
-        return "SIN_PROVINCIA";
-    }
-
-    private List<Map<String, Object>> aplicarLimites(List<Map<String, Object>> datos,
-                                                     ParametrosFiltrosDTO filtros) {
-
-        int limite = filtros.getLimiteEfectivo();
-        int offset = filtros.calcularOffset();
-
-        log.debug("Aplicando límites - Offset: {}, Límite: {}, Datos disponibles: {}",
-                offset, limite, datos.size());
-
-        if (offset > 0 && offset < datos.size()) {
-            datos = datos.subList(offset, datos.size());
-        }
-
-        if (limite > 0 && limite < datos.size()) {
-            datos = datos.subList(0, limite);
-        }
-
-        log.debug("Límites aplicados - Registros finales: {}", datos.size());
-        return datos;
-    }
-
-    private void acumularCamposNumericos(Map<String, Object> grupo,
-                                         Map<String, Object> registro,
-                                         List<String> camposNumericos) {
-
-        for (String campo : camposNumericos) {
-            Object valorRegistro = registro.get(campo);
-            Object valorGrupo = grupo.get(campo);
-
-            Long valorNumericoRegistro = convertirALong(valorRegistro);
-            Long valorNumericoGrupo = convertirALong(valorGrupo);
-
-            Long nuevoValor = valorNumericoGrupo + valorNumericoRegistro;
-            grupo.put(campo, nuevoValor);
-
-            // ✅ LOG DETALLADO para debugging
-            log.trace("Acumulación - Campo: '{}', Grupo: {} + Registro: {} = {}",
-                    campo, valorNumericoGrupo, valorNumericoRegistro, nuevoValor);
-        }
-    }
-
-    private Long convertirALong(Object valor) {
-        if (valor == null) {
-            return 0L;
-        }
-
-        // ✅ MEJORA: Manejar específicamente count(*) y otros campos de agregación SQL
-        if (valor instanceof Number) {
-            return ((Number) valor).longValue();
-        }
-
-        if (valor instanceof String) {
-            String str = valor.toString().trim();
-            if (str.isEmpty()) {
-                return 0L;
-            }
-            try {
-                // Manejar números con formato de base de datos
-                if (str.matches("^\\d+\\.\\d+$")) {
-                    return Long.parseLong(str.split("\\.")[0]);
-                }
-                return Long.parseLong(str);
-            } catch (NumberFormatException e) {
-                log.warn("Error convirtiendo '{}' a Long: {}", str, e.getMessage());
-                return 0L;
-            }
-        }
-
-        // ✅ MEJORA: Log más informativo
-        log.debug("Tipo no soportado para conversión: {} valor: {}",
-                valor.getClass().getSimpleName(), valor);
-        return 0L;
-    }
-
-    private Long obtenerValorLong(Object valor) {
-        if (valor instanceof Number) {
-            return ((Number) valor).longValue();
-        }
-        return 0L;
-    }
-
-    private boolean esNumericoEnDatos(String campo, List<Map<String, Object>> datos) {
-        if (datos.isEmpty()) {
-            return false;
-        }
-
-        int contadorNumerico = 0;
-        int contadorNoNulo = 0;
-        int muestra = Math.min(TAMAÑO_MUESTRA, datos.size());
-
-        // ✅ MEJORA: Analizar muestra más grande para mayor precisión
-        for (int i = 0; i < muestra; i++) {
-            Object valor = datos.get(i).get(campo);
-
-            if (valor != null) {
-                contadorNoNulo++;
-
-                if (esValorNumerico(valor)) {
-                    contadorNumerico++;
-
-                    // ✅ MEJORA: Log detallado para debugging
-                    if (i < 5) { // Solo los primeros 5 para no saturar logs
-                        log.trace("  Muestra[{}] campo '{}' = {} (tipo: {})",
-                                i, campo, valor, valor.getClass().getSimpleName());
-                    }
-                }
-            }
-        }
-
-        // ✅ MEJORA: Validación más estricta
-        if (contadorNoNulo < MIN_MUESTRA_NUMERICA) {
-            log.debug("  ⚠️ Campo '{}' tiene pocos valores no nulos ({} < {})",
-                    campo, contadorNoNulo, MIN_MUESTRA_NUMERICA);
-            return false;
-        }
-
-        double porcentajeNumerico = (double) contadorNumerico / contadorNoNulo;
-        boolean esNumerico = porcentajeNumerico > UMBRAL_NUMERICO;
-
-        log.debug("  📊 Análisis campo '{}': {}/{} valores numéricos ({}%) → {}",
-                campo, contadorNumerico, contadorNoNulo,
-                String.format("%.1f", porcentajeNumerico * 100),
-                esNumerico ? "NUMÉRICO" : "NO NUMÉRICO");
-
-        return esNumerico;
-    }
-
-    private boolean esValorNumerico(Object valor) {
-        if (valor instanceof Number) {
-            return true;
-        }
-
-        if (valor instanceof String) {
-            try {
-                Double.parseDouble(valor.toString().trim());
-                return true;
-            } catch (NumberFormatException e) {
-                return false;
-            }
-        }
-
-        return false;
-    }
-
-    // =============== MÉTODOS LEGACY PARA COMPATIBILIDAD ===============
-
+    /**
+     * Determina campos de agrupación según preferencias del usuario (legacy).
+     */
     private List<String> determinarCamposAgrupacionLegacy(ParametrosFiltrosDTO filtros,
                                                           AnalisisConsolidacion analisis) {
         List<String> preferenciasUsuario = filtros.getConsolidacionSeguro();
@@ -1058,6 +1306,9 @@ public class ConsolidacionService {
         return campos;
     }
 
+    /**
+     * Determina campos numéricos según análisis o detección dinámica (legacy).
+     */
     private List<String> determinarCamposNumericosLegacy(List<Map<String, Object>> datos,
                                                          AnalisisConsolidacion analisis) {
         if (!analisis.getCamposNumericos().isEmpty()) {
@@ -1066,46 +1317,14 @@ public class ConsolidacionService {
         return detectarCamposNumericosDinamicos(datos);
     }
 
+    /**
+     * Consolidación tradicional (legacy).
+     */
     private List<Map<String, Object>> consolidarPorCamposTradicional(
             List<Map<String, Object>> datos,
             List<String> camposAgrupacion,
             List<String> camposNumericos) {
 
         return consolidarPorCamposOrdenados(datos, camposAgrupacion, camposNumericos);
-    }
-
-    /**
-     * Detectar si se solicita consolidacion temporal
-     * */
-    private PeriodoTemporal detectarPeriodoTemporal(ParametrosFiltrosDTO filtros){
-        List<String> camposUsuario = filtros.getConsolidacionSeguro();
-
-        for (String campo : camposUsuario) {
-            String campoNormalizado = campo.toLowerCase().trim();
-
-            // Detectar MES
-            if (campoNormalizado.equals("mes") ||
-                    campoNormalizado.equals("mes_anio") ||
-                    campoNormalizado.contains("mensual")) {
-                return PeriodoTemporal.MES;
-            }
-
-            // Detectar AÑO
-            if (campoNormalizado.equals("anio") ||
-                    campoNormalizado.equals("año") ||
-                    campoNormalizado.equals("fecha_anio") ||
-                    campoNormalizado.contains("anual")) {
-                return PeriodoTemporal.ANIO;
-            }
-
-            // Detectar DÍA (explícito)
-            if (campoNormalizado.equals("dia") ||
-                    campoNormalizado.equals("día") ||
-                    campoNormalizado.equals("diario")) {
-                return PeriodoTemporal.DIA;
-            }
-        }
-
-        return null; // No se detectó consolidación temporal
     }
 }
