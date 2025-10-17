@@ -928,13 +928,13 @@ public class DynamicBuilderQuery {
 
         switch (tipo) {
             case FECHA:
-                // 1. Remover BETWEEN (debe ir primero porque incluye AND)
+                // 1. Remover BETWEEN (debe ir primero)
                 sql = sql.replaceAll(
                         "(?i)" + escapado + "\\s+BETWEEN\\s+(?:DATE\\s+)?(?:'[^']*'|TO_DATE\\([^)]+\\))\\s+AND\\s+(?:DATE\\s+)?(?:'[^']*'|TO_DATE\\([^)]+\\))",
                         ""
                 );
 
-                // 2. Remover comparaciones simples con fechas literales
+                // 2. Remover comparaciones con fechas literales
                 sql = sql.replaceAll(
                         "(?i)" + escapado + "\\s*(?:>=|>|<=|<|=)\\s*(?:DATE\\s+)?'[^']*'",
                         ""
@@ -946,7 +946,19 @@ public class DynamicBuilderQuery {
                         ""
                 );
 
-                // 4. Remover comparaciones con CAST/CONVERT a DATE
+                // 4. ✅ NUEVO: Remover comparaciones con now() ± interval
+                sql = sql.replaceAll(
+                        "(?i)" + escapado + "\\s*(?:>=|>|<=|<|=)\\s*now\\s*\\(\\s*\\)\\s*[+-]\\s*interval\\s+'[^']*'",
+                        ""
+                );
+
+                // 5. ✅ NUEVO: Remover comparaciones con CURRENT_DATE/CURRENT_TIMESTAMP
+                sql = sql.replaceAll(
+                        "(?i)" + escapado + "\\s*(?:>=|>|<=|<|=)\\s*(?:CURRENT_DATE|CURRENT_TIMESTAMP)(?:\\s*[+-]\\s*interval\\s+'[^']*')?",
+                        ""
+                );
+
+                // 6. Remover comparaciones con CAST/CONVERT
                 sql = sql.replaceAll(
                         "(?i)" + escapado + "\\s*(?:>=|>|<=|<|=)\\s*(?:CAST|CONVERT)\\s*\\([^)]+\\)",
                         ""
@@ -1092,18 +1104,53 @@ public class DynamicBuilderQuery {
      * @return SQL con filtros insertados
      */
     private String insertarFiltros(String sql, String filtros) {
-        Pattern p = Pattern.compile(
-                "(.*?)(\\s+(GROUP BY|ORDER BY|LIMIT).*)$",
-                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
-        );
+        log.debug("🔧 Insertando filtros dinámicos (versión robusta)");
 
-        Matcher m = p.matcher(sql);
-        if (m.matches()) {
-            return m.group(1).trim() + "\n" + filtros + "\n" + m.group(2);
+        // PASO 1: Encontrar la posición de GROUP BY, ORDER BY o LIMIT
+        String upper = sql.toUpperCase();
+
+        int posGroupBy = upper.indexOf("GROUP BY");
+        int posOrderBy = upper.indexOf("ORDER BY");
+        int posLimit = upper.indexOf("LIMIT");
+
+        // Encontrar la primera ocurrencia de cualquiera de estos
+        int posInsercion = sql.length(); // Por defecto, al final
+
+        if (posGroupBy > 0 && posGroupBy < posInsercion) {
+            posInsercion = posGroupBy;
+        }
+        if (posOrderBy > 0 && posOrderBy < posInsercion) {
+            posInsercion = posOrderBy;
+        }
+        if (posLimit > 0 && posLimit < posInsercion) {
+            posInsercion = posLimit;
         }
 
-        // Si no hay GROUP BY/ORDER BY/LIMIT, agregar al final
-        return sql + "\n" + filtros;
+        // PASO 2: Buscar WHERE antes de la posición de inserción
+        int posWhere = upper.lastIndexOf("WHERE", posInsercion);
+
+        String filtrosParaInsertar;
+
+        if (posWhere >= 0) {
+            // Hay WHERE, convertir a AND
+            log.debug("✅ WHERE encontrado en posición {}, usando AND", posWhere);
+            filtrosParaInsertar = filtros.replaceFirst("(?i)^\\s*WHERE\\s+", "  AND ");
+        } else {
+            // No hay WHERE
+            log.debug("⚠️ No hay WHERE, insertando nuevo WHERE");
+            filtrosParaInsertar = filtros;
+        }
+
+        // PASO 3: Insertar en la posición correcta
+        if (posInsercion < sql.length()) {
+            String parteAntes = sql.substring(0, posInsercion).trim();
+            String parteDespues = sql.substring(posInsercion);
+
+            return parteAntes + "\n" + filtrosParaInsertar + "\n" + parteDespues;
+        } else {
+            // Insertar al final
+            return sql.trim() + "\n" + filtrosParaInsertar;
+        }
     }
 
     /**
