@@ -40,6 +40,7 @@ public class QueryRegistryService {
     @Autowired
     private QueryAnalyzer queryAnalyzer;
 
+
     // =============== API PRINCIPAL DE ANÁLISIS ===============
 
     /**

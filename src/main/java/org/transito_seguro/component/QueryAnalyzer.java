@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import org.transito_seguro.enums.TipoCampo;
 import org.transito_seguro.enums.TipoConsolidacion;
 import org.transito_seguro.model.CampoAnalizado;
+import org.transito_seguro.model.FiltroMetadata;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
 import org.transito_seguro.model.query.QueryStorage;
 import org.transito_seguro.service.QueryRegistryService;
@@ -1179,6 +1180,497 @@ public class QueryAnalyzer {
         }
         return tieneGroupBy(sql);
     }
+
+
+    //======================================== METODOS DE ANALISIS DE FILTROS =========================================
+
+    /**
+     * Analiza una query SQL para detectar qué filtros están disponibles.
+     *
+     * Este método examina la cláusula WHERE de la query para identificar
+     * campos que pueden ser filtrados dinámicamente, extrayendo información
+     * sobre el tipo de filtro, campo SQL y parámetros necesarios.
+     *
+     * Los filtros detectados se guardarán en QueryStorage para que la interfaz
+     * gráfica pueda construir controles de filtrado apropiados.
+     *
+     * @param query Query SQL a analizar
+     * @return Map con key=nombre_filtro, value=metadata del filtro
+     */
+    public Map<String, FiltroMetadata> detectarFiltrosDisponibles(String query) {
+        log.debug("=== DETECTANDO FILTROS DISPONIBLES EN QUERY ===");
+
+        Map<String, FiltroMetadata> filtrosDisponibles = new LinkedHashMap<>();
+
+        try {
+            // Limpiar query de comentarios
+            String queryLimpia = limpiarComentariosSQL(query);
+
+            // Extraer cláusula WHERE
+            String whereClause = extraerWhereClause(queryLimpia);
+
+            if (whereClause == null || whereClause.trim().isEmpty()) {
+                log.debug("Query sin cláusula WHERE - No hay filtros para detectar");
+                return filtrosDisponibles;
+            }
+
+            log.debug("WHERE extraído: {}", whereClause);
+
+            // Detectar cada tipo de filtro
+            detectarFiltroFechaParaMetadata(whereClause, filtrosDisponibles);
+            detectarFiltroEstadoParaMetadata(whereClause, filtrosDisponibles);
+            detectarFiltroTipoInfraccionParaMetadata(whereClause, filtrosDisponibles);
+            detectarFiltroExportaSacitParaMetadata(whereClause, filtrosDisponibles);
+            detectarFiltroConcesionParaMetadata(whereClause, filtrosDisponibles);  // NUEVO
+
+            log.info("✅ Detectados {} filtros disponibles: {}",
+                    filtrosDisponibles.size(),
+                    filtrosDisponibles.keySet());
+
+        } catch (Exception e) {
+            log.error("Error detectando filtros disponibles: {}", e.getMessage(), e);
+        }
+
+        return filtrosDisponibles;
+    }
+
+    /**
+     * Extrae la cláusula WHERE de una query SQL.
+     *
+     * @param query Query SQL
+     * @return Contenido de la cláusula WHERE o null si no existe
+     */
+    private String extraerWhereClause(String query) {
+        Pattern wherePattern = Pattern.compile(
+                "WHERE\\s+(.+?)(?:GROUP BY|ORDER BY|LIMIT|;|$)",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+        );
+
+        Matcher matcher = wherePattern.matcher(query);
+        if (matcher.find()) {
+            return matcher.group(1).trim();
+        }
+
+        return null;
+    }
+
+    /**
+     * Detecta filtros de fecha en la query y agrega metadata.
+     *
+     * Busca patrones como:
+     * - fecha BETWEEN ... AND ...
+     * - fecha >= ...
+     * - fecha = ...
+     *
+     * Genera metadata para permitir filtrado por:
+     * - Fecha específica
+     * - Rango de fechas (inicio/fin)
+     */
+    private void detectarFiltroFechaParaMetadata(
+            String whereClause,
+            Map<String, FiltroMetadata> filtros) {
+
+        // Pattern para detectar campos de fecha con comparaciones
+        Pattern fechaPattern = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.[a-zA-Z_]*fecha[a-zA-Z_]*)\\s*(>=|>|<|<=|=|BETWEEN)",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        Matcher matcher = fechaPattern.matcher(whereClause);
+
+        if (matcher.find()) {
+            String campoSQL = matcher.group(1);
+
+            // Normalizar nombre del campo para la etiqueta
+            String nombreCampo = campoSQL.replaceAll("^[a-zA-Z_]+\\.", "");
+            String etiqueta = generarEtiquetaLegible(nombreCampo);
+
+            FiltroMetadata filtroFecha = FiltroMetadata.builder()
+                    .tipoFiltro("DATE_RANGE")
+                    .campoSQL(campoSQL)
+                    .etiqueta(etiqueta)
+                    .parametros(Arrays.asList(
+                            "fechaEspecifica",  // Para búsquedas de fecha exacta
+                            "fechaInicio",      // Para rangos
+                            "fechaFin"          // Para rangos
+                    ))
+                    .tipoDato("DATE")
+                    .multiple(false)
+                    .obligatorio(false)
+                    .build();
+
+            filtros.put("fecha", filtroFecha);
+
+            log.debug("✓ Filtro FECHA detectado: {} → {}", campoSQL, etiqueta);
+        }
+    }
+
+    /**
+     * Detecta filtros de estado y agrega metadata.
+     *
+     * Busca patrones como:
+     * - id_estado IN (...) → Múltiples valores
+     * - id_estado = 340 → Valor hardcodeado (convertir a dinámico)
+     * - id_estado = ANY(:estadosInfracciones) → Ya dinámico
+     */
+    private void detectarFiltroEstadoParaMetadata(
+            String whereClause,
+            Map<String, FiltroMetadata> filtros) {
+
+        // Pattern 1: Detectar IN (múltiples valores)
+        Pattern estadoPatternIn = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_estado)\\s+(?:NOT\\s+)?IN",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        // Pattern 2: Detectar comparación con valor único (= 340)
+        Pattern estadoPatternEquals = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_estado)\\s*=\\s*\\d+",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        // Pattern 3: Detectar ya convertido a ANY
+        Pattern estadoPatternAny = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_estado)\\s*=\\s*ANY",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        String campoSQL = null;
+        boolean esHardcodeado = false;
+
+        // Verificar si ya está usando ANY (dinámico)
+        Matcher matcherAny = estadoPatternAny.matcher(whereClause);
+        if (matcherAny.find()) {
+            campoSQL = matcherAny.group(1);
+            log.debug("✓ Filtro ESTADO detectado (ya dinámico con ANY): {}", campoSQL);
+        }
+        // Verificar IN
+        else {
+            Matcher matcherIn = estadoPatternIn.matcher(whereClause);
+            if (matcherIn.find()) {
+                campoSQL = matcherIn.group(1);
+                log.debug("✓ Filtro ESTADO detectado (IN): {}", campoSQL);
+            }
+            // Verificar comparación directa (hardcodeado)
+            else {
+                Matcher matcherEquals = estadoPatternEquals.matcher(whereClause);
+                if (matcherEquals.find()) {
+                    campoSQL = matcherEquals.group(1);
+                    esHardcodeado = true;
+                    log.warn("⚠️ Filtro ESTADO detectado HARDCODEADO: {} - Se recomienda hacer dinámico", campoSQL);
+                }
+            }
+        }
+
+        if (campoSQL != null) {
+            FiltroMetadata.FiltroMetadataBuilder builder = FiltroMetadata.builder()
+                    .tipoFiltro("ARRAY_INTEGER")
+                    .campoSQL(campoSQL)
+                    .etiqueta("Estados de Infracción")
+                    .parametros(Arrays.asList("estadosInfracciones"))
+                    .tipoDato("INTEGER")
+                    .multiple(true)
+                    .obligatorio(false);
+
+            filtros.put("estado", builder.build());
+
+            if (esHardcodeado) {
+                log.info("💡 SUGERENCIA: Convertir {} a filtro dinámico usando DynamicBuilderQuery", campoSQL);
+            }
+        }
+    }
+
+    /**
+     * Detecta filtros de tipo de infracción y agrega metadata.
+     *
+     * Busca patrones como:
+     * - id_tipo_infra IN (...) → Múltiples valores
+     * - id_tipo_infra = 123 → Valor hardcodeado
+     * - id_tipo_infra = ANY(:tiposInfracciones) → Ya dinámico
+     */
+    private void detectarFiltroTipoInfraccionParaMetadata(
+            String whereClause,
+            Map<String, FiltroMetadata> filtros) {
+
+        // Pattern para IN
+        Pattern tipoPatternIn = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_tipo_infra)\\s+(?:NOT\\s+)?IN",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        // Pattern para valor hardcodeado
+        Pattern tipoPatternEquals = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_tipo_infra)\\s*=\\s*\\d+",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        // Pattern para ANY
+        Pattern tipoPatternAny = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_tipo_infra)\\s*=\\s*ANY",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        String campoSQL = null;
+        boolean esHardcodeado = false;
+
+        // Verificar ANY (ya dinámico)
+        Matcher matcherAny = tipoPatternAny.matcher(whereClause);
+        if (matcherAny.find()) {
+            campoSQL = matcherAny.group(1);
+            log.debug("✓ Filtro TIPO_INFRACCION detectado (ya dinámico con ANY): {}", campoSQL);
+        }
+        // Verificar IN
+        else {
+            Matcher matcherIn = tipoPatternIn.matcher(whereClause);
+            if (matcherIn.find()) {
+                campoSQL = matcherIn.group(1);
+                log.debug("✓ Filtro TIPO_INFRACCION detectado (IN): {}", campoSQL);
+            }
+            // Verificar hardcodeado
+            else {
+                Matcher matcherEquals = tipoPatternEquals.matcher(whereClause);
+                if (matcherEquals.find()) {
+                    campoSQL = matcherEquals.group(1);
+                    esHardcodeado = true;
+                    log.warn("⚠️ Filtro TIPO_INFRACCION detectado HARDCODEADO: {}", campoSQL);
+                }
+            }
+        }
+
+        if (campoSQL != null) {
+            FiltroMetadata filtroTipo = FiltroMetadata.builder()
+                    .tipoFiltro("ARRAY_INTEGER")
+                    .campoSQL(campoSQL)
+                    .etiqueta("Tipos de Infracción")
+                    .parametros(Arrays.asList("tiposInfracciones"))
+                    .tipoDato("INTEGER")
+                    .multiple(true)
+                    .obligatorio(false)
+                    .build();
+
+            filtros.put("tipo_infraccion", filtroTipo);
+
+            if (esHardcodeado) {
+                log.info("💡 SUGERENCIA: Convertir {} a filtro dinámico", campoSQL);
+            }
+        }
+    }
+
+    /**
+     * Detecta filtros booleanos (exporta_sacit) y agrega metadata.
+     *
+     * Busca patrones como:
+     * - exporta_sacit = true/false
+     */
+    private void detectarFiltroExportaSacitParaMetadata(
+            String whereClause,
+            Map<String, FiltroMetadata> filtros) {
+
+        Pattern sacitPattern = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.exporta_sacit)\\s*=",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        Matcher matcher = sacitPattern.matcher(whereClause);
+
+        if (matcher.find()) {
+            String campoSQL = matcher.group(1);
+
+            FiltroMetadata filtroSacit = FiltroMetadata.builder()
+                    .tipoFiltro("BOOLEAN")
+                    .campoSQL(campoSQL)
+                    .etiqueta("Exportado a SACIT")
+                    .parametros(Arrays.asList("exportadoSacit"))
+                    .tipoDato("BOOLEAN")
+                    .multiple(false)
+                    .obligatorio(false)
+                    // Opciones predefinidas para el filtro boolean
+                    .opciones(Arrays.asList(
+                            FiltroMetadata.OpcionFiltro.builder()
+                                    .valor(true)
+                                    .etiqueta("Sí (Exportado)")
+                                    .build(),
+                            FiltroMetadata.OpcionFiltro.builder()
+                                    .valor(false)
+                                    .etiqueta("No (Sin exportar)")
+                                    .build()
+                    ))
+                    .build();
+
+            filtros.put("exporta_sacit", filtroSacit);
+
+            log.debug("✓ Filtro EXPORTA_SACIT detectado: {}", campoSQL);
+        }
+    }
+
+    /**
+     * Detecta filtros de concesión/municipio y agrega metadata.
+     *
+     * Busca patrones como:
+     * - id_concesion IN (...) → Múltiples concesiones
+     * - id_concesion = 123 → Concesión específica hardcodeada
+     * - id_concesion = ANY(:concesiones) → Ya dinámico
+     *
+     * @param whereClause Cláusula WHERE
+     * @param filtros Map donde agregar el filtro detectado
+     */
+    private void detectarFiltroConcesionParaMetadata(
+            String whereClause,
+            Map<String, FiltroMetadata> filtros) {
+
+        // Pattern para IN
+        Pattern concesionPatternIn = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_concesion)\\s+(?:NOT\\s+)?IN",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        // Pattern para valor hardcodeado
+        Pattern concesionPatternEquals = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_concesion)\\s*=\\s*\\d+",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        // Pattern para ANY
+        Pattern concesionPatternAny = Pattern.compile(
+                "\\b([a-zA-Z_][a-zA-Z0-9_]*\\.id_concesion)\\s*=\\s*ANY",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        String campoSQL = null;
+        boolean esHardcodeado = false;
+
+        // Verificar ANY (ya dinámico)
+        Matcher matcherAny = concesionPatternAny.matcher(whereClause);
+        if (matcherAny.find()) {
+            campoSQL = matcherAny.group(1);
+            log.debug("✓ Filtro CONCESION detectado (ya dinámico con ANY): {}", campoSQL);
+        }
+        // Verificar IN
+        else {
+            Matcher matcherIn = concesionPatternIn.matcher(whereClause);
+            if (matcherIn.find()) {
+                campoSQL = matcherIn.group(1);
+                log.debug("✓ Filtro CONCESION detectado (IN): {}", campoSQL);
+            }
+            // Verificar hardcodeado
+            else {
+                Matcher matcherEquals = concesionPatternEquals.matcher(whereClause);
+                if (matcherEquals.find()) {
+                    campoSQL = matcherEquals.group(1);
+                    esHardcodeado = true;
+                    log.warn("⚠️ Filtro CONCESION detectado HARDCODEADO: {} - Se recomienda hacer dinámico", campoSQL);
+                }
+            }
+        }
+
+        if (campoSQL != null) {
+            FiltroMetadata filtroConcesion = FiltroMetadata.builder()
+                    .tipoFiltro("ARRAY_INTEGER")
+                    .campoSQL(campoSQL)
+                    .etiqueta("Concesiones / Municipios")
+                    .parametros(Arrays.asList("concesiones"))
+                    .tipoDato("INTEGER")
+                    .multiple(true)
+                    .obligatorio(false)
+                    .build();
+
+            filtros.put("concesion", filtroConcesion);
+
+            if (esHardcodeado) {
+                log.info("💡 SUGERENCIA: Convertir {} a filtro dinámico usando DynamicBuilderQuery", campoSQL);
+            }
+
+            log.debug("✓ Filtro CONCESION/MUNICIPIO detectado: {}", campoSQL);
+        }
+    }
+
+    /**
+     * Limpia comentarios de una query SQL.
+     *
+     * @param sql Query SQL
+     * @return SQL sin comentarios
+     */
+    private String limpiarComentariosSQL(String sql) {
+        return sql.replaceAll("--[^\n\r]*", "")      // Comentarios de línea
+                .replaceAll("/\\*.*?\\*/", "")        // Comentarios de bloque
+                .replaceAll("\\s+", " ")               // Normalizar espacios
+                .trim();
+    }
+
+    /**
+     * Genera una etiqueta legible a partir de un nombre de campo SQL.
+     *
+     * Ejemplos:
+     * - "fecha_infraccion" → "Fecha de Infracción"
+     * - "id_estado" → "Estado"
+     * - "exporta_sacit" → "Exporta SACIT"
+     *
+     * @param nombreCampo Nombre del campo (snake_case)
+     * @return Etiqueta legible (Title Case)
+     */
+    private String generarEtiquetaLegible(String nombreCampo) {
+        // Si el campo contiene "fecha_", generar etiqueta especial
+        if (nombreCampo.toLowerCase().contains("fecha_")) {
+            // "fecha_infraccion" → "Fecha de Infracción"
+            String resto = nombreCampo.replaceAll("(?i).*fecha_", "");
+            return "Fecha de " + capitalizarPalabras(resto);
+        }
+
+        // Remover prefijos comunes
+        String limpio = nombreCampo
+                .replaceAll("^(id_|cod_)", "")
+                .replace("_", " ");
+
+        return capitalizarPalabras(limpio);
+    }
+
+    /**
+     * Capitaliza cada palabra de un texto.
+     *
+     * @param texto Texto a capitalizar
+     * @return Texto con cada palabra capitalizada
+     */
+    private String capitalizarPalabras(String texto) {
+        String[] palabras = texto.trim().split("\\s+");
+        StringBuilder resultado = new StringBuilder();
+
+        for (int i = 0; i < palabras.length; i++) {
+            String palabra = palabras[i];
+
+            if (palabra.length() > 0) {
+                // Capitalizar primera letra
+                resultado.append(Character.toUpperCase(palabra.charAt(0)));
+
+                // Agregar resto en minúsculas
+                if (palabra.length() > 1) {
+                    resultado.append(palabra.substring(1).toLowerCase());
+                }
+
+                // Agregar espacio entre palabras
+                if (i < palabras.length - 1) {
+                    resultado.append(" ");
+                }
+            }
+        }
+
+        return resultado.toString();
+    }
+
+    //====================================== METODOS UTILIS ANALISIS ===================================================
+    /***
+     * Limpiar comentarios de una query sql
+     * @param sql
+     * @return SQL SIN COMENTARIOS
+     */
+    private String limpiarComentariosSql(String sql){
+        return sql.replaceAll("--[^\n\r]*", "")      // Comentarios de línea
+                .replaceAll("/\\*.*?\\*/", "")        // Comentarios de bloque
+                .replaceAll("\\s+", " ")               // Normalizar espacios
+                .trim();
+    }
+
+
+
 
     //==================== GETTERS PARA UMBRALES (testing/config) ====================//
 

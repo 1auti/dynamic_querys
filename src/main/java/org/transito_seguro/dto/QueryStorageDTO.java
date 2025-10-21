@@ -1,13 +1,22 @@
 package org.transito_seguro.dto;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 
+import javax.persistence.PostLoad;
+import javax.persistence.PrePersist;
+import javax.persistence.PreUpdate;
+import javax.persistence.Transient;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.Size;
+import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 @Data
 @NoArgsConstructor
@@ -37,6 +46,7 @@ public class QueryStorageDTO {
     private List<String> camposUbicacion;
     private List<String> camposTiempo;
 
+
     // Configuración
     private Integer timeoutSegundos = 30;
     private Integer limiteMaximo = 50000;
@@ -58,6 +68,8 @@ public class QueryStorageDTO {
     public boolean deberiaSerConsolidable() {
         return esConsolidable && camposNumericos != null && !camposNumericos.isEmpty();
     }
+
+
 
 
 }

@@ -8305,3 +8305,11 @@ Database is already closed (to disable automatic closing at VM shutdown, add ";D
 	at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:659)
 	at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:61)
 	at java.lang.Thread.run(Thread.java:750)
+2025-10-21 13:54:57 jdbc[3]: exception
+org.h2.jdbc.JdbcSQLDataException: Valor demasiado largo para la columna "FILTROSJSON CHARACTER VARYING(255)": "U&'{""fecha"":{""tipoFiltro"":""DATE_RANGE"",""campoSQL"":""i.fecha_infraccion"",""etiqueta... (409)"
+Value too long for column "FILTROSJSON CHARACTER VARYING(255)": "U&'{""fecha"":{""tipoFiltro"":""DATE_RANGE"",""campoSQL"":""i.fecha_infraccion"",""etiqueta... (409)"; SQL statement:
+/* insert org.transito_seguro.model.query.QueryStorage */ insert into query_storage (id, activa, campos_agrupacion, campos_numericos, campos_tiempo, campos_ubicacion, categoria, codigo, contador_usos, creado_por, descripcion, es_consolidable, estado, estrategia_paginacion, fecha_actualizacion, fecha_creacion, filtrosJson, limite_maximo, nombre, registros_estimados, sql_query, tags, timeout_segundos, tipo_consolidacion, ultimo_uso, version) values (default, ?, ?, ?, ?, ?, ? [22001-214]
+2025-10-21 13:57:25 jdbc[3]: exception
+org.h2.jdbc.JdbcSQLDataException: Valor demasiado largo para la columna "FILTROSJSON CHARACTER VARYING(255)": "U&'{""fecha"":{""tipoFiltro"":""DATE_RANGE"",""campoSQL"":""i.fecha_infraccion"",""etiqueta... (409)"
+Value too long for column "FILTROSJSON CHARACTER VARYING(255)": "U&'{""fecha"":{""tipoFiltro"":""DATE_RANGE"",""campoSQL"":""i.fecha_infraccion"",""etiqueta... (409)"; SQL statement:
+/* insert org.transito_seguro.model.query.QueryStorage */ insert into query_storage (id, activa, campos_agrupacion, campos_numericos, campos_tiempo, campos_ubicacion, categoria, codigo, contador_usos, creado_por, descripcion, es_consolidable, estado, estrategia_paginacion, fecha_actualizacion, fecha_creacion, filtrosJson, limite_maximo, nombre, registros_estimados, sql_query, tags, timeout_segundos, tipo_consolidacion, ultimo_uso, version) values (default, ?, ?, ?, ?, ?, ? [22001-214]

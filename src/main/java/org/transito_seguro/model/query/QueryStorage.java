@@ -1,5 +1,8 @@
 package org.transito_seguro.model.query;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
@@ -8,10 +11,14 @@ import org.transito_seguro.component.QueryAnalyzer;
 import org.transito_seguro.enums.EstadoQuery;
 import org.transito_seguro.enums.EstrategiaPaginacion;
 import org.transito_seguro.enums.TipoConsolidacion;
+import org.transito_seguro.model.FiltroMetadata;
 
 import javax.persistence.*;
+import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static jdk.nashorn.internal.runtime.regexp.joni.Config.log;
 
@@ -108,6 +115,23 @@ public class QueryStorage {
     @Column(name = "timeout_segundos")
     @Builder.Default  
     private Integer timeoutSegundos = 30;
+
+
+    //persiste en la base de datos
+    @Column(length = 500)
+    private String filtrosJson;
+
+    @Transient
+    private Map<String, FiltroMetadata> camposFiltros;
+
+
+    /**
+     * ObjectMapper para conversiones JSON.
+     * Se reutiliza para evitar crear instancias repetidas.
+     */
+    @Transient
+    private static final ObjectMapper objectMapper = new ObjectMapper();
+
 
 
     /*
@@ -248,7 +272,11 @@ public class QueryStorage {
         if (this.contadorUsos == null) {
             this.contadorUsos = 0L;
         }
+
+        // Convertir el Map a JSON
+        convertirMapAJson();
     }
+
 
     public void analizarYMarcarConsolidable() {
         if (this.sqlQuery != null) {
@@ -262,5 +290,53 @@ public class QueryStorage {
     @PreUpdate
     protected void onUpdate() {
         this.fechaActualizacion = LocalDateTime.now();
+        // Convertir el Map a JSON
+        convertirMapAJson();
     }
+
+    /**
+     * Se ejecuta antes de INSERT o UPDATE en la base de datos.
+     * Convierte el Map de filtros en memoria a JSON para persistir.
+     *
+     * Si camposFiltros es null o está vacío, guarda null en BD.
+     */
+    private void convertirMapAJson() {
+        try {
+            if (camposFiltros == null || camposFiltros.isEmpty()) {
+                this.filtrosJson = null;
+            } else {
+                this.filtrosJson = objectMapper.writeValueAsString(camposFiltros);
+            }
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Error al convertir filtros a JSON", e);
+        }
+    }
+
+    /**
+     * Se ejecuta después de cargar la entidad desde la base de datos.
+     * Convierte el JSON de filtros a Map para usar en memoria.
+     *
+     * Si filtrosJson es null o vacío, inicializa un Map vacío.
+     */
+    @PostLoad
+    public void convertirJsonAMap() {
+
+        try {
+            if (filtrosJson == null || filtrosJson.trim().isEmpty()) {
+                this.camposFiltros = new HashMap<>();
+
+            } else {
+                this.camposFiltros = objectMapper.readValue(
+                        filtrosJson,
+                        new TypeReference<Map<String, FiltroMetadata>>() {}
+                );
+
+            }
+        } catch (IOException e) {
+
+            // Inicializar Map vacío para evitar NPE
+            this.camposFiltros = new HashMap<>();
+        }
+    }
+
 }

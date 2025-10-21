@@ -839,6 +839,8 @@ public class DynamicBuilderQuery {
 
         // Detectar filtro de EXPORTA_SACIT
         detectarFiltroBooleano(where, "exporta_sacit", TipoFiltroDetectado.EXPORTA_SACIT, filtros, campos);
+
+        detectarFiltroCampo(where, "id_concesion", TipoFiltroDetectado.CONCESION, filtros, campos);
     }
 
     /**
@@ -966,6 +968,16 @@ public class DynamicBuilderQuery {
                 break;
 
             case ESTADO:
+            case CONCESION:
+                // Remover IN con lista de valores (incluyendo NOT IN)
+                sql = sql.replaceAll("(?i)" + escapado + "\\s+(?:NOT\\s+)?IN\\s*\\([^)]+\\)", "");
+
+                // Remover comparación con valor único
+                sql = sql.replaceAll("(?i)" + escapado + "\\s*=\\s*\\d+", "");
+
+                // ✅ NUEVO: Remover comparación con ANY
+                sql = sql.replaceAll("(?i)" + escapado + "\\s*=\\s*ANY\\s*\\([^)]+\\)", "");
+                break;
             case TIPO_INFRACCION:
                 // Remover IN con lista de valores (incluyendo NOT IN)
                 sql = sql.replaceAll("(?i)" + escapado + "\\s+(?:NOT\\s+)?IN\\s*\\([^)]+\\)", "");
@@ -1056,6 +1068,13 @@ public class DynamicBuilderQuery {
                     analisis.getCampo(TipoFiltroDetectado.TIPO_INFRACCION));
             tieneWhere = true;
         }
+
+        if (analisis.tiene(TipoFiltroDetectado.CONCESION)) {
+            agregarFiltroConcesion(filtros, tieneWhere,
+                    analisis.getCampo(TipoFiltroDetectado.CONCESION));
+            tieneWhere = true;
+        }
+
 
         if (analisis.tiene(TipoFiltroDetectado.EXPORTA_SACIT)) {
             agregarFiltroExportaSacit(filtros, tieneWhere,
@@ -1195,5 +1214,11 @@ public class DynamicBuilderQuery {
         sb.append(tieneWhere ? "\n  AND " : "\nWHERE ");
         sb.append("(:exportadoSacit::BOOLEAN IS NULL OR ")
                 .append(campo).append(" = :exportadoSacit::BOOLEAN)");
+    }
+
+    private void agregarFiltroConcesion(StringBuilder sb, boolean tieneWhere, String campo) {
+        sb.append(tieneWhere ? "\n  AND " : "\nWHERE ");
+        sb.append("(:concesiones::INTEGER[] IS NULL OR ")
+                .append(campo).append(" = ANY(:concesiones::INTEGER[]))");
     }
 }

@@ -15,6 +15,7 @@ import org.transito_seguro.dto.QueryStorageDTO;
 import org.transito_seguro.enums.EstadoQuery;
 import org.transito_seguro.factory.RepositoryFactory;
 import org.transito_seguro.model.AnalisisPaginacion;
+import org.transito_seguro.model.FiltroMetadata;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
 import org.transito_seguro.model.query.QueryStorage;
 import org.transito_seguro.model.query.QueryResult;
@@ -97,6 +98,23 @@ public class DatabaseQueryService {
 
         AnalisisPaginacion  analisisPaginacion = paginationStrategyAnalyzer.determinarEstrategia(sql);
 
+        log.debug("Detectando filtros disponibles");
+        Map<String, FiltroMetadata> filtrosDetectados =
+                queryAnalyzer.detectarFiltrosDisponibles(dto.getSqlQuery());
+
+        if(filtrosDetectados.isEmpty()){
+        log.warn("No se detectaron filtros en la query");
+        } else {
+            log.info("✅ Detectados {} filtros:", filtrosDetectados.size());
+            filtrosDetectados.forEach((nombre_filtro, metadata) -> {
+                log.info("   ├─ {}: {} ({})",
+                        nombre_filtro,
+                        metadata.getEtiqueta(),
+                        metadata.getTipoFiltro());
+                log.debug("   │  └─ Parámetros: {}", metadata.getParametros());
+            });
+        }
+
         // Los filtros dinámicos se agregan solo al ejecutar
         QueryStorage query = QueryStorage.builder()
                 .codigo(dto.getCodigo())
@@ -112,6 +130,7 @@ public class DatabaseQueryService {
                 .limiteMaximo(dto.getLimiteMaximo())
                 .creadoPor(dto.getCreadoPor())
                 .activa(dto.getActiva())
+                .camposFiltros(filtrosDetectados)
                 .estado(EstadoQuery.ANALIZADA)
                 .build();
 
