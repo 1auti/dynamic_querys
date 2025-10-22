@@ -171,7 +171,6 @@ public class InfraccionesService {
      * Determina qué repositorios (provincias) usar según los filtros.
      *
      * LÓGICA:
-     * - Si consolidado=true → todas las provincias
      * - Si usarTodasLasBDS=true → todas las provincias
      * - Si se especifican bases de datos → solo esas provincias
      * - Por defecto → todas las provincias disponibles
@@ -180,31 +179,50 @@ public class InfraccionesService {
      * @return Lista de repositorios a consultar
      */
     public List<InfraccionesRepositoryImpl> determinarRepositories(ParametrosFiltrosDTO filtros) {
-        // Caso 1: Consolidación activa - usar todos los repositorios
-        if (filtros != null && filtros.esConsolidado()) {
-            log.debug("Consolidación activa - usando todos los repositorios");
-            return repositoryFactory.getAllRepositories().values().stream()
-                    .map(repo -> (InfraccionesRepositoryImpl) repo)
-                    .collect(Collectors.toList());
-        }
 
-        // Caso 2: Flag explícito para usar todas las BDs
-        if (filtros != null && Boolean.TRUE.equals(filtros.getUsarTodasLasBDS())) {
-            return repositoryFactory.getAllRepositories().values().stream()
-                    .map(repo -> (InfraccionesRepositoryImpl) repo)
-                    .collect(Collectors.toList());
-        }
+        // ===== PASO 1: Determinar CUÁLES provincias usar =====
 
-        // Caso 3: Provincias específicas solicitadas
-        if (filtros != null && filtros.getBaseDatos() != null && !filtros.getBaseDatos().isEmpty()) {
-            List<String> provinciasNormalizadas = validator.normalizarProvincias(filtros.getBaseDatos());
+        // Opción A: Provincias específicas solicitadas
+        if (filtros != null &&
+                filtros.getBaseDatos() != null &&
+                !filtros.getBaseDatos().isEmpty()) {
+
+            log.debug(" Usando {} provincias específicas: {}",
+                    filtros.getBaseDatos().size(),
+                    filtros.getBaseDatos());
+
+            List<String> provinciasNormalizadas = validator.normalizarProvincias(
+                    filtros.getBaseDatos()
+            );
+
             return provinciasNormalizadas.stream()
                     .filter(repositoryFactory::isProvinciaSupported)
-                    .map(provincia -> (InfraccionesRepositoryImpl) repositoryFactory.getRepository(provincia))
+                    .map(provincia -> (InfraccionesRepositoryImpl)
+                            repositoryFactory.getRepository(provincia))
                     .collect(Collectors.toList());
         }
 
-        // Caso 4: Por defecto, usar todos los repositorios
+        // Opción B: Flag explícito para TODAS las BDs
+        if (filtros != null && Boolean.TRUE.equals(filtros.getUsarTodasLasBDS())) {
+            log.debug(" Usando TODAS las provincias disponibles (flag explícito)");
+
+            return repositoryFactory.getAllRepositories().values().stream()
+                    .map(repo -> (InfraccionesRepositoryImpl) repo)
+                    .collect(Collectors.toList());
+        }
+
+        // Opción C: Si está consolidado SIN provincias específicas → todas
+        if (filtros != null && filtros.esConsolidado()) {
+            log.debug(" Consolidado sin provincias específicas → usando todas");
+
+            return repositoryFactory.getAllRepositories().values().stream()
+                    .map(repo -> (InfraccionesRepositoryImpl) repo)
+                    .collect(Collectors.toList());
+        }
+
+        // Opción D: Por defecto → todas las disponibles
+        log.debug(" Sin configuración específica → usando todas por defecto");
+
         return repositoryFactory.getAllRepositories().values().stream()
                 .map(repo -> (InfraccionesRepositoryImpl) repo)
                 .collect(Collectors.toList());
