@@ -4,13 +4,9 @@ package org.transito_seguro.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
-import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.transito_seguro.component.QueryAnalyzer;
-import org.transito_seguro.dto.ParametrosFiltrosDTO;
+import org.transito_seguro.component.analyzer.QueryAnalyzer;
 import org.transito_seguro.enums.TipoConsolidacion;
 import org.transito_seguro.model.EstimacionDataset;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;

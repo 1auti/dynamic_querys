@@ -4,15 +4,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.transito_seguro.component.QueryAnalyzer;
-import org.transito_seguro.enums.EstadoQuery;
+import org.transito_seguro.component.analyzer.QueryAnalyzer;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
 import org.transito_seguro.model.query.QueryStorage;
 import org.transito_seguro.repository.QueryStorageRepository;
 
 import java.util.List;
-import java.util.Map;
-import java.util.HashMap;
 import java.util.Optional;
 
 import static org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion.crearAnalisisVacio;

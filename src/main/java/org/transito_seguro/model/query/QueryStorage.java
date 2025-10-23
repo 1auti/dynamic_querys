@@ -7,7 +7,9 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
-import org.transito_seguro.component.QueryAnalyzer;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.transito_seguro.component.analyzer.QueryAnalyzer;
+import org.transito_seguro.component.analyzer.SqlParser;
 import org.transito_seguro.enums.EstadoQuery;
 import org.transito_seguro.enums.EstrategiaPaginacion;
 import org.transito_seguro.enums.TipoConsolidacion;
@@ -20,8 +22,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static jdk.nashorn.internal.runtime.regexp.joni.Config.log;
-
 @Entity
 @Table(name = "query_storage", indexes = {
         @Index(name = "idx_query_codigo", columnList = "codigo", unique = true),
@@ -33,6 +33,10 @@ import static jdk.nashorn.internal.runtime.regexp.joni.Config.log;
 @AllArgsConstructor
 @Builder(toBuilder = true)
 public class QueryStorage {
+
+    @Transient
+    @Autowired
+    private SqlParser sqlParser;
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -280,7 +284,7 @@ public class QueryStorage {
 
     public void analizarYMarcarConsolidable() {
         if (this.sqlQuery != null) {
-            boolean tieneGroupBy = QueryAnalyzer.tieneGroupBy(this.sqlQuery);
+            boolean tieneGroupBy = SqlParser.tieneGroupBy(this.sqlQuery);
             if (tieneGroupBy) {
                 this.esConsolidable = true;
             }

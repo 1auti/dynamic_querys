@@ -7,7 +7,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.transito_seguro.component.FormatoConverter;
 import org.transito_seguro.component.PaginationStrategyAnalyzer;
 import org.transito_seguro.component.ParametrosProcessor;
-import org.transito_seguro.component.QueryAnalyzer;
+import org.transito_seguro.component.analyzer.QueryAnalyzer;
 import org.transito_seguro.component.DynamicBuilderQuery;
 import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
@@ -726,6 +726,9 @@ public class DatabaseQueryService {
 
         return stats;
     }
+
+
+
 
     // =============== MÉTODOS UTILITARIOS ===============
 
