@@ -1,9 +1,8 @@
-package org.transito_seguro.component.analyzer;
+package org.transito_seguro.component.analyzer.query;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.transito_seguro.component.analyzer.*;
 import org.transito_seguro.model.CampoAnalizado;
 import org.transito_seguro.model.FiltroMetadata;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;

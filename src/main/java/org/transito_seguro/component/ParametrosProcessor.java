@@ -237,28 +237,4 @@ public class ParametrosProcessor {
         return lista.toArray(new Integer[0]);
     }
 
-    // =================== MÉTODOS DE DEBUGGING ===================
-
-    public void logParametros(MapSqlParameterSource params) {
-        if (log.isDebugEnabled()) {
-            for (String paramName : params.getParameterNames()) {
-                Object value = params.getValue(paramName);
-                log.debug("Parámetro: {} = {} ({})",
-                        paramName,
-                        value,
-                        value != null ? value.getClass().getSimpleName() : "null"
-                );
-            }
-        }
-    }
-
-    public boolean validarParametrosRequeridos(MapSqlParameterSource params, String... nombresRequeridos) {
-        for (String nombre : nombresRequeridos) {
-            if (!params.hasValue(nombre)) {
-                log.warn("Parámetro requerido faltante: {}", nombre);
-                return false;
-            }
-        }
-        return true;
-    }
 }

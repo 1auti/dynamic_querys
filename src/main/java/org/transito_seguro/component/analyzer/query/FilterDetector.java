@@ -1,4 +1,4 @@
-package org.transito_seguro.component.analyzer;
+package org.transito_seguro.component.analyzer.query;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;

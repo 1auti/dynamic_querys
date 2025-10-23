@@ -4,7 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.transito_seguro.component.analyzer.QueryAnalyzer;
+import org.transito_seguro.component.analyzer.query.QueryAnalyzer;
 import org.transito_seguro.model.consolidacion.analisis.AnalisisConsolidacion;
 import org.transito_seguro.model.query.QueryStorage;
 import org.transito_seguro.repository.QueryStorageRepository;

@@ -6,7 +6,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-import org.transito_seguro.component.analyzer.QueryAnalyzer;
+import org.transito_seguro.component.analyzer.query.QueryAnalyzer;
 import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.dto.QueryStorageDTO;
