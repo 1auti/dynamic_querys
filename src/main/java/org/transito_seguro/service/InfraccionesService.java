@@ -10,6 +10,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.transito_seguro.component.*;
+import org.transito_seguro.component.processor.BatchProcessor;
 import org.transito_seguro.dto.ConsultaQueryDTO;
 import org.transito_seguro.dto.ParametrosFiltrosDTO;
 import org.transito_seguro.exception.RuntimesFormatoExceleException;
