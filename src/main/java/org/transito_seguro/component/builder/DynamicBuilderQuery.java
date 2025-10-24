@@ -1,10 +1,11 @@
-package org.transito_seguro.component;
+package org.transito_seguro.component.builder;
 
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.transito_seguro.component.analyzer.pagination.PaginationAnalyzer;
 import org.transito_seguro.enums.EstrategiaPaginacion;
 import org.transito_seguro.enums.TipoFiltroDetectado;
 import org.transito_seguro.exception.ValidationException;
@@ -19,15 +20,13 @@ import java.util.regex.PatternSyntaxException;
  * Constructor dinámico de queries SQL con paginación inteligente.
  * Aplica filtros dinámicos y estrategias de paginación optimizadas.
  *
- * @author Transito Seguro Team
- * @version 2.0 - Corregido y mejorado
  */
 @Component
 @Slf4j
 @RequiredArgsConstructor
 public class DynamicBuilderQuery {
 
-    private final PaginationStrategyAnalyzer paginationStrategyAnalyzer;
+    private final PaginationAnalyzer paginationStrategyAnalyzer;
 
     /**
      * Mapa temporal para proteger subconsultas durante el procesamiento.

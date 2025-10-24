@@ -53,7 +53,7 @@ spring:
   # === CONSOLA H2 - DESACTIVADA EN PRODUCCIÓN ===
   h2:
     console:
-      enabled: false
+      enabled: true
       path: /h2-console
       settings:
         web-allow-others: false
